@@ -74,6 +74,7 @@ sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx Full'
 sudo ufw enable
 ```
+در فایل تنظیمات سایت Nginx (`/etc/nginx/sites-available/gatan`) مقدار `client_max_body_size 150M;` و `proxy_read_timeout 120s;` را برای انتقال بکاپ‌های حجیم تنظیم نمایید.
 
 ---
 

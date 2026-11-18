@@ -632,20 +632,24 @@ export default function App() {
   const handleMigrateLocalToPostgres = async () => {
     const targetDb = latestDbRef.current || db;
     if (!targetDb) return;
-    const res = await importDatabaseToPostgres(targetDb, 'browser_local_migration');
-    if (res.ok) {
-      if (res.versions) {
-        collectionVersionsRef.current = res.versions;
+    try {
+      const res = await importDatabaseToPostgres(targetDb, 'browser_local_migration');
+      if (res.ok) {
+        if (res.versions) {
+          collectionVersionsRef.current = res.versions;
+        }
+        lastSyncedDbRef.current = targetDb;
+        setShowLocalMigrationBanner(false);
+        setPgSyncState('synced');
+        setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
+        const refreshed = await fetchPostgresStatus();
+        setServerStatus(refreshed);
+        alert('تمامی داده‌های محلی با موفقیت به پایگاه داده مشترک PostgreSQL منتقل شدند.');
+      } else {
+        alert(res.error || 'خطا در انتقال داده‌ها به PostgreSQL');
       }
-      lastSyncedDbRef.current = targetDb;
-      setShowLocalMigrationBanner(false);
-      setPgSyncState('synced');
-      setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
-      const refreshed = await fetchPostgresStatus();
-      setServerStatus(refreshed);
-      alert('تمامی داده‌های محلی با موفقیت به پایگاه داده مشترک PostgreSQL منتقل شدند.');
-    } else {
-      alert(res.error || 'خطا در انتقال داده‌ها به PostgreSQL');
+    } catch (err: any) {
+      alert(`خطا در انتقال داده‌ها به PostgreSQL: ${err?.message || String(err)}`);
     }
   };
 
@@ -839,6 +843,7 @@ export default function App() {
 
   const handleImportExcelBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file || !db) return;
     if (!isAdminUser(currentUser)) {
       alert('فقط مدیر ارشد مجاز به بازیابی کامل فایل اکسل است.');
@@ -850,40 +855,69 @@ export default function App() {
       'هشدار حساس: بارگذاری فایل اکسل تمامی داده‌های فعلی شما را بازنویسی و اطلاعات داخل ورقه‌های اکسل بارگذاری شده را جایگزین خواهد کرد. مایل به نهایی‌سازی هستید؟',
       () => {
         const reader = new FileReader();
+        reader.onerror = () => {
+          alert('خطا در خواندن فایل از سیستم. لطفا مجدداً فایل را انتخاب نمایید.');
+        };
         reader.onload = async (event) => {
           const buffer = event.target?.result as ArrayBuffer;
-          if (!buffer) return;
+          if (!buffer) {
+            alert('محتوای فایل اکسل خالی یا غیرقابل خواندن است.');
+            return;
+          }
 
+          let sanitized: AppDatabase;
           try {
             const restoredDb = importExcelToDatabase(buffer, db);
-            const sanitized = sanitizeAndMergeDatabase(restoredDb);
-            latestDbRef.current = sanitized;
-            setDb(sanitized);
-            saveDatabase(sanitized);
+            sanitized = sanitizeAndMergeDatabase(restoredDb);
+          } catch (excelErr: any) {
+            console.error('Error parsing Excel backup:', excelErr);
+            const detail = excelErr?.message ? `\nجزئیات: ${excelErr.message}` : '';
+            alert(
+              `خطا در ساختار ورقه اکسل وارد شده. لطفا یک فایل معتبر خروجی گرفته شده بارگذاری کنید.${detail}`
+            );
+            return;
+          }
 
-            if (serverMode === 'postgres') {
+          latestDbRef.current = sanitized;
+          setDb(sanitized);
+          saveDatabase(sanitized);
+
+          if (serverMode === 'postgres') {
+            try {
               const pgRes = await importDatabaseToPostgres(sanitized, 'excel_full_restore');
               if (!pgRes.ok) {
-                alert(pgRes.error || 'خطا در ذخیره فایل اکسل در PostgreSQL');
+                alert(
+                  `فایل اکسل خوانده شد، اما ذخیره در PostgreSQL با خطا مواجه شد:\n${
+                    pgRes.error || 'خطای نامشخص سرور'
+                  }`
+                );
                 return;
               }
               if (pgRes.versions) collectionVersionsRef.current = pgRes.versions;
               lastSyncedDbRef.current = sanitized;
               setShowLocalMigrationBanner(false);
+              setPgSyncState('synced');
+              setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
+              fetchPostgresStatus().then(setServerStatus).catch(() => {});
+            } catch (pgErr: any) {
+              console.error('Error syncing Excel backup to Postgres:', pgErr);
+              alert(
+                `فایل اکسل با موفقیت خوانده شد، اما ارسال به سرور PostgreSQL با خطا مواجه شد: ${
+                  pgErr?.message || String(pgErr)
+                }`
+              );
+              return;
             }
-            
-            // Switch to a valid period
-            if (sanitized.periods.length > 0) {
-              const matched = sanitized.periods.find(p => p.id === activePeriodId) || sanitized.periods[0];
-              setActivePeriodId(matched.id);
-            }
-            
-            alert('کل دیتابیس با موفقیت از فایل اکسل بازیابی و همگام گردید.');
-            setShowBackupPanel(false);
-          } catch (err) {
-            console.error('Error importing Excel:', err);
-            alert('خطا در ساختار ورقه اکسل وارد شده. لطفا یک فایل معتبر خروجی گرفته شده بارگذاری کنید.');
           }
+
+          // Switch to a valid period
+          if (sanitized.periods.length > 0) {
+            const matched = sanitized.periods.find(p => p.id === activePeriodId) || sanitized.periods[0];
+            setActivePeriodId(matched.id);
+          }
+
+          alert('کل دیتابیس با موفقیت از فایل اکسل بازیابی و همگام گردید.');
+          setShowBackupPanel(false);
         };
         reader.readAsArrayBuffer(file);
       }
@@ -2084,7 +2118,7 @@ export default function App() {
                       <input
                         id="db-backup-excel-import"
                         type="file"
-                        accept=".xlsx"
+                        accept=".xlsx,.xls,.xlsm"
                         onChange={handleImportExcelBackup}
                         className="hidden"
                       />

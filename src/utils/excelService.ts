@@ -75,17 +75,26 @@ function safeExportData(data: any[]): any[] {
 }
 
 function safeImportData(data: any[]): any[] {
-  if (!data || !Array.isArray(data)) return data;
-  return data.map(row => {
-    if (!row || typeof row !== 'object') return row;
+  if (!data || !Array.isArray(data)) return [];
+  const cleanedRows: any[] = [];
+  for (let idx = 0; idx < data.length; idx++) {
+    const row = data[idx];
+    if (!row || typeof row !== 'object') continue;
     const keys = Object.keys(row);
-    const chunkKeys = keys.filter(key => key.includes('_chunk_'));
-    if (chunkKeys.length === 0) return row;
+    const hasMeaningfulValue = keys.some(
+      (k) => k !== 'خالی' && row[k] !== '' && row[k] !== undefined && row[k] !== null
+    );
+    if (!hasMeaningfulValue) continue;
+
+    const chunkKeys = keys.filter((key) => key.includes('_chunk_'));
+    if (chunkKeys.length === 0) {
+      cleanedRows.push(row);
+      continue;
+    }
 
     const newRow = { ...row };
-
     const originalKeysWithChunks = new Set<string>();
-    chunkKeys.forEach(key => {
+    chunkKeys.forEach((key) => {
       const parts = key.split('_chunk_');
       if (parts.length >= 2) {
         const originalKey = parts.slice(0, -1).join('_chunk_');
@@ -93,8 +102,11 @@ function safeImportData(data: any[]): any[] {
       }
     });
 
-    originalKeysWithChunks.forEach(originalKey => {
-      let fullStr = String(newRow[originalKey] || '');
+    originalKeysWithChunks.forEach((originalKey) => {
+      let fullStr =
+        newRow[originalKey] !== undefined && newRow[originalKey] !== null
+          ? String(newRow[originalKey])
+          : '';
       let i = 1;
       while (true) {
         const chunkKey = `${originalKey}_chunk_${i}`;
@@ -109,8 +121,9 @@ function safeImportData(data: any[]): any[] {
       newRow[originalKey] = fullStr;
     });
 
-    return newRow;
-  });
+    cleanedRows.push(newRow);
+  }
+  return cleanedRows;
 }
 
 export function exportDatabaseToExcel(db: AppDatabase) {
@@ -1374,7 +1387,40 @@ export function exportDatabaseToExcel(db: AppDatabase) {
 }
 
 export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDatabase): AppDatabase {
-  const wb = XLSX.read(fileBuffer, { type: 'array' });
+  const bytes = fileBuffer instanceof Uint8Array ? fileBuffer : new Uint8Array(fileBuffer);
+  const wb = XLSX.read(bytes, { type: 'array' });
+  if (!wb || !Array.isArray(wb.SheetNames) || wb.SheetNames.length === 0) {
+    throw new Error('فایل اکسل انتخاب شده فاقد هرگونه ورقه (Sheet) معتبر است.');
+  }
+
+  const recognizedSheetNames = new Set([
+    'periods', 'item_categories', 'raw_items', 'suppliers', 'product_categories',
+    'departments', 'products', 'sales_periods', 'product_sales', 'unit_conversions',
+    'product_formulas', 'personnel', 'payroll_periods', 'payroll_items',
+    'payroll_calculations', 'personnel_allocations', 'period_overheads',
+    'procurement_orders', 'stock_audits', 'stock_counts', 'purchase_invoices',
+    'daily_production_segments', 'users', 'shifts', 'shift_assignments',
+    'production_sections', 'shift_schemes', 'sales_transactions', 'warehouses',
+    'salary_base_rates', 'personnel_contracts', 'seniority_rate_rules',
+    'custom_banks', 'insured_salary_items', 'personnel_categories',
+    'attendance_records', 'monthly_workday_settings', 'payroll_calculation_rules',
+    'official_holidays', 'tax_exemptions', 'tax_brackets', 'taxable_salary_items',
+    'contract_template', 'capability_matrix', 'dibal_scales', 'dibal_plus',
+    'dibal_tickets', 'customer_categories', 'customers', 'personnel_settlements',
+    'settlement_monthly_details', 'approved_shift_mismatches', 'payroll_settings',
+    'payroll_manual_overrides', 'personnel_capabilities', 'attendance_device_config',
+    'sql_server_config', 'لیست حقوق', 'دوره های حقوق', 'محاسبه حقوق و دستمزد',
+    'ریز اقلام حقوق', 'تایید مغایرت ها', 'تاییدات مغایرت شیفت', 'approvedmismatches',
+  ]);
+  const hasAnyBackupSheet = wb.SheetNames.some((n) =>
+    recognizedSheetNames.has(String(n || '').trim().toLowerCase())
+  );
+  if (!hasAnyBackupSheet) {
+    throw new Error(
+      `فایل اکسل فاقد ورقه‌های استاندارد پشتیبان سامانه است (ورقه‌های یافت‌شده: ${wb.SheetNames.slice(0, 5).join('، ')}).`
+    );
+  }
+
   const result = { ...currentDb };
 
   const getSheetData = (sheetName: string, alternativeNames: string[] = []): any[] | null => {
@@ -1438,18 +1484,21 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
 
   const parseNumber = (val: any): number => {
     if (val === undefined || val === null || val === '') return 0;
-    const num = Number(val);
+    const num = Number(toEnglishDigits(String(val)));
     return isNaN(num) ? 0 : num;
   };
 
   const parseJSON = (val: any, fallback: any) => {
-    if (!val) return fallback;
+    if (val === undefined || val === null || val === '') return fallback;
     try {
-      if (typeof val === 'string') {
-        const decoded = JSON.parse(val.trim());
-        return decoded;
+      const decoded = typeof val === 'string' ? JSON.parse(val.trim()) : val;
+      if (Array.isArray(fallback)) {
+        return Array.isArray(decoded) ? decoded : fallback;
       }
-      return val;
+      if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
+        return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : fallback;
+      }
+      return decoded ?? fallback;
     } catch {
       return fallback;
     }
@@ -1893,18 +1942,23 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 21. Users
   const usersRows = getSheetData("Users");
   if (usersRows) {
-    result.users = usersRows.map(r => ({
-      id: String(r.id || ''),
-      username: String(r.username || ''),
-      fullName: String(r.fullName || ''),
-      role: (r.role || 'کاربر انبار') as any,
-      permissions: typeof r.permissions === 'string'
-        ? r.permissions.split(';').filter((x: string) => x)
-        : (Array.isArray(r.permissions) ? r.permissions : ['*']),
-      password: String(r.password || '123'),
-      is2FA: parseBoolean(r.is2FA),
-      secretCode: String(r.secretCode || '123456'),
-    })).filter(x => x.id);
+    result.users = usersRows.map(r => {
+      const uname = String(r.username || '').trim();
+      const existingMatch = (currentDb.users || []).find(u => u.username === uname);
+      const rawPw = r.password !== undefined && r.password !== null ? String(r.password).trim() : '';
+      return {
+        id: String(r.id || ''),
+        username: uname,
+        fullName: String(r.fullName || ''),
+        role: (r.role || 'کاربر انبار') as any,
+        permissions: typeof r.permissions === 'string'
+          ? r.permissions.split(';').filter((x: string) => x)
+          : (Array.isArray(r.permissions) ? r.permissions : ['*']),
+        password: rawPw !== '' ? rawPw : (existingMatch?.password || ''),
+        is2FA: parseBoolean(r.is2FA),
+        secretCode: String(r.secretCode || '123456'),
+      };
+    }).filter(x => x.id && x.username);
   }
 
   // 22. Shifts
@@ -2281,10 +2335,11 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 38. Personnel Capability Evaluation Matrix
   const capabilityMatrixRows = getSheetData("Capability_Matrix");
   if (capabilityMatrixRows && result.personnel && result.productionSections) {
+    const updatedPersonnel = result.personnel.map(p => ({ ...p }));
     capabilityMatrixRows.forEach(row => {
       const empCode = row.employeeCode !== undefined ? String(row.employeeCode).trim() : '';
       if (!empCode) return;
-      const emp = result.personnel.find(p => String(p.employeeCode).trim() === empCode);
+      const emp = updatedPersonnel.find(p => String(p.employeeCode).trim() === empCode);
       if (!emp) return;
 
       const caps: string[] = [];
@@ -2302,6 +2357,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
       // Merge: primary first, then auxiliary
       emp.capabilities = [...caps, ...auxiliaryCaps];
     });
+    result.personnel = updatedPersonnel;
   }
 
   // 39. Shift Schemes
@@ -2322,27 +2378,29 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 40. Dibal Scales Configuration
   const dibalScalesRows = getSheetData("Dibal_Scales");
   if (dibalScalesRows) {
-    result.dibalScales = dibalScalesRows.map(r => ({
-      id: String(r.id || `scale-${Date.now()}`),
-      name: String(r.name || 'ترازو دیبال M-525'),
-      model: String(r.model || 'Dibal Tower M-525'),
-      scaleId: parseNumber(r.scaleId) || 1,
-      departmentId: parseNumber(r.departmentId) || 1,
-      connectionType: (r.connectionType || 'ethernet') as any,
-      ipAddress: String(r.ipAddress || '192.168.1.150'),
-      subnetMask: String(r.subnetMask || '255.255.255.0'),
-      gateway: String(r.gateway || '192.168.1.1'),
-      txPort: parseNumber(r.txPort) || 3000,
-      rxPort: parseNumber(r.rxPort) || 3001,
-      comPort: r.comPort ? String(r.comPort) : undefined,
-      baudRate: r.baudRate ? parseNumber(r.baudRate) : undefined,
-      parity: r.parity ? String(r.parity) as any : undefined,
-      stopBits: r.stopBits ? parseNumber(r.stopBits) : undefined,
-      barcodePrefix: String(r.barcodePrefix || '21'),
-      isOnline: parseBoolean(r.isOnline),
-      lastSyncTime: r.lastSyncTime ? String(r.lastSyncTime) : undefined,
-      autoSyncReceipts: parseBoolean(r.autoSyncReceipts)
-    }));
+    result.dibalScales = dibalScalesRows
+      .filter(r => r && (r.id || r.name || r.ipAddress))
+      .map(r => ({
+        id: String(r.id || `scale-${Date.now()}`),
+        name: String(r.name || 'ترازو دیبال M-525'),
+        model: String(r.model || 'Dibal Tower M-525'),
+        scaleId: parseNumber(r.scaleId) || 1,
+        departmentId: parseNumber(r.departmentId) || 1,
+        connectionType: (r.connectionType || 'ethernet') as any,
+        ipAddress: String(r.ipAddress || '192.168.1.150'),
+        subnetMask: String(r.subnetMask || '255.255.255.0'),
+        gateway: String(r.gateway || '192.168.1.1'),
+        txPort: parseNumber(r.txPort) || 3000,
+        rxPort: parseNumber(r.rxPort) || 3001,
+        comPort: r.comPort ? String(r.comPort) : undefined,
+        baudRate: r.baudRate ? parseNumber(r.baudRate) : undefined,
+        parity: r.parity ? String(r.parity) as any : undefined,
+        stopBits: r.stopBits ? parseNumber(r.stopBits) : undefined,
+        barcodePrefix: String(r.barcodePrefix || '21'),
+        isOnline: parseBoolean(r.isOnline),
+        lastSyncTime: r.lastSyncTime ? String(r.lastSyncTime) : undefined,
+        autoSyncReceipts: parseBoolean(r.autoSyncReceipts)
+      }));
   } else {
     result.dibalScales = currentDb.dibalScales || [];
   }
@@ -2381,21 +2439,23 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 42. Dibal Weighing Tickets
   const dibalTicketsRows = getSheetData("Dibal_Tickets");
   if (dibalTicketsRows) {
-    result.dibalTickets = dibalTicketsRows.map(r => ({
-      id: String(r.id || `ticket-${Date.now()}`),
-      scaleId: parseNumber(r.scaleId) || 1,
-      ticketNumber: parseNumber(r.ticketNumber) || 1,
-      date: String(r.date || new Date().toLocaleDateString('fa-IR')),
-      time: String(r.time || new Date().toLocaleTimeString('fa-IR')),
-      pluCode: parseNumber(r.pluCode) || 1,
-      itemName: String(r.itemName || 'کالای ترازو'),
-      itemType: r.itemType === 'unit' ? 'unit' : 'weighted',
-      quantity: parseNumber(r.quantity) || 1,
-      netWeightKg: parseNumber(r.netWeightKg),
-      unitPrice: parseNumber(r.unitPrice),
-      totalPrice: parseNumber(r.totalPrice),
-      status: (r.status || 'raw') as any,
-    }));
+    result.dibalTickets = dibalTicketsRows
+      .filter(r => r && (r.id || r.ticketNumber || r.pluCode))
+      .map(r => ({
+        id: String(r.id || `ticket-${Date.now()}`),
+        scaleId: parseNumber(r.scaleId) || 1,
+        ticketNumber: parseNumber(r.ticketNumber) || 1,
+        date: String(r.date || new Date().toLocaleDateString('fa-IR')),
+        time: String(r.time || new Date().toLocaleTimeString('fa-IR')),
+        pluCode: parseNumber(r.pluCode) || 1,
+        itemName: String(r.itemName || 'کالای ترازو'),
+        itemType: r.itemType === 'unit' ? 'unit' : 'weighted',
+        quantity: parseNumber(r.quantity) || 1,
+        netWeightKg: parseNumber(r.netWeightKg),
+        unitPrice: parseNumber(r.unitPrice),
+        totalPrice: parseNumber(r.totalPrice),
+        status: (r.status || 'raw') as any,
+      }));
   } else {
     result.dibalTickets = currentDb.dibalTickets || [];
   }

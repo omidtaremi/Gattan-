@@ -19,6 +19,11 @@ import {
 const CHUNK_SIZE = 5000;
 const SESSION_TTL_HOURS = 24 * 7; // 7 days
 
+function safePgJsonStringify(value: unknown): string {
+  const raw = JSON.stringify(value === undefined ? null : value);
+  return raw ? raw.replace(/\\u0000/g, '') : 'null';
+}
+
 export interface PgUserPublic {
   id: string;
   username: string;
@@ -660,7 +665,7 @@ async function saveCollectionInTx(
            updated_by = EXCLUDED.updated_by,
            updated_at = NOW()
        RETURNING version::text AS version`,
-      [collectionKey, JSON.stringify(stub), arr.length, username]
+      [collectionKey, safePgJsonStringify(stub), arr.length, username]
     );
 
     for (let c = 0; c < chunkCount; c++) {
@@ -668,14 +673,14 @@ async function saveCollectionInTx(
       await client.query(
         `INSERT INTO app_collection_chunks (collection_key, chunk_index, data)
          VALUES ($1, $2, $3::jsonb)`,
-        [collectionKey, c, JSON.stringify(slice)]
+        [collectionKey, c, safePgJsonStringify(slice)]
       );
     }
 
     return Number(rows[0]?.version || 1);
   }
 
-  const serialized = JSON.stringify(value === undefined ? null : value);
+  const serialized = safePgJsonStringify(value);
   const { rows } = await client.query<{ version: string }>(
     `INSERT INTO app_collections (collection_key, data, item_count, is_chunked, version, updated_by, updated_at)
      VALUES ($1, $2::jsonb, $3, FALSE, 1, $4, NOW())
@@ -909,6 +914,89 @@ export async function syncCollectionsDeltaToPg(
   }
 }
 
+async function upsertImportedUsersInTx(
+  client: PoolClient,
+  rawUsers: unknown
+): Promise<void> {
+  if (!Array.isArray(rawUsers) || rawUsers.length === 0) return;
+
+  for (const rawUser of rawUsers as any[]) {
+    if (!rawUser || !rawUser.username) continue;
+    const uname = String(rawUser.username).trim();
+    if (!uname) continue;
+
+    const perms = normalizePermissions(
+      Array.isArray(rawUser.permissions) ? rawUser.permissions : ['*']
+    );
+
+    const existingByUsername = await client.query<{ id: string; password_hash: string }>(
+      'SELECT id, password_hash FROM app_users WHERE username = $1 LIMIT 1',
+      [uname]
+    );
+
+    let pwHash = existingByUsername.rows[0]?.password_hash || '';
+    const incomingPw = String(rawUser.password || '').trim();
+    if (incomingPw !== '') {
+      pwHash = isBcryptHash(incomingPw)
+        ? incomingPw
+        : await bcrypt.hash(incomingPw, 10);
+    } else if (!pwHash) {
+      pwHash = await bcrypt.hash('123', 10);
+    }
+
+    if (existingByUsername.rows[0]) {
+      await client.query(
+        `UPDATE app_users
+         SET full_name = $1,
+             role = $2,
+             permissions = $3::jsonb,
+             password_hash = $4,
+             is_2fa = $5,
+             secret_code = $6,
+             is_active = $7,
+             updated_at = NOW()
+         WHERE username = $8`,
+        [
+          String(rawUser.fullName || rawUser.name || uname),
+          String(rawUser.role || 'کاربر انبار'),
+          safePgJsonStringify(perms),
+          pwHash,
+          Boolean(rawUser.is2FA),
+          String(rawUser.secretCode || '123456'),
+          rawUser.isActive !== false,
+          uname,
+        ]
+      );
+      continue;
+    }
+
+    let candidateId = String(rawUser.id || `usr-${uname}`).trim() || `usr-${uname}`;
+    const existingById = await client.query<{ id: string }>(
+      'SELECT id FROM app_users WHERE id = $1 LIMIT 1',
+      [candidateId]
+    );
+    if (existingById.rows[0]) {
+      candidateId = `usr-${uname}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    await client.query(
+      `INSERT INTO app_users (id, username, full_name, role, permissions, password_hash, is_2fa, secret_code, is_active)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
+      [
+        candidateId,
+        uname,
+        String(rawUser.fullName || rawUser.name || uname),
+        String(rawUser.role || 'کاربر انبار'),
+        safePgJsonStringify(perms),
+        pwHash,
+        Boolean(rawUser.is2FA),
+        String(rawUser.secretCode || '123456'),
+        rawUser.isActive !== false,
+      ]
+    );
+  }
+}
+
 export async function importFullDatabaseToPg(
   actor: AuthUserLike,
   fullDb: Record<string, unknown>,
@@ -924,55 +1012,7 @@ export async function importFullDatabaseToPg(
   try {
     await client.query('BEGIN');
 
-    // Sync users if included in imported DB (preserving existing hashes if incoming password is empty)
-    if (Array.isArray(fullDb.users) && fullDb.users.length > 0) {
-      for (const rawUser of fullDb.users as any[]) {
-        if (!rawUser || !rawUser.username) continue;
-        const uname = String(rawUser.username).trim();
-        const uid = String(rawUser.id || `usr-${uname}`);
-        const perms = normalizePermissions(
-          Array.isArray(rawUser.permissions) ? rawUser.permissions : ['*']
-        );
-        const existingRes = await client.query<{ password_hash: string }>(
-          'SELECT password_hash FROM app_users WHERE username = $1 LIMIT 1',
-          [uname]
-        );
-        let pwHash = existingRes.rows[0]?.password_hash || '';
-        const incomingPw = String(rawUser.password || '').trim();
-        if (incomingPw !== '') {
-          pwHash = isBcryptHash(incomingPw)
-            ? incomingPw
-            : await bcrypt.hash(incomingPw, 10);
-        } else if (!pwHash) {
-          pwHash = await bcrypt.hash('123', 10);
-        }
-
-        await client.query(
-          `INSERT INTO app_users (id, username, full_name, role, permissions, password_hash, is_2fa, secret_code, is_active)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
-           ON CONFLICT (username) DO UPDATE
-           SET full_name = EXCLUDED.full_name,
-               role = EXCLUDED.role,
-               permissions = EXCLUDED.permissions,
-               password_hash = EXCLUDED.password_hash,
-               is_2fa = EXCLUDED.is_2fa,
-               secret_code = EXCLUDED.secret_code,
-               is_active = EXCLUDED.is_active,
-               updated_at = NOW()`,
-          [
-            uid,
-            uname,
-            String(rawUser.fullName || rawUser.name || uname),
-            String(rawUser.role || 'کاربر انبار'),
-            JSON.stringify(perms),
-            pwHash,
-            Boolean(rawUser.is2FA),
-            String(rawUser.secretCode || '123456'),
-            rawUser.isActive !== false,
-          ]
-        );
-      }
-    }
+    await upsertImportedUsersInTx(client, fullDb.users);
 
     const keys = Object.keys(fullDb).filter(
       (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && fullDb[k] !== undefined
@@ -994,7 +1034,7 @@ export async function importFullDatabaseToPg(
        ON CONFLICT (meta_key) DO UPDATE
        SET meta_value = EXCLUDED.meta_value, updated_at = NOW()`,
       [
-        JSON.stringify({
+        safePgJsonStringify({
           initializedByUser: true,
           source,
           updatedAt: new Date().toISOString(),
@@ -1015,6 +1055,182 @@ export async function importFullDatabaseToPg(
 
     await client.query('COMMIT');
     return { versions, importedCollections: keys.length };
+  } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export interface StagedCollectionChunkInput {
+  collectionKey: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: unknown;
+}
+
+export async function stageImportChunksInPg(
+  actor: AuthUserLike,
+  importId: string,
+  chunks: StagedCollectionChunkInput[]
+): Promise<{ stagedCount: number }> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  if (!isAdminUser(actor)) {
+    throw new Error('فقط مدیر ارشد مجاز به انتقال یا بازیابی کامل پایگاه داده است.');
+  }
+  const cleanImportId = String(importId || '').trim();
+  if (!cleanImportId) {
+    throw new Error('شناسه عملیات انتقال (importId) نامعتبر است.');
+  }
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    return { stagedCount: 0 };
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Clean expired staging entries older than 3 hours
+    await client.query(
+      "DELETE FROM app_import_staging WHERE created_at < NOW() - INTERVAL '3 hours'"
+    );
+
+    let stagedCount = 0;
+    for (const item of chunks) {
+      const key = String(item?.collectionKey || '').trim();
+      if (!key || CLIENT_ONLY_DB_KEYS.has(key) || key === 'users') continue;
+      const chunkIdx = Math.max(0, Number(item.chunkIndex) || 0);
+      const totalChunks = Math.max(1, Number(item.totalChunks) || 1);
+
+      await client.query(
+        `INSERT INTO app_import_staging (import_id, collection_key, chunk_index, total_chunks, data, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+         ON CONFLICT (import_id, collection_key, chunk_index) DO UPDATE
+         SET total_chunks = EXCLUDED.total_chunks,
+             data = EXCLUDED.data,
+             created_at = NOW()`,
+        [cleanImportId, key, chunkIdx, totalChunks, safePgJsonStringify(item.data)]
+      );
+      stagedCount++;
+    }
+
+    await client.query('COMMIT');
+    return { stagedCount };
+  } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function commitStagedImportInPg(
+  actor: AuthUserLike,
+  importId: string,
+  source: string,
+  users?: unknown,
+  ipAddress?: string
+): Promise<{ versions: Record<string, number>; importedCollections: number }> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  if (!isAdminUser(actor)) {
+    throw new Error('فقط مدیر ارشد مجاز به انتقال یا بازیابی کامل پایگاه داده است.');
+  }
+  const cleanImportId = String(importId || '').trim();
+  if (!cleanImportId) {
+    throw new Error('شناسه عملیات انتقال (importId) نامعتبر است.');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await upsertImportedUsersInTx(client, users);
+
+    const { rows: stagedKeys } = await client.query<{
+      collection_key: string;
+      total_chunks: number;
+    }>(
+      `SELECT collection_key, MAX(total_chunks) AS total_chunks
+       FROM app_import_staging
+       WHERE import_id = $1
+       GROUP BY collection_key
+       ORDER BY collection_key ASC`,
+      [cleanImportId]
+    );
+
+    if (stagedKeys.length === 0) {
+      throw new Error('هیچ داده‌ای برای نهایی‌سازی در صف انتقال یافت نشد.');
+    }
+
+    const versions: Record<string, number> = {};
+    for (const keyRow of stagedKeys) {
+      const key = String(keyRow.collection_key);
+      if (CLIENT_ONLY_DB_KEYS.has(key) || key === 'users') continue;
+
+      const { rows: chunkRows } = await client.query<{
+        chunk_index: number;
+        total_chunks: number;
+        data: unknown;
+      }>(
+        `SELECT chunk_index, total_chunks, data
+         FROM app_import_staging
+         WHERE import_id = $1 AND collection_key = $2
+         ORDER BY chunk_index ASC`,
+        [cleanImportId, key]
+      );
+
+      let assembledValue: unknown;
+      if (chunkRows.length === 1 && Number(chunkRows[0].total_chunks || 1) <= 1) {
+        assembledValue = chunkRows[0].data;
+      } else {
+        const mergedArr: unknown[] = [];
+        for (const ch of chunkRows) {
+          if (Array.isArray(ch.data)) {
+            for (let i = 0; i < ch.data.length; i++) {
+              mergedArr.push(ch.data[i]);
+            }
+          }
+        }
+        assembledValue = mergedArr;
+      }
+
+      versions[key] = await saveCollectionInTx(
+        client,
+        key,
+        assembledValue,
+        actor.username || 'admin'
+      );
+    }
+
+    await client.query('DELETE FROM app_import_staging WHERE import_id = $1', [cleanImportId]);
+
+    await client.query(
+      `INSERT INTO app_metadata (meta_key, meta_value, updated_at)
+       VALUES ('seed_state', $1::jsonb, NOW())
+       ON CONFLICT (meta_key) DO UPDATE
+       SET meta_value = EXCLUDED.meta_value, updated_at = NOW()`,
+      [
+        safePgJsonStringify({
+          initializedByUser: true,
+          source,
+          updatedAt: new Date().toISOString(),
+        }),
+      ]
+    );
+
+    await logAuditAction(
+      client,
+      actor.id || null,
+      actor.username || 'admin',
+      'IMPORT',
+      '*',
+      stagedKeys.length,
+      { source, chunked: true },
+      ipAddress
+    );
+
+    await client.query('COMMIT');
+    return { versions, importedCollections: stagedKeys.length };
   } catch (err: any) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;

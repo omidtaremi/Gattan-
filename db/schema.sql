@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS app_audit_logs (
 CREATE INDEX IF NOT EXISTS idx_app_audit_logs_created_at ON app_audit_logs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_app_audit_logs_username ON app_audit_logs (username);
 
+-- 7. جدول موقت دریافت تکه‌ای بکاپ‌های حجیم اکسل و انتقال پایگاه داده (Staged Chunked Import)
+CREATE TABLE IF NOT EXISTS app_import_staging (
+  import_id TEXT NOT NULL,
+  collection_key TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  total_chunks INTEGER NOT NULL DEFAULT 1,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (import_id, collection_key, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_import_staging_created_at ON app_import_staging (created_at);
+
 -- ============================================================================
 -- نماهای تحلیلی استاندارد SQL (Views) جهت گزارش‌گیری مستقیم در psql / BI
 -- ============================================================================

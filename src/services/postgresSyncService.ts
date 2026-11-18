@@ -243,6 +243,15 @@ export async function syncDeltaToPostgres(
   };
 }
 
+interface StagedChunkPayload {
+  collectionKey: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: unknown;
+}
+
+const MAX_STAGE_BATCH_BYTES = 380_000;
+
 export async function importDatabaseToPostgres(
   database: AppDatabase,
   source = 'manual_migration'
@@ -252,20 +261,155 @@ export async function importDatabaseToPostgres(
   importedCollections?: number;
   error?: string;
 }> {
-  const res = await fetch('/api/db/import', {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ database, source }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    return { ok: false, error: data.error || 'خطا در انتقال داده‌ها به PostgreSQL' };
+  try {
+    const dbRecord = database as unknown as Record<string, unknown>;
+    const keys = Object.keys(dbRecord).filter(
+      (k) =>
+        k !== 'users' &&
+        k !== 'currentUser' &&
+        k !== 'syncStatus' &&
+        k !== 'lastSyncTime' &&
+        k !== 'syncLogs' &&
+        k !== 'selectedPeriodId' &&
+        dbRecord[k] !== undefined
+    );
+
+    const chunks: Array<{ payload: StagedChunkPayload; byteEstimate: number }> = [];
+
+    for (const key of keys) {
+      const val = dbRecord[key];
+      let serializedLen = 0;
+      try {
+        serializedLen = JSON.stringify(val).length;
+      } catch {
+        return { ok: false, error: `خطا در آماده‌سازی داده‌های بخش ${key} برای ارسال به سرور.` };
+      }
+
+      if (Array.isArray(val) && val.length > 0 && serializedLen > MAX_STAGE_BATCH_BYTES) {
+        // Dynamically slice array into chunks under MAX_STAGE_BATCH_BYTES
+        const slices: unknown[][] = [];
+        let currentSlice: unknown[] = [];
+        let currentBytes = 2;
+
+        for (let i = 0; i < val.length; i++) {
+          const item = val[i];
+          const itemLen = JSON.stringify(item).length + 1;
+          if (currentSlice.length > 0 && currentBytes + itemLen > MAX_STAGE_BATCH_BYTES) {
+            slices.push(currentSlice);
+            currentSlice = [item];
+            currentBytes = 2 + itemLen;
+          } else {
+            currentSlice.push(item);
+            currentBytes += itemLen;
+          }
+        }
+        if (currentSlice.length > 0) {
+          slices.push(currentSlice);
+        }
+
+        const totalChunks = slices.length;
+        slices.forEach((sliceData, idx) => {
+          chunks.push({
+            payload: {
+              collectionKey: key,
+              chunkIndex: idx,
+              totalChunks,
+              data: sliceData,
+            },
+            byteEstimate: MAX_STAGE_BATCH_BYTES,
+          });
+        });
+      } else {
+        chunks.push({
+          payload: {
+            collectionKey: key,
+            chunkIndex: 0,
+            totalChunks: 1,
+            data: val,
+          },
+          byteEstimate: serializedLen + key.length + 64,
+        });
+      }
+    }
+
+    // Estimate total JSON size: if tiny (< 320KB), single /api/db/import works immediately
+    const totalEstimatedBytes = chunks.reduce((sum, c) => sum + c.byteEstimate, 0);
+    if (totalEstimatedBytes < 320_000) {
+      const res = await fetch('/api/db/import', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ database, source }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, error: data.error || `خطای سرور (${res.status}) در انتقال داده‌ها به PostgreSQL` };
+      }
+      return {
+        ok: true,
+        versions: data.versions,
+        importedCollections: data.importedCollections,
+      };
+    }
+
+    // Large payload path: send in <= ~380KB batches via /api/db/import/stage then /api/db/import/commit
+    const importId = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    let currentBatch: StagedChunkPayload[] = [];
+    let currentBatchBytes = 0;
+
+    const flushBatch = async (batch: StagedChunkPayload[]) => {
+      if (batch.length === 0) return;
+      const stageRes = await fetch('/api/db/import/stage', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ importId, chunks: batch }),
+      });
+      const stageData = await stageRes.json().catch(() => ({}));
+      if (!stageRes.ok) {
+        throw new Error(stageData.error || `خطای سرور (${stageRes.status}) در ارسال بسته داده به PostgreSQL`);
+      }
+    };
+
+    for (const item of chunks) {
+      if (currentBatch.length > 0 && currentBatchBytes + item.byteEstimate > MAX_STAGE_BATCH_BYTES) {
+        await flushBatch(currentBatch);
+        currentBatch = [];
+        currentBatchBytes = 0;
+      }
+      currentBatch.push(item.payload);
+      currentBatchBytes += item.byteEstimate;
+    }
+    if (currentBatch.length > 0) {
+      await flushBatch(currentBatch);
+    }
+
+    const commitRes = await fetch('/api/db/import/commit', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        importId,
+        source,
+        users: Array.isArray(database.users) ? database.users : [],
+      }),
+    });
+    const commitData = await commitRes.json().catch(() => ({}));
+    if (!commitRes.ok) {
+      return {
+        ok: false,
+        error: commitData.error || `خطای سرور (${commitRes.status}) در نهایی‌سازی انتقال داده‌ها به PostgreSQL`,
+      };
+    }
+
+    return {
+      ok: true,
+      versions: commitData.versions,
+      importedCollections: commitData.importedCollections,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: `خطای ارتباط با سرور PostgreSQL هنگام ارسال داده‌ها: ${err?.message || String(err)}`,
+    };
   }
-  return {
-    ok: true,
-    versions: data.versions,
-    importedCollections: data.importedCollections,
-  };
 }
 
 export async function fetchAdminUsers(): Promise<{ ok: boolean; users: User[]; error?: string }> {

@@ -24,6 +24,8 @@ import {
   loadCollectionsFromPg,
   syncCollectionsDeltaToPg,
   importFullDatabaseToPg,
+  stageImportChunksInPg,
+  commitStagedImportInPg,
   getAuditLogsFromPg,
   type PgUserPublic,
 } from './src/server/pgDb.ts';
@@ -338,6 +340,36 @@ async function startServer() {
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در انتقال پایگاه داده' });
+    }
+  });
+
+  app.post('/api/db/import/stage', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { importId, chunks } = req.body || {};
+      const result = await stageImportChunksInPg(
+        req.authUser!,
+        String(importId || ''),
+        Array.isArray(chunks) ? chunks : []
+      );
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در ارسال بسته داده به صف PostgreSQL' });
+    }
+  });
+
+  app.post('/api/db/import/commit', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { importId, source, users } = req.body || {};
+      const result = await commitStagedImportInPg(
+        req.authUser!,
+        String(importId || ''),
+        String(source || 'chunked_import'),
+        users,
+        getClientIp(req)
+      );
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در نهایی‌سازی ذخیره داده‌ها در PostgreSQL' });
     }
   });
 
