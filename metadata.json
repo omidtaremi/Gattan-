@@ -1,0 +1,6 @@
+{
+  "name": "Gatan Comprehensive System",
+  "description": "Comprehensive system for management of inventory, suppliers, monthly sales, COGS calculation, orders, payroll, and expenses with offline support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

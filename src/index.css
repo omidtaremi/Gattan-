@@ -1,0 +1,434 @@
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@100;300;450;600;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Libre+Barcode+39&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Vazirmatn", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Vazirmatn", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* ==========================================================================
+   PREMIUM GRAPHITE ARCHITECTURE FOR PROFESSIONAL FINANCIAL UTILITIES
+   ========================================================================== */
+
+body {
+  font-family: 'Vazirmatn', Tahoma, sans-serif !important;
+  font-feature-settings: "ss05" 1, "locl" 1 !important;
+  background-color: #0a0b10 !important;
+  background-image: radial-gradient(at top, rgba(16, 185, 129, 0.03) 0%, transparent 70%) !important;
+  color: #f3f4f6 !important;
+  min-height: 100vh;
+}
+
+/* Glassmorphism & High-contrast Graphite Container Panels */
+.bg-white {
+  background-color: rgba(17, 19, 26, 0.8) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(16px) !important;
+  color: #f3f4f6 !important;
+}
+
+/* Inner Slate and Nested Form Containers */
+.bg-slate-50, .bg-gray-50, .bg-slate-150, .bg-slate-100/10, .bg-slate-100/20, .bg-zinc-900/30 {
+  background-color: rgba(26, 29, 39, 0.5) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  color: #e5e7eb !important;
+}
+
+/* Card and component lines borders */
+.border-slate-100, .border-slate-200, .border-gray-100, .border-zinc-800, .border-zinc-100 {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+.border-slate-300, .border-zinc-300 {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Pure light/dark Contrast Typographic Elements */
+.text-slate-900, .text-slate-800, .text-slate-700, .text-gray-900, .text-slate-950, .text-zinc-950, .text-slate-950 {
+  color: #f9fafb !important;
+}
+
+.text-slate-600, .text-slate-500, .text-zinc-600, .text-zinc-500 {
+  color: #9ca3af !important;
+}
+
+.text-slate-400, .text-zinc-400, .text-slate-450 {
+  color: #6b7280 !important;
+}
+
+/* Hover behaviors for graphite skins */
+.hover\:bg-slate-50:hover, .hover\:bg-gray-50:hover, .hover\:bg-slate-100:hover, .hover\:bg-slate-100/30:hover {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+  color: #ffffff !important;
+}
+
+/* Professional Tables Styling inside Dark Graphite Theme */
+tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+
+tr:hover {
+  background-color: rgba(255, 255, 255, 0.015) !important;
+}
+
+th {
+  color: #9ca3af !important;
+  font-weight: 600 !important;
+  background-color: rgba(13, 14, 21, 0.82) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+td {
+  color: #d1d5db !important;
+  border-color: rgba(255, 255, 255, 0.03) !important;
+}
+
+/* ACCENTS & COLOR ROLES (INTUITIVE SEMANTICS FIXED) */
+
+/* Green / Emerald Accents (Success, Adds, Financial Profit) */
+.bg-emerald-50 {
+  background-color: rgba(16, 185, 129, 0.08) !important;
+  border: 1px solid rgba(16, 185, 129, 0.2) !important;
+}
+.text-emerald-700, .text-emerald-600, .text-emerald-800, .text-emerald-500 {
+  color: #10b981 !important;
+}
+.bg-emerald-600, .bg-emerald-500 {
+  background-color: #059669 !important;
+  color: #ffffff !important;
+}
+.bg-emerald-600:hover, .bg-emerald-500:hover {
+  background-color: #10b981 !important;
+}
+
+/* Rose / Red Accents (Warning, Delete, Damage, Alerts) */
+.bg-rose-50 {
+  background-color: rgba(244, 63, 94, 0.08) !important;
+  border: 1px solid rgba(244, 63, 94, 0.2) !important;
+}
+.text-rose-700, .text-rose-600, .text-rose-800, .text-rose-500 {
+  color: #f43f5e !important;
+}
+.bg-rose-600, .bg-rose-500 {
+  background-color: #e11d48 !important;
+  color: #ffffff !important;
+}
+.bg-rose-600:hover, .bg-rose-500:hover {
+  background-color: #f43f5e !important;
+}
+.text-rose-450, .text-rose-400 {
+  color: #fb7185 !important;
+}
+.border-rose-200, .border-rose-300 {
+  border-color: rgba(244, 63, 94, 0.2) !important;
+}
+
+/* Indigo / Purple Accents */
+.text-indigo-600, .text-indigo-500, .text-indigo-400 {
+  color: #818cf8 !important;
+}
+.bg-indigo-600 {
+  background-color: #4f46e5 !important;
+}
+.bg-indigo-600:hover {
+  background-color: #6366f1 !important;
+}
+
+/* Unified Web Forms Skinning (Perfect Contrast fields with sleek Graphite theme) */
+input[type="text"], input[type="number"], input[type="search"], select, textarea {
+  background-color: #11131a !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #fafafa !important;
+  border-radius: 12px !important;
+  padding: 0.6rem 0.8rem !important;
+  font-family: 'Vazirmatn', sans-serif !important;
+  font-feature-settings: "ss05" 1, "locl" 1 !important;
+  transition: all 0.2s ease;
+}
+
+input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus, select:focus, textarea:focus {
+  border-color: #10b981 !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15) !important;
+  background-color: #161822 !important;
+}
+
+option {
+  background-color: #11131a !important;
+  color: #fafafa !important;
+}
+
+/* Custom UI Polish & Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0b10;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f212d;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2e3042;
+}
+
+/* Nice glow items */
+.shadow-neon-glow {
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.08);
+}
+.active-tab-glow {
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-scaleIn {
+  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ==========================================================================
+   OFFICIAL PRINTABLE DOCUMENT & PREVIEW ENGINE (HIGH FIDELITY A4)
+   Optimized for Black-and-White Printing & Toner Conservation
+   ========================================================================== */
+.official-print-sheet {
+  background-color: #ffffff !important;
+  background: #ffffff !important;
+  color: #000000 !important;
+  font-family: 'Vazirmatn', Tahoma, 'B Nazanin', Arial, sans-serif !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  box-sizing: border-box !important;
+}
+
+.official-print-sheet,
+.official-print-sheet * {
+  box-sizing: border-box !important;
+  color: #000000 !important;
+  text-shadow: none !important;
+}
+
+/* Force pure white background on all child elements in both screen preview and print */
+.official-print-sheet div,
+.official-print-sheet p,
+.official-print-sheet span,
+.official-print-sheet strong,
+.official-print-sheet b,
+.official-print-sheet em,
+.official-print-sheet table,
+.official-print-sheet thead,
+.official-print-sheet tbody,
+.official-print-sheet tr,
+.official-print-sheet th,
+.official-print-sheet td,
+.official-print-sheet .bg-white,
+.official-print-sheet [class*="bg-"] {
+  background-color: #ffffff !important;
+  background: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.official-print-sheet table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  margin: 0 !important;
+}
+
+.official-print-sheet th {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  border: 1px solid #000000 !important;
+  font-weight: 900 !important;
+  text-align: center !important;
+}
+
+.official-print-sheet td {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  border: 1px solid #000000 !important;
+}
+
+.official-print-sheet tr.even-row td,
+.official-print-sheet tr.odd-row td {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}
+
+.official-print-sheet tr.total-row td {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  font-weight: 900 !important;
+  border-top: 2px solid #000000 !important;
+  border-bottom: 2px solid #000000 !important;
+}
+
+.official-print-sheet .border,
+.official-print-sheet .border-2,
+.official-print-sheet .border-t,
+.official-print-sheet .border-b,
+.official-print-sheet .border-l,
+.official-print-sheet .border-r,
+.official-print-sheet .border-t-2,
+.official-print-sheet .border-b-2,
+.official-print-sheet .border-dashed,
+.official-print-sheet .divide-black > * + * {
+  border-color: #000000 !important;
+}
+
+@media print {
+  /* 1. When settlement sheet is being printed, completely hide the entire application (#root) and all sibling elements */
+  body.settlement-print-active > #root,
+  body:has(#settlement-print-portal) > #root,
+  body:has(#printable-settlement-form) > #root,
+  body.settlement-print-active > *:not(#settlement-print-portal),
+  body:has(#settlement-print-portal) > *:not(#settlement-print-portal) {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  /* 2. Global clean print canvas reset */
+  html, body {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    background-image: none !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  
+  .print\:hidden,
+  .no-print,
+  nav,
+  aside,
+  header {
+    display: none !important;
+  }
+
+  /* 3. The isolated settlement portal container */
+  #settlement-print-portal {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* Remove any interactive scale zoom so print is 100% standard A4 */
+  #settlement-print-portal,
+  #settlement-print-portal * {
+    transform: none !important;
+  }
+
+  #settlement-print-portal button,
+  #settlement-print-portal .print\:hidden {
+    display: none !important;
+  }
+
+  /* 4. High-fidelity A4 printable sheet */
+  .official-print-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    page-break-after: avoid;
+    break-inside: auto;
+  }
+
+  /* Ensure all text inside the print sheet prints crisp black and legible */
+  .official-print-sheet p,
+  .official-print-sheet span,
+  .official-print-sheet td,
+  .official-print-sheet th,
+  .official-print-sheet h1,
+  .official-print-sheet h2,
+  .official-print-sheet h3,
+  .official-print-sheet div,
+  .official-print-sheet strong,
+  .official-print-sheet b,
+  .official-print-sheet em {
+    color: #000000 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Pure white backgrounds for all elements in print */
+  .official-print-sheet div,
+  .official-print-sheet table,
+  .official-print-sheet tr,
+  .official-print-sheet td,
+  .official-print-sheet th {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Crisp black borders for printing */
+  .official-print-sheet table,
+  .official-print-sheet th,
+  .official-print-sheet td {
+    border-color: #000000 !important;
+  }
+
+  .official-print-sheet th {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-weight: 900 !important;
+    border: 1px solid #000000 !important;
+  }
+
+  .official-print-sheet td {
+    border: 1px solid #000000 !important;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+  }
+
+  .official-print-sheet .border,
+  .official-print-sheet .border-2 {
+    border-color: #000000 !important;
+  }
+
+  .official-print-sheet .border-dashed {
+    border-color: #000000 !important;
+  }
+  
+  @page {
+    size: A4 portrait;
+    margin: 8mm 6mm 10mm 6mm;
+  }
+}
+
