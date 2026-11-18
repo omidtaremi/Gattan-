@@ -9,8 +9,9 @@ import {
   Personnel, PayrollPeriod, PayrollItem, PersonnelAllocation, PeriodOverhead, ProcurementOrder, StockCountAudit, StockCount,
   PurchaseInvoice, Shift, ShiftAssignment, AppDatabase, ProductionSection,
   MonthlyWorkdaySetting, PayrollCalculationRules, OfficialHoliday,
-  Customer, CustomerCategory
+  Customer, CustomerCategory, UserRoleDefinition
 } from './types';
+import { DEFAULT_USER_ROLES, normalizePermissions } from './shared/rbac';
 import { pushToSqlServer, pullFromSqlServer, testSqlServerConnection } from './services/sqlServerService';
 import { saveToIndexedDB, loadFromIndexedDB } from './utils/idbStorage';
 import {
@@ -284,6 +285,7 @@ export function getInitialDatabase(): AppDatabase {
       { id: 'sec-3', name: 'خط تزیین و خنک‌کاری', minStaff: 1 },
       { id: 'sec-4', name: 'بسته‌بندی و لیبل‌زنی', minStaff: 2 }
     ],
+    roles: DEFAULT_USER_ROLES.map(r => ({ ...r, permissions: [...r.permissions] })),
     users: defaultUsers,
     currentUser: defaultUsers[0],
     googleSheetsUrl: '',
@@ -1053,7 +1055,7 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
     'periods', 'itemCategories', 'items', 'suppliers', 'productCategories', 'departments', 'products',
     'salesPeriods', 'productSales', 'unitConversions', 'productFormulas', 'personnel',
     'payrollPeriods', 'payrollItems', 'personnelAllocations', 'periodOverheads',
-    'procurementOrders', 'stockCountAudits', 'stockCounts', 'purchaseInvoices', 'users',
+    'procurementOrders', 'stockCountAudits', 'stockCounts', 'purchaseInvoices', 'roles', 'users',
     'dailyProductionSegments', 'shifts', 'shiftAssignments', 'productionSections', 'salaryBaseRates',
     'personnelContracts', 'insuredSalaryItems', 'personnelCategories', 'monthlyWorkdaySettings', 'officialHolidays',
     'customers', 'customerCategories',
@@ -1136,6 +1138,44 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
   if (!merged.currentUser) {
     merged.currentUser = schema.currentUser;
   }
+
+  // Ensure roles array contains system admin role and any custom roles assigned to users
+  const currentRoles: UserRoleDefinition[] = Array.isArray(merged.roles) && merged.roles.length > 0
+    ? merged.roles.map((r: any) => ({
+        id: String(r.id || `role-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+        name: String(r.name || '').trim(),
+        description: r.description ? String(r.description) : '',
+        permissions: normalizePermissions(Array.isArray(r.permissions) ? r.permissions : []),
+        isSystem: Boolean(r.isSystem || r.name === 'مدیر ارشد'),
+        createdAt: r.createdAt,
+      })).filter((r: UserRoleDefinition) => Boolean(r.name))
+    : DEFAULT_USER_ROLES.map(r => ({ ...r, permissions: [...r.permissions] }));
+
+  if (!currentRoles.some(r => r.name === 'مدیر ارشد')) {
+    currentRoles.unshift({ ...DEFAULT_USER_ROLES[0], permissions: ['*'] });
+  } else {
+    for (let i = 0; i < currentRoles.length; i++) {
+      if (currentRoles[i].name === 'مدیر ارشد') {
+        currentRoles[i] = { ...currentRoles[i], permissions: ['*'], isSystem: true };
+      }
+    }
+  }
+
+  const knownRoleNames = new Set(currentRoles.map(r => r.name));
+  (merged.users || []).forEach((u: any, idx: number) => {
+    const rName = String(u?.role || '').trim();
+    if (rName && !knownRoleNames.has(rName)) {
+      knownRoleNames.add(rName);
+      currentRoles.push({
+        id: `role-custom-${idx}-${rName.slice(0, 12)}`,
+        name: rName,
+        description: 'نقش بازیابی شده از لیست کاربران',
+        permissions: normalizePermissions(Array.isArray(u.permissions) ? u.permissions : []),
+        isSystem: false,
+      });
+    }
+  });
+  merged.roles = currentRoles;
   // Guarantee default personnel categories are present
   const normCatTxt = (s?: string) => String(s || '').trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ');
   if (!merged.personnelCategories) {

@@ -20,6 +20,10 @@ import {
   createUserAdminInPg,
   updateUserAdminInPg,
   deleteUserAdminInPg,
+  getRolesAdminFromPg,
+  createRoleAdminInPg,
+  updateRoleAdminInPg,
+  deleteRoleAdminInPg,
   getCollectionVersionsFromPg,
   loadCollectionsFromPg,
   syncCollectionsDeltaToPg,
@@ -277,6 +281,58 @@ async function startServer() {
     }
   });
 
+  // 3b. Admin Role Definition Management Routes (RBAC)
+  app.get('/api/roles', requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      const roles = await getRolesAdminFromPg();
+      res.json({ ok: true, roles });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت نقش‌های کاربری' });
+    }
+  });
+
+  app.post('/api/roles', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const created = await createRoleAdminInPg(
+        req.authUser!,
+        req.body || {},
+        getClientIp(req)
+      );
+      res.status(201).json({ ok: true, role: created });
+    } catch (err: any) {
+      const msg = err?.code === '23505' ? 'نقشی با این نام قبلاً تعریف شده است.' : (err?.message || 'خطا در تعریف نقش جدید');
+      res.status(400).json({ ok: false, error: msg });
+    }
+  });
+
+  app.put('/api/roles/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const updated = await updateRoleAdminInPg(
+        req.authUser!,
+        String(req.params.id),
+        req.body || {},
+        getClientIp(req)
+      );
+      res.json({ ok: true, role: updated });
+    } catch (err: any) {
+      const msg = err?.code === '23505' ? 'نام نقش وارد شده تکراری است.' : (err?.message || 'خطا در ویرایش نقش کاربری');
+      res.status(400).json({ ok: false, error: msg });
+    }
+  });
+
+  app.delete('/api/roles/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await deleteRoleAdminInPg(
+        req.authUser!,
+        String(req.params.id),
+        getClientIp(req)
+      );
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در حذف نقش کاربری' });
+    }
+  });
+
   // 4. Shared Database Read / Delta Sync / Import Routes
   app.get('/api/db', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
@@ -359,13 +415,14 @@ async function startServer() {
 
   app.post('/api/db/import/commit', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { importId, source, users } = req.body || {};
+      const { importId, source, users, roles } = req.body || {};
       const result = await commitStagedImportInPg(
         req.authUser!,
         String(importId || ''),
         String(source || 'chunked_import'),
         users,
-        getClientIp(req)
+        getClientIp(req),
+        roles
       );
       res.json({ ok: true, ...result });
     } catch (err: any) {

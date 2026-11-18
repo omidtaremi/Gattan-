@@ -543,7 +543,7 @@ export default function App() {
     const keys = Object.keys(latest) as Array<keyof AppDatabase>;
     for (const k of keys) {
       const keyStr = String(k);
-      if (CLIENT_ONLY_DB_KEYS.has(keyStr) || keyStr === 'users') continue;
+      if (CLIENT_ONLY_DB_KEYS.has(keyStr) || keyStr === 'users' || keyStr === 'roles') continue;
       if (!canWriteCollection(user, keyStr)) continue;
       if (!baseline || latest[k] !== baseline[k]) {
         changes[keyStr] = latest[k];

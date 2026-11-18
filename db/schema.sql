@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS app_users (
 
 CREATE INDEX IF NOT EXISTS idx_app_users_username ON app_users (username);
 
+-- 1b. جدول تعریف نقش‌های کاربری و دسترسی‌های پیش‌فرض (Custom User Roles)
+CREATE TABLE IF NOT EXISTS app_roles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  is_system BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_roles_name ON app_roles (name);
+
 -- 2. جدول نشست‌های احراز هویت کاربران (Sessions)
 CREATE TABLE IF NOT EXISTS app_sessions (
   token_hash TEXT PRIMARY KEY,

@@ -687,6 +687,16 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   }));
   addSheet(usersExport, "Users");
 
+  // 21b. User Roles
+  const rolesExport = (db.roles || []).map(r => ({
+    id: r.id,
+    name: r.name,
+    description: r.description || '',
+    permissions: (r.permissions || []).join(';'),
+    isSystem: Boolean(r.isSystem),
+  }));
+  addSheet(rolesExport, "User_Roles");
+
   // 22. Shifts
   const shiftsExport = (db.shifts || []).map(s => ({
     id: s.id,
@@ -1399,7 +1409,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
     'product_formulas', 'personnel', 'payroll_periods', 'payroll_items',
     'payroll_calculations', 'personnel_allocations', 'period_overheads',
     'procurement_orders', 'stock_audits', 'stock_counts', 'purchase_invoices',
-    'daily_production_segments', 'users', 'shifts', 'shift_assignments',
+    'daily_production_segments', 'users', 'user_roles', 'shifts', 'shift_assignments',
     'production_sections', 'shift_schemes', 'sales_transactions', 'warehouses',
     'salary_base_rates', 'personnel_contracts', 'seniority_rate_rules',
     'custom_banks', 'insured_salary_items', 'personnel_categories',
@@ -1950,7 +1960,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         id: String(r.id || ''),
         username: uname,
         fullName: String(r.fullName || ''),
-        role: (r.role || 'کاربر انبار') as any,
+        role: String(r.role || 'کاربر انبار').trim(),
         permissions: typeof r.permissions === 'string'
           ? r.permissions.split(';').filter((x: string) => x)
           : (Array.isArray(r.permissions) ? r.permissions : ['*']),
@@ -1959,6 +1969,20 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         secretCode: String(r.secretCode || '123456'),
       };
     }).filter(x => x.id && x.username);
+  }
+
+  // 21b. User Roles
+  const rolesRows = getSheetData("User_Roles");
+  if (rolesRows) {
+    result.roles = rolesRows.map(r => ({
+      id: String(r.id || `role-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+      name: String(r.name || '').trim(),
+      description: String(r.description || ''),
+      permissions: typeof r.permissions === 'string'
+        ? r.permissions.split(';').map((x: string) => x.trim()).filter(Boolean)
+        : (Array.isArray(r.permissions) ? r.permissions : []),
+      isSystem: parseBoolean(r.isSystem) || String(r.name || '').trim() === 'مدیر ارشد',
+    })).filter(x => x.name);
   }
 
   // 22. Shifts

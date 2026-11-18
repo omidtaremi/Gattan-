@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AppDatabase, User } from '../types';
+import { AppDatabase, User, UserRoleDefinition } from '../types';
 
 const TOKEN_STORAGE_KEY = 'gatan_pg_auth_token';
 
@@ -266,6 +266,7 @@ export async function importDatabaseToPostgres(
     const keys = Object.keys(dbRecord).filter(
       (k) =>
         k !== 'users' &&
+        k !== 'roles' &&
         k !== 'currentUser' &&
         k !== 'syncStatus' &&
         k !== 'lastSyncTime' &&
@@ -389,6 +390,7 @@ export async function importDatabaseToPostgres(
         importId,
         source,
         users: Array.isArray(database.users) ? database.users : [],
+        roles: Array.isArray(database.roles) ? database.roles : [],
       }),
     });
     const commitData = await commitRes.json().catch(() => ({}));
@@ -467,6 +469,60 @@ export async function updateAdminUser(
 
 export async function deleteAdminUser(userId: string): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error };
+  return { ok: true };
+}
+
+export async function fetchAdminRoles(): Promise<{ ok: boolean; roles: UserRoleDefinition[]; error?: string }> {
+  const res = await fetch('/api/roles', {
+    method: 'GET',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, roles: [], error: data.error };
+  return { ok: true, roles: data.roles || [] };
+}
+
+export async function createAdminRole(payload: {
+  name: string;
+  description?: string;
+  permissions: string[];
+}): Promise<{ ok: boolean; role?: UserRoleDefinition; error?: string }> {
+  const res = await fetch('/api/roles', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error };
+  return { ok: true, role: data.role };
+}
+
+export async function updateAdminRole(
+  roleId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    permissions?: string[];
+    applyToExistingUsers?: boolean;
+  }
+): Promise<{ ok: boolean; role?: UserRoleDefinition; error?: string }> {
+  const res = await fetch(`/api/roles/${encodeURIComponent(roleId)}`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error };
+  return { ok: true, role: data.role };
+}
+
+export async function deleteAdminRole(roleId: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/roles/${encodeURIComponent(roleId)}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });

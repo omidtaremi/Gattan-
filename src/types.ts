@@ -625,6 +625,7 @@ export interface AppDatabase {
   shiftAssignments?: ShiftAssignment[];
   productionSections?: ProductionSection[];
   shiftSchemes?: ShiftScheme[];
+  roles?: import('./shared/rbac').UserRoleDefinition[];
   users: any[];
   currentUser: any | null;
   googleSheetsUrl: string;
@@ -823,16 +824,19 @@ export interface ProcurementOrder {
   notes?: string;
 }
 
+export type { UserRoleDefinition } from './shared/rbac';
+
 export interface User {
   id: string;
   username: string;
   fullName: string;
   name?: string; // added to support name fallback
-  role: 'مدیر ارشد' | 'حسابدار' | 'کاربر انبار';
+  role: string;
   permissions: string[];
   password: string;
   is2FA: boolean;
   secretCode: string;
+  isActive?: boolean;
 }
 
 export interface ProductionOven {

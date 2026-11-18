@@ -37,6 +37,39 @@ export const SYSTEM_TABS: SystemTabDefinition[] = [
   { id: 'cloud_sync', label: 'دیتابیس، کاربران و سرور (PostgreSQL)' },
 ];
 
+export interface UserRoleDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  permissions: string[];
+  isSystem?: boolean;
+  createdAt?: string;
+}
+
+export const DEFAULT_USER_ROLES: UserRoleDefinition[] = [
+  {
+    id: 'role-admin',
+    name: 'مدیر ارشد',
+    description: 'دسترسی کامل به تمامی بخش‌ها، تنظیمات سرور و مدیریت کاربران',
+    permissions: ['*'],
+    isSystem: true,
+  },
+  {
+    id: 'role-accountant',
+    name: 'حسابدار',
+    description: 'مدیریت اسناد مالی، فروش، بهای تمام شده، خزانه، حقوق و هزینه‌ها',
+    permissions: ['items', 'suppliers', 'customers', 'sales', 'cogs', 'procurement', 'treasury', 'payroll', 'expenses'],
+    isSystem: false,
+  },
+  {
+    id: 'role-warehouse',
+    name: 'کاربر انبار',
+    description: 'مدیریت کالا و انبارگردانی، سفارش کالا و ترازوی فروشگاهی',
+    permissions: ['items', 'procurement', 'dibal_scale'],
+    isSystem: false,
+  },
+];
+
 export interface AuthUserLike {
   id?: string;
   username?: string;
@@ -61,6 +94,11 @@ export function normalizePermissions(permissions?: string[] | null): string[] {
     }
   }
   return Array.from(mapped);
+}
+
+export function isFullAccessRole(role?: { name?: string; permissions?: string[] } | null): boolean {
+  if (!role) return false;
+  return role.name === 'مدیر ارشد' || normalizePermissions(role.permissions).includes('*');
 }
 
 export function isAdminUser(user?: AuthUserLike | null): boolean {
@@ -104,6 +142,7 @@ export const COLLECTION_WRITE_PERMISSIONS: Record<string, string[]> = {
   // Admin-only collections
   periods: ['*'],
   users: ['*'],
+  roles: ['*'],
   googleSheetsUrl: ['*'],
   sqlServerConfig: ['*'],
 

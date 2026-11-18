@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { AppDatabase, User } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { AppDatabase, User, UserRoleDefinition } from '../types';
 import {
   Server, Database, RefreshCw, Upload, Download, Users, Shield, Plus,
-  Edit3, Trash2, CheckCircle, AlertTriangle, HardDrive, Link, Activity, Lock, ChevronDown, ChevronUp
+  Edit3, Trash2, CheckCircle, AlertTriangle, HardDrive, Link, Activity, Lock, ChevronDown, ChevronUp, KeyRound
 } from 'lucide-react';
 import { toPersianDigits } from '../utils/persianUtils';
-import { SYSTEM_TABS, isAdminUser } from '../shared/rbac';
+import { DEFAULT_USER_ROLES, SYSTEM_TABS, isAdminUser, isFullAccessRole, normalizePermissions } from '../shared/rbac';
 import {
   type ServerDbStatus,
   type AuditLogItem,
@@ -18,6 +18,10 @@ import {
   createAdminUser,
   updateAdminUser,
   deleteAdminUser,
+  fetchAdminRoles,
+  createAdminRole,
+  updateAdminRole,
+  deleteAdminRole,
   fetchAuditLogs,
 } from '../services/postgresSyncService';
 
@@ -47,11 +51,25 @@ interface DatabaseServerPanelProps {
   onDownloadSqlServerScript: () => void;
 }
 
-const ROLE_PRESETS: Record<string, string[]> = {
-  'مدیر ارشد': ['*'],
-  'حسابدار': ['items', 'suppliers', 'customers', 'sales', 'cogs', 'procurement', 'treasury', 'payroll', 'expenses'],
-  'کاربر انبار': ['items', 'procurement', 'dibal_scale'],
-};
+function getEffectiveLocalRoles(db: AppDatabase): UserRoleDefinition[] {
+  const base = Array.isArray(db.roles) && db.roles.length > 0 ? db.roles : DEFAULT_USER_ROLES;
+  const seen = new Set(base.map((r) => r.name));
+  const combined = base.map((r) => ({ ...r, permissions: normalizePermissions(r.permissions) }));
+  (db.users || []).forEach((u: any, idx: number) => {
+    const rName = String(u?.role || '').trim();
+    if (rName && !seen.has(rName)) {
+      seen.add(rName);
+      combined.push({
+        id: `role-local-${idx}-${rName.slice(0, 10)}`,
+        name: rName,
+        description: '',
+        permissions: normalizePermissions(Array.isArray(u.permissions) ? u.permissions : []),
+        isSystem: rName === 'مدیر ارشد',
+      });
+    }
+  });
+  return combined;
+}
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes <= 0) return '۰ بایت';
@@ -89,6 +107,7 @@ export default function DatabaseServerPanel({
 
   const [isBusy, setIsBusy] = useState(false);
   const [usersList, setUsersList] = useState<User[]>(db.users || []);
+  const [rolesList, setRolesList] = useState<UserRoleDefinition[]>(() => getEffectiveLocalRoles(db));
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const [showLegacySql, setShowLegacySql] = useState(false);
 
@@ -97,7 +116,7 @@ export default function DatabaseServerPanel({
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [formUsername, setFormUsername] = useState('');
   const [formFullName, setFormFullName] = useState('');
-  const [formRole, setFormRole] = useState<'مدیر ارشد' | 'حسابدار' | 'کاربر انبار'>('حسابدار');
+  const [formRole, setFormRole] = useState<string>('حسابدار');
   const [formPassword, setFormPassword] = useState('');
   const [formPermissions, setFormPermissions] = useState<string[]>(['items', 'sales']);
   const [formIs2FA, setFormIs2FA] = useState(false);
@@ -105,27 +124,74 @@ export default function DatabaseServerPanel({
   const [formIsActive, setFormIsActive] = useState(true);
   const [userFormError, setUserFormError] = useState('');
 
+  // Role Add/Edit modal state
+  const [editingRole, setEditingRole] = useState<UserRoleDefinition | null>(null);
+  const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
+  const [roleNameInput, setRoleNameInput] = useState('');
+  const [roleDescInput, setRoleDescInput] = useState('');
+  const [rolePermsInput, setRolePermsInput] = useState<string[]>(['items']);
+  const [roleFullAccessInput, setRoleFullAccessInput] = useState(false);
+  const [applyRolePermsToUsers, setApplyRolePermsToUsers] = useState(true);
+  const [roleFormError, setRoleFormError] = useState('');
+
   const loadPgAdminData = async () => {
     if (!isPgConnected || !isAdmin) {
       setUsersList(db.users || []);
+      setRolesList(getEffectiveLocalRoles(db));
       return;
     }
-    const [uRes, logsRes] = await Promise.all([fetchAdminUsers(), fetchAuditLogs(40)]);
+    const [uRes, rRes, logsRes] = await Promise.all([
+      fetchAdminUsers(),
+      fetchAdminRoles(),
+      fetchAuditLogs(40),
+    ]);
     if (uRes.ok) setUsersList(uRes.users);
+    if (rRes.ok && rRes.roles.length > 0) {
+      setRolesList(rRes.roles);
+    }
     setAuditLogs(logsRes);
   };
 
   useEffect(() => {
     loadPgAdminData();
-  }, [isPgConnected, isAdmin, db.users]);
+  }, [isPgConnected, isAdmin, db.users, db.roles]);
+
+  const rolePermissionsMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    rolesList.forEach((r) => {
+      map.set(r.name, normalizePermissions(r.permissions));
+    });
+    return map;
+  }, [rolesList]);
+
+  const userCountByRole = useMemo(() => {
+    const counts = new Map<string, number>();
+    usersList.forEach((u: any) => {
+      const rName = String(u?.role || '').trim();
+      if (rName) counts.set(rName, (counts.get(rName) || 0) + 1);
+    });
+    return counts;
+  }, [usersList]);
+
+  const getPresetForRole = (roleName: string): string[] => {
+    if (roleName === 'مدیر ارشد') return ['*'];
+    const found = rolePermissionsMap.get(roleName);
+    if (found) return [...found];
+    const def = DEFAULT_USER_ROLES.find((r) => r.name === roleName);
+    return def ? [...def.permissions] : ['items'];
+  };
 
   const openCreateUserModal = () => {
+    const defaultRoleObj = rolesList.find((r) => r.name === 'حسابدار')
+      || rolesList.find((r) => !isFullAccessRole(r))
+      || rolesList[0];
+    const defaultRoleName = defaultRoleObj?.name || 'حسابدار';
     setEditingUser(null);
     setFormUsername('');
     setFormFullName('');
-    setFormRole('حسابدار');
+    setFormRole(defaultRoleName);
     setFormPassword('');
-    setFormPermissions(ROLE_PRESETS['حسابدار']);
+    setFormPermissions(getPresetForRole(defaultRoleName));
     setFormIs2FA(false);
     setFormSecretCode('123456');
     setFormIsActive(true);
@@ -137,7 +203,7 @@ export default function DatabaseServerPanel({
     setEditingUser(u);
     setFormUsername(u.username || '');
     setFormFullName(u.fullName || u.name || '');
-    setFormRole((u.role as any) || 'کاربر انبار');
+    setFormRole(String(u.role || 'کاربر انبار'));
     setFormPassword('');
     setFormPermissions(Array.isArray(u.permissions) ? u.permissions : []);
     setFormIs2FA(Boolean(u.is2FA));
@@ -147,10 +213,10 @@ export default function DatabaseServerPanel({
     setIsUserModalOpen(true);
   };
 
-  const handleRoleChange = (nextRole: 'مدیر ارشد' | 'حسابدار' | 'کاربر انبار') => {
+  const handleRoleChange = (nextRole: string) => {
     setFormRole(nextRole);
-    if (!editingUser) {
-      setFormPermissions(ROLE_PRESETS[nextRole] || ['items']);
+    if (!editingUser || editingUser.role !== nextRole) {
+      setFormPermissions(getPresetForRole(nextRole));
     }
   };
 
@@ -164,6 +230,175 @@ export default function DatabaseServerPanel({
       setFormPermissions(cleaned.filter((p) => p !== tabId));
     } else {
       setFormPermissions([...cleaned, tabId]);
+    }
+  };
+
+  // Role Modal Handlers
+  const openCreateRoleModal = () => {
+    setEditingRole(null);
+    setRoleNameInput('');
+    setRoleDescInput('');
+    setRolePermsInput(['items']);
+    setRoleFullAccessInput(false);
+    setApplyRolePermsToUsers(false);
+    setRoleFormError('');
+    setIsRoleModalOpen(true);
+  };
+
+  const openEditRoleModal = (role: UserRoleDefinition) => {
+    const full = isFullAccessRole(role);
+    setEditingRole(role);
+    setRoleNameInput(role.name);
+    setRoleDescInput(role.description || '');
+    setRoleFullAccessInput(full);
+    setRolePermsInput(
+      full
+        ? SYSTEM_TABS.filter((t) => t.id !== 'cloud_sync').map((t) => t.id)
+        : normalizePermissions(role.permissions).filter((p) => p !== '*')
+    );
+    setApplyRolePermsToUsers(true);
+    setRoleFormError('');
+    setIsRoleModalOpen(true);
+  };
+
+  const toggleRolePermission = (tabId: string) => {
+    if (rolePermsInput.includes(tabId)) {
+      setRolePermsInput(rolePermsInput.filter((p) => p !== tabId));
+    } else {
+      setRolePermsInput([...rolePermsInput, tabId]);
+    }
+  };
+
+  const handleSaveRole = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRoleFormError('');
+    const cleanName = roleNameInput.trim();
+    if (!cleanName) {
+      setRoleFormError('وارد کردن نام نقش کاربری الزامی است.');
+      return;
+    }
+
+    const isProtectedAdmin = Boolean(editingRole?.isSystem || editingRole?.name === 'مدیر ارشد' || cleanName === 'مدیر ارشد');
+    const finalPerms = isProtectedAdmin || roleFullAccessInput
+      ? ['*']
+      : normalizePermissions(rolePermsInput);
+
+    if (!isProtectedAdmin && !roleFullAccessInput && finalPerms.length === 0) {
+      setRoleFormError('حداقل یک بخش مجاز برای این نقش انتخاب کنید یا دسترسی کامل را فعال نمایید.');
+      return;
+    }
+
+    if (isPgConnected) {
+      setIsBusy(true);
+      try {
+        if (editingRole) {
+          const res = await updateAdminRole(editingRole.id, {
+            name: cleanName,
+            description: roleDescInput.trim(),
+            permissions: finalPerms,
+            applyToExistingUsers: applyRolePermsToUsers,
+          });
+          if (!res.ok) {
+            setRoleFormError(res.error || 'خطا در ویرایش نقش کاربری');
+            return;
+          }
+        } else {
+          const res = await createAdminRole({
+            name: cleanName,
+            description: roleDescInput.trim(),
+            permissions: finalPerms,
+          });
+          if (!res.ok) {
+            setRoleFormError(res.error || 'خطا در ایجاد نقش کاربری');
+            return;
+          }
+        }
+        await loadPgAdminData();
+        setIsRoleModalOpen(false);
+      } finally {
+        setIsBusy(false);
+      }
+    } else {
+      const currentRoles = getEffectiveLocalRoles(db);
+      const duplicate = currentRoles.find(
+        (r) => r.name === cleanName && (!editingRole || r.id !== editingRole.id)
+      );
+      if (duplicate) {
+        setRoleFormError('نقشی با این نام قبلاً تعریف شده است.');
+        return;
+      }
+
+      let nextRoles: UserRoleDefinition[];
+      let nextUsers = [...(db.users || [])];
+
+      if (editingRole) {
+        const oldName = editingRole.name;
+        nextRoles = currentRoles.map((r) =>
+          r.id === editingRole.id
+            ? {
+                ...r,
+                name: cleanName,
+                description: roleDescInput.trim(),
+                permissions: finalPerms,
+                isSystem: isProtectedAdmin,
+              }
+            : r
+        );
+        if (oldName !== cleanName || applyRolePermsToUsers) {
+          nextUsers = nextUsers.map((u: any) => {
+            if (u.role !== oldName) return u;
+            return {
+              ...u,
+              role: cleanName,
+              permissions: applyRolePermsToUsers ? finalPerms : u.permissions,
+            };
+          });
+        }
+      } else {
+        const newRole: UserRoleDefinition = {
+          id: `role-${Date.now()}`,
+          name: cleanName,
+          description: roleDescInput.trim(),
+          permissions: finalPerms,
+          isSystem: false,
+        };
+        nextRoles = [...currentRoles, newRole];
+      }
+
+      onUpdateDb({ ...db, roles: nextRoles, users: nextUsers });
+      setIsRoleModalOpen(false);
+    }
+  };
+
+  const handleDeleteRole = async (role: UserRoleDefinition) => {
+    if (role.isSystem || role.name === 'مدیر ارشد') {
+      alert('نقش سیستمی «مدیر ارشد» قابل حذف نیست.');
+      return;
+    }
+    const assignedCount = userCountByRole.get(role.name) || 0;
+    if (assignedCount > 0) {
+      alert(`این نقش هم‌اکنون به ${toPersianDigits(assignedCount)} کاربر اختصاص دارد. ابتدا نقش کاربران مرتبط را تغییر دهید.`);
+      return;
+    }
+    if (!window.confirm(`آیا از حذف نقش «${role.name}» اطمینان دارید؟`)) {
+      return;
+    }
+
+    if (isPgConnected) {
+      setIsBusy(true);
+      try {
+        const res = await deleteAdminRole(role.id);
+        if (!res.ok) {
+          alert(res.error || 'خطا در حذف نقش کاربری');
+          return;
+        }
+        await loadPgAdminData();
+      } finally {
+        setIsBusy(false);
+      }
+    } else {
+      const nextRoles = getEffectiveLocalRoles(db).filter((r) => r.id !== role.id);
+      onUpdateDb({ ...db, roles: nextRoles });
     }
   };
 
@@ -419,16 +654,97 @@ export default function DatabaseServerPanel({
                 مدیریت کاربران و سطوح دسترسی مشترک (RBAC)
               </h3>
               <p className="text-[11px] text-zinc-400 mt-0.5">
-                هر کاربر با نام کاربری و رمز عبور اختصاصی وارد شده و تنها ماژول‌های مجاز خود را مشاهده و ویرایش می‌کند.
+                نقش‌های سازمانی دلخواه خود را با سطوح دسترسی پیش‌فرض تعریف کنید و کاربران را به هر نقش متصل نمایید.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={openCreateUserModal}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
-            >
-              <Plus className="h-4 w-4" /> افزودن کاربر جدید
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={openCreateRoleModal}
+                className="bg-zinc-800 hover:bg-zinc-750 text-amber-300 border border-amber-700/40 text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                <KeyRound className="h-4 w-4" /> تعریف نقش کاربری جدید
+              </button>
+              <button
+                type="button"
+                onClick={openCreateUserModal}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                <Plus className="h-4 w-4" /> افزودن کاربر جدید
+              </button>
+            </div>
+          </div>
+
+          {/* Defined Roles Strip */}
+          <div className="bg-zinc-950/60 border border-zinc-800/80 rounded-2xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+                <Shield className="h-4 w-4 text-amber-400" />
+                نقش‌های کاربری تعریف‌شده ({toPersianDigits(rolesList.length)} نقش)
+              </span>
+              <span className="text-[10.5px] text-zinc-500">
+                با ویرایش هر نقش می‌توانید دسترسی پیش‌فرض ماژول‌های آن را تغییر دهید
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {rolesList.map((role) => {
+                const full = isFullAccessRole(role);
+                const permCount = normalizePermissions(role.permissions).filter((p) => p !== '*').length;
+                const assignedUsers = userCountByRole.get(role.name) || 0;
+                return (
+                  <div
+                    key={role.id}
+                    className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 flex items-start justify-between gap-2"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs font-bold text-white truncate">{role.name}</span>
+                        {role.isSystem && (
+                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-800/50">
+                            سیستمی
+                          </span>
+                        )}
+                        <span className="text-[10px] text-zinc-400 font-mono">
+                          ({toPersianDigits(assignedUsers)} کاربر)
+                        </span>
+                      </div>
+                      <div className="text-[10.5px] text-zinc-400">
+                        {full ? (
+                          <span className="text-emerald-400 font-semibold">دسترسی کامل به کل سامانه</span>
+                        ) : permCount === 0 ? (
+                          <span className="text-rose-400">بدون بخش مجاز پیش‌فرض</span>
+                        ) : (
+                          <span>دسترسی به {toPersianDigits(permCount)} ماژول پیش‌فرض</span>
+                        )}
+                      </div>
+                      {role.description && (
+                        <p className="text-[10px] text-zinc-500 line-clamp-1">{role.description}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => openEditRoleModal(role)}
+                        className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 rounded-lg cursor-pointer transition-colors"
+                        title="ویرایش نقش و دسترسی‌های پیش‌فرض"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                      {!role.isSystem && role.name !== 'مدیر ارشد' && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRole(role)}
+                          className="p-1.5 bg-zinc-800 hover:bg-rose-950 text-rose-400 rounded-lg cursor-pointer transition-colors"
+                          title="حذف نقش کاربری"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -739,15 +1055,29 @@ export default function DatabaseServerPanel({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold text-zinc-400 mb-1">نقش کاربر</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-zinc-400">نقش کاربر</label>
+                    <button
+                      type="button"
+                      onClick={() => setFormPermissions(getPresetForRole(formRole))}
+                      className="text-[10px] text-amber-300 hover:text-amber-200 cursor-pointer"
+                    >
+                      اعمال دسترسی پیش‌فرض نقش
+                    </button>
+                  </div>
                   <select
                     value={formRole}
-                    onChange={(e) => handleRoleChange(e.target.value as any)}
+                    onChange={(e) => handleRoleChange(e.target.value)}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
                   >
-                    <option value="مدیر ارشد">مدیر ارشد (دسترسی کامل)</option>
-                    <option value="حسابدار">حسابدار</option>
-                    <option value="کاربر انبار">کاربر انبار</option>
+                    {rolesList.map((r) => (
+                      <option key={r.id} value={r.name}>
+                        {r.name}{isFullAccessRole(r) ? ' (دسترسی کامل)' : ''}
+                      </option>
+                    ))}
+                    {!rolesList.some((r) => r.name === formRole) && formRole && (
+                      <option value={formRole}>{formRole}</option>
+                    )}
                   </select>
                 </div>
                 <div>
@@ -800,25 +1130,42 @@ export default function DatabaseServerPanel({
 
               {formRole !== 'مدیر ارشد' && (
                 <div className="space-y-2 border-t border-zinc-800 pt-3">
-                  <label className="block text-[11px] font-bold text-zinc-300">
-                    بخش‌های مجاز برای مشاهده و ویرایش:
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 bg-zinc-900/60 rounded-xl border border-zinc-800">
-                    {SYSTEM_TABS.filter((t) => t.id !== 'cloud_sync').map((tab) => {
-                      const checked = formPermissions.includes('*') || formPermissions.includes(tab.id);
-                      return (
-                        <label key={tab.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => togglePermission(tab.id)}
-                            className="rounded border-zinc-700 bg-zinc-950 text-emerald-500"
-                          />
-                          <span>{tab.label}</span>
-                        </label>
-                      );
-                    })}
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-bold text-zinc-300">
+                      بخش‌های مجاز برای مشاهده و ویرایش:
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px] text-emerald-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formPermissions.includes('*')}
+                        onChange={() => togglePermission('*')}
+                        className="rounded border-zinc-700 bg-zinc-950 text-emerald-500"
+                      />
+                      دسترسی کامل (*)
+                    </label>
                   </div>
+                  {formPermissions.includes('*') ? (
+                    <div className="p-2.5 rounded-xl bg-emerald-950/25 border border-emerald-800/40 text-[11px] text-emerald-300">
+                      این کاربر دارای دسترسی کامل به تمامی ماژول‌های سامانه است.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                      {SYSTEM_TABS.filter((t) => t.id !== 'cloud_sync').map((tab) => {
+                        const checked = formPermissions.includes(tab.id);
+                        return (
+                          <label key={tab.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => togglePermission(tab.id)}
+                              className="rounded border-zinc-700 bg-zinc-950 text-emerald-500"
+                            />
+                            <span>{tab.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -839,6 +1186,145 @@ export default function DatabaseServerPanel({
                 <button
                   type="button"
                   onClick={() => setIsUserModalOpen(false)}
+                  className="px-4 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold cursor-pointer hover:bg-zinc-800"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Role Definition Modal */}
+      {isRoleModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-black text-white flex items-center gap-2">
+                <KeyRound className="h-4.5 w-4.5 text-amber-400" />
+                {editingRole ? `ویرایش نقش کاربری: ${editingRole.name}` : 'تعریف نقش کاربری جدید'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsRoleModalOpen(false)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRole} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                  نام نقش کاربری (مثال: مدیر فروش، مسئول تولید، صندوقدار)
+                </label>
+                <input
+                  type="text"
+                  required
+                  disabled={Boolean(editingRole?.isSystem || editingRole?.name === 'مدیر ارشد')}
+                  value={roleNameInput}
+                  onChange={(e) => setRoleNameInput(e.target.value)}
+                  placeholder="نام نقش را وارد کنید..."
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500 disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-zinc-400 mb-1">توضیحات نقش (اختیاری)</label>
+                <input
+                  type="text"
+                  value={roleDescInput}
+                  onChange={(e) => setRoleDescInput(e.target.value)}
+                  placeholder="شرح مختصر مسئولیت‌های این نقش..."
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="space-y-2 border-t border-zinc-800 pt-3">
+                <label className="flex items-center gap-2 text-xs font-bold text-emerald-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    disabled={Boolean(editingRole?.isSystem || editingRole?.name === 'مدیر ارشد')}
+                    checked={roleFullAccessInput}
+                    onChange={(e) => setRoleFullAccessInput(e.target.checked)}
+                    className="rounded border-zinc-700 bg-zinc-900 text-emerald-500"
+                  />
+                  دسترسی کامل مدیر ارشد به تمامی ماژول‌ها و تنظیمات سیستم (*)
+                </label>
+
+                {!roleFullAccessInput && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[11px] font-bold text-zinc-300">
+                        ماژول‌های مجاز پیش‌فرض برای این نقش:
+                      </label>
+                      <div className="flex gap-3 text-[10.5px]">
+                        <button
+                          type="button"
+                          onClick={() => setRolePermsInput(SYSTEM_TABS.filter((t) => t.id !== 'cloud_sync').map((t) => t.id))}
+                          className="text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                        >
+                          انتخاب همه
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRolePermsInput([])}
+                          className="text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                        >
+                          پاک کردن
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                      {SYSTEM_TABS.filter((t) => t.id !== 'cloud_sync').map((tab) => {
+                        const checked = rolePermsInput.includes(tab.id);
+                        return (
+                          <label key={tab.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleRolePermission(tab.id)}
+                              className="rounded border-zinc-700 bg-zinc-950 text-amber-500"
+                            />
+                            <span>{tab.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {editingRole && (
+                <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={applyRolePermsToUsers}
+                    onChange={(e) => setApplyRolePermsToUsers(e.target.checked)}
+                    className="rounded border-zinc-700 bg-zinc-900 text-amber-500"
+                  />
+                  بروزرسانی دسترسی کاربران فعلی دارای این نقش مطابق تنظیمات جدید
+                </label>
+              )}
+
+              {roleFormError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/50 text-rose-300 text-xs">
+                  {roleFormError}
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isBusy}
+                  className="flex-1 bg-amber-600 hover:bg-amber-500 text-white py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-colors"
+                >
+                  {editingRole ? 'ذخیره تغییرات نقش' : 'ثبت نقش جدید'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRoleModalOpen(false)}
                   className="px-4 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold cursor-pointer hover:bg-zinc-800"
                 >
                   انصراف

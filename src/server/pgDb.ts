@@ -10,10 +10,13 @@ import { Pool, type PoolClient } from 'pg';
 import bcrypt from 'bcryptjs';
 import {
   CLIENT_ONLY_DB_KEYS,
+  DEFAULT_USER_ROLES,
   canWriteCollection,
   isAdminUser,
+  isFullAccessRole,
   normalizePermissions,
   type AuthUserLike,
+  type UserRoleDefinition,
 } from '../shared/rbac.ts';
 
 const CHUNK_SIZE = 5000;
@@ -165,6 +168,18 @@ function mapUserRow(row: any, includeSecret = false): PgUserPublic {
   return mapped;
 }
 
+function mapRoleRow(row: any): UserRoleDefinition {
+  const perms = Array.isArray(row.permissions) ? row.permissions : [];
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    description: row.description ? String(row.description) : '',
+    permissions: normalizePermissions(perms),
+    isSystem: Boolean(row.is_system || row.name === 'مدیر ارشد'),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : (row.created_at ? String(row.created_at) : undefined),
+  };
+}
+
 export function isPostgresModeActive(): boolean {
   return isPgConfigured && isPgReady && pool !== null;
 }
@@ -215,6 +230,55 @@ export async function initPostgres(): Promise<void> {
           );
         }
         console.log('[PostgreSQL] Seeded default RBAC users (admin, acc, store).');
+      }
+
+      // Seed default roles if app_roles is empty and sync any custom roles already present in app_users
+      const { rows: roleCountRows } = await client.query<{ cnt: string }>(
+        'SELECT COUNT(*)::text AS cnt FROM app_roles'
+      );
+      const rolesCount = Number(roleCountRows[0]?.cnt || 0);
+      if (rolesCount === 0) {
+        for (const roleDef of DEFAULT_USER_ROLES) {
+          await client.query(
+            `INSERT INTO app_roles (id, name, description, permissions, is_system)
+             VALUES ($1, $2, $3, $4::jsonb, $5)
+             ON CONFLICT (name) DO NOTHING`,
+            [
+              roleDef.id,
+              roleDef.name,
+              roleDef.description || '',
+              JSON.stringify(roleDef.permissions),
+              Boolean(roleDef.isSystem),
+            ]
+          );
+        }
+      }
+      // Guarantee any existing user roles exist in app_roles as well
+      const { rows: distinctUserRoles } = await client.query<{ role: string; permissions: unknown }>(
+        `SELECT DISTINCT ON (role) role, permissions
+         FROM app_users
+         WHERE TRIM(COALESCE(role, '')) <> ''
+         ORDER BY role, created_at ASC`
+      );
+      for (const ur of distinctUserRoles) {
+        const rName = String(ur.role || '').trim();
+        if (!rName) continue;
+        const rPerms = rName === 'مدیر ارشد'
+          ? ['*']
+          : normalizePermissions(Array.isArray(ur.permissions) ? (ur.permissions as string[]) : []);
+        const rId = `role-${crypto.createHash('md5').update(rName).digest('hex').slice(0, 10)}`;
+        await client.query(
+          `INSERT INTO app_roles (id, name, description, permissions, is_system)
+           VALUES ($1, $2, $3, $4::jsonb, $5)
+           ON CONFLICT (name) DO NOTHING`,
+          [
+            rId,
+            rName,
+            rName === 'مدیر ارشد' ? 'دسترسی کامل به تمامی بخش‌های سامانه' : '',
+            JSON.stringify(rPerms),
+            rName === 'مدیر ارشد',
+          ]
+        );
       }
 
       isPgReady = true;
@@ -607,6 +671,178 @@ export async function deleteUserAdminInPg(
   );
 }
 
+export async function getRolesAdminFromPg(): Promise<UserRoleDefinition[]> {
+  if (!pool) return [];
+  const { rows } = await pool.query(
+    `SELECT * FROM app_roles
+     ORDER BY CASE WHEN name = 'مدیر ارشد' THEN 0 WHEN is_system THEN 1 ELSE 2 END, created_at ASC`
+  );
+  return rows.map((r) => mapRoleRow(r));
+}
+
+export async function createRoleAdminInPg(
+  actor: AuthUserLike,
+  input: {
+    id?: string;
+    name: string;
+    description?: string;
+    permissions: string[];
+  },
+  ipAddress?: string
+): Promise<UserRoleDefinition> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+
+  const cleanName = String(input.name || '').trim();
+  if (!cleanName) throw new Error('نام نقش کاربری الزامی است.');
+
+  const cleanDesc = String(input.description || '').trim();
+  const perms = isFullAccessRole({ name: cleanName, permissions: input.permissions })
+    ? ['*']
+    : normalizePermissions(input.permissions);
+  const id = input.id?.trim() || `role-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const { rows } = await pool.query(
+    `INSERT INTO app_roles (id, name, description, permissions, is_system)
+     VALUES ($1, $2, $3, $4::jsonb, $5)
+     RETURNING *`,
+    [id, cleanName, cleanDesc, safePgJsonStringify(perms), cleanName === 'مدیر ارشد']
+  );
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'ROLE_CREATE',
+    'roles',
+    1,
+    { roleName: cleanName, permissions: perms },
+    ipAddress
+  );
+
+  return mapRoleRow(rows[0]);
+}
+
+export async function updateRoleAdminInPg(
+  actor: AuthUserLike,
+  roleId: string,
+  input: {
+    name?: string;
+    description?: string;
+    permissions?: string[];
+    applyToExistingUsers?: boolean;
+  },
+  ipAddress?: string
+): Promise<UserRoleDefinition> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const existingRes = await client.query('SELECT * FROM app_roles WHERE id = $1 LIMIT 1', [roleId]);
+    const existing = existingRes.rows[0];
+    if (!existing) throw new Error('نقش کاربری مورد نظر یافت نشد.');
+
+    const oldName = String(existing.name);
+    const isProtectedAdmin = Boolean(existing.is_system) || oldName === 'مدیر ارشد';
+    const nextName = input.name !== undefined ? String(input.name).trim() : oldName;
+    if (!nextName) throw new Error('نام نقش کاربری نمی‌تواند خالی باشد.');
+    if (isProtectedAdmin && nextName !== 'مدیر ارشد') {
+      throw new Error('نام نقش سیستمی «مدیر ارشد» قابل تغییر نیست.');
+    }
+
+    const nextDesc = input.description !== undefined ? String(input.description).trim() : String(existing.description || '');
+    const rawNextPerms = input.permissions !== undefined
+      ? input.permissions
+      : (Array.isArray(existing.permissions) ? existing.permissions : []);
+    const nextPerms = isProtectedAdmin || isFullAccessRole({ name: nextName, permissions: rawNextPerms })
+      ? ['*']
+      : normalizePermissions(rawNextPerms);
+
+    const { rows } = await client.query(
+      `UPDATE app_roles
+       SET name = $1,
+           description = $2,
+           permissions = $3::jsonb,
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [nextName, nextDesc, safePgJsonStringify(nextPerms), roleId]
+    );
+
+    if (nextName !== oldName) {
+      await client.query(
+        'UPDATE app_users SET role = $1, updated_at = NOW() WHERE role = $2',
+        [nextName, oldName]
+      );
+    }
+
+    if (input.applyToExistingUsers) {
+      await client.query(
+        'UPDATE app_users SET permissions = $1::jsonb, updated_at = NOW() WHERE role = $2',
+        [safePgJsonStringify(nextPerms), nextName]
+      );
+    }
+
+    await logAuditAction(
+      client,
+      actor.id || null,
+      actor.username || 'admin',
+      'ROLE_UPDATE',
+      'roles',
+      1,
+      { roleId, oldName, nextName, applyToExistingUsers: Boolean(input.applyToExistingUsers) },
+      ipAddress
+    );
+
+    await client.query('COMMIT');
+    return mapRoleRow(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteRoleAdminInPg(
+  actor: AuthUserLike,
+  roleId: string,
+  ipAddress?: string
+): Promise<void> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+
+  const existingRes = await pool.query('SELECT * FROM app_roles WHERE id = $1 LIMIT 1', [roleId]);
+  const existing = existingRes.rows[0];
+  if (!existing) throw new Error('نقش کاربری مورد نظر یافت نشد.');
+
+  if (existing.is_system || existing.name === 'مدیر ارشد') {
+    throw new Error('نقش سیستمی «مدیر ارشد» قابل حذف نیست.');
+  }
+
+  const { rows: usageRows } = await pool.query<{ cnt: string }>(
+    'SELECT COUNT(*)::text AS cnt FROM app_users WHERE role = $1',
+    [existing.name]
+  );
+  const usedCount = Number(usageRows[0]?.cnt || 0);
+  if (usedCount > 0) {
+    throw new Error(`این نقش هم‌اکنون به ${usedCount} کاربر اختصاص دارد. ابتدا نقش کاربران مرتبط را تغییر دهید.`);
+  }
+
+  await pool.query('DELETE FROM app_roles WHERE id = $1', [roleId]);
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'ROLE_DELETE',
+    'roles',
+    1,
+    { roleName: existing.name },
+    ipAddress
+  );
+}
+
 async function logAuditAction(
   executor: Pool | PoolClient,
   userId: string | null,
@@ -757,7 +993,7 @@ export async function loadCollectionsFromPg(
     }
   }
 
-  // Always inject live sanitized users list from app_users unless restricted subset did not ask for users
+  // Always inject live sanitized users and roles lists from app_users / app_roles
   if (!filterKeys || filterKeys.includes('users')) {
     const { rows: userRows } = await pool.query(
       `SELECT * FROM app_users ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, created_at ASC`
@@ -767,6 +1003,10 @@ export async function loadCollectionsFromPg(
       ...mapUserRow(u, adminView),
       password: '',
     }));
+  }
+
+  if (!filterKeys || filterKeys.includes('roles')) {
+    collections.roles = await getRolesAdminFromPg();
   }
 
   // Check if app_collections overall is empty
@@ -805,7 +1045,7 @@ export async function syncCollectionsDeltaToPg(
   }
 
   const candidateKeys = Object.keys(changes || {}).filter(
-    (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users'
+    (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles'
   );
 
   if (candidateKeys.length === 0) {
@@ -997,6 +1237,57 @@ async function upsertImportedUsersInTx(
   }
 }
 
+async function upsertImportedRolesInTx(
+  client: PoolClient,
+  rawRoles: unknown
+): Promise<void> {
+  if (!Array.isArray(rawRoles) || rawRoles.length === 0) return;
+
+  for (const rawRole of rawRoles as any[]) {
+    if (!rawRole || !rawRole.name) continue;
+    const rName = String(rawRole.name).trim();
+    if (!rName) continue;
+
+    const isSys = Boolean(rawRole.isSystem) || rName === 'مدیر ارشد';
+    const perms = isSys || isFullAccessRole({ name: rName, permissions: rawRole.permissions })
+      ? ['*']
+      : normalizePermissions(Array.isArray(rawRole.permissions) ? rawRole.permissions : []);
+    const desc = String(rawRole.description || '').trim();
+
+    const existingByName = await client.query<{ id: string }>(
+      'SELECT id FROM app_roles WHERE name = $1 LIMIT 1',
+      [rName]
+    );
+    if (existingByName.rows[0]) {
+      await client.query(
+        `UPDATE app_roles
+         SET description = $1,
+             permissions = $2::jsonb,
+             is_system = $3,
+             updated_at = NOW()
+         WHERE name = $4`,
+        [desc, safePgJsonStringify(perms), isSys, rName]
+      );
+      continue;
+    }
+
+    let candidateId = String(rawRole.id || `role-${Date.now()}`).trim() || `role-${Date.now()}`;
+    const existingById = await client.query<{ id: string }>(
+      'SELECT id FROM app_roles WHERE id = $1 LIMIT 1',
+      [candidateId]
+    );
+    if (existingById.rows[0]) {
+      candidateId = `role-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    await client.query(
+      `INSERT INTO app_roles (id, name, description, permissions, is_system)
+       VALUES ($1, $2, $3, $4::jsonb, $5)`,
+      [candidateId, rName, desc, safePgJsonStringify(perms), isSys]
+    );
+  }
+}
+
 export async function importFullDatabaseToPg(
   actor: AuthUserLike,
   fullDb: Record<string, unknown>,
@@ -1012,10 +1303,11 @@ export async function importFullDatabaseToPg(
   try {
     await client.query('BEGIN');
 
+    await upsertImportedRolesInTx(client, fullDb.roles);
     await upsertImportedUsersInTx(client, fullDb.users);
 
     const keys = Object.keys(fullDb).filter(
-      (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && fullDb[k] !== undefined
+      (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles' && fullDb[k] !== undefined
     );
 
     const versions: Record<string, number> = {};
@@ -1098,7 +1390,7 @@ export async function stageImportChunksInPg(
     let stagedCount = 0;
     for (const item of chunks) {
       const key = String(item?.collectionKey || '').trim();
-      if (!key || CLIENT_ONLY_DB_KEYS.has(key) || key === 'users') continue;
+      if (!key || CLIENT_ONLY_DB_KEYS.has(key) || key === 'users' || key === 'roles') continue;
       const chunkIdx = Math.max(0, Number(item.chunkIndex) || 0);
       const totalChunks = Math.max(1, Number(item.totalChunks) || 1);
 
@@ -1129,7 +1421,8 @@ export async function commitStagedImportInPg(
   importId: string,
   source: string,
   users?: unknown,
-  ipAddress?: string
+  ipAddress?: string,
+  roles?: unknown
 ): Promise<{ versions: Record<string, number>; importedCollections: number }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
   if (!isAdminUser(actor)) {
@@ -1144,6 +1437,7 @@ export async function commitStagedImportInPg(
   try {
     await client.query('BEGIN');
 
+    await upsertImportedRolesInTx(client, roles);
     await upsertImportedUsersInTx(client, users);
 
     const { rows: stagedKeys } = await client.query<{
@@ -1165,7 +1459,7 @@ export async function commitStagedImportInPg(
     const versions: Record<string, number> = {};
     for (const keyRow of stagedKeys) {
       const key = String(keyRow.collection_key);
-      if (CLIENT_ONLY_DB_KEYS.has(key) || key === 'users') continue;
+      if (CLIENT_ONLY_DB_KEYS.has(key) || key === 'users' || key === 'roles') continue;
 
       const { rows: chunkRows } = await client.query<{
         chunk_index: number;
