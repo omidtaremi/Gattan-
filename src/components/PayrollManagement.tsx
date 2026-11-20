@@ -5476,12 +5476,56 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
   };
 
+  // Resolve departure status & departure date for detailed payroll table & print report
+  const getPayrollDepartureBadgeInfo = (
+    emp: Pick<Personnel, 'employeeCode' | 'isActive' | 'departureDate'> | undefined | null,
+    isDepartedFlag?: boolean
+  ): { isDeparted: boolean; departureDate: string } => {
+    const directDepDate = String(emp?.departureDate || '').trim();
+    const departedInMonth = didEmployeeDepartInMonth(
+      emp,
+      calcYear,
+      calcMonth,
+      db.personnelSettlements,
+      activePeriodId
+    );
+    let resolvedDate = directDepDate;
+
+    if (!resolvedDate && emp?.employeeCode && db.personnelSettlements && db.personnelSettlements.length > 0) {
+      const empCodeNorm = toEnglishDigits(String(emp.employeeCode)).trim();
+      const empSettlements = db.personnelSettlements.filter(s =>
+        (s.settlementType || 'with_departure') !== 'without_departure' &&
+        toEnglishDigits(String(s.employeeCode || '')).trim() === empCodeNorm &&
+        Boolean(s.endDate && String(s.endDate).trim())
+      );
+      const matchedSettlement = empSettlements.find(s => !activePeriodId || !s.periodId || s.periodId === activePeriodId)
+        || empSettlements[empSettlements.length - 1];
+      if (matchedSettlement?.endDate) {
+        resolvedDate = String(matchedSettlement.endDate).trim();
+      }
+    }
+
+    const isDeparted = Boolean(
+      isDepartedFlag ||
+      departedInMonth ||
+      directDepDate ||
+      emp?.isActive === false
+    );
+
+    return {
+      isDeparted,
+      departureDate: resolvedDate
+    };
+  };
+
   // Professional Print Handler for Detailed Salary Calculation Table (جدول محاسبه تفصیلی حقوق و دستمزد پرسنل)
   const handlePrintDetailedSalaryTable = () => {
     let rowsToPrint: Array<{
       index: number;
       employeeCode: string;
       fullName: string;
+      isDeparted: boolean;
+      departureDate: string;
       role: string;
       workedHM: string;
       overtimeHours: number;
@@ -5529,11 +5573,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const otPay = r.overtimePay || 0;
         const friPay = r.fridayWorkPay || 0;
         const holPay = r.totalHolidayWorkPay || 0;
+        const depInfo = getPayrollDepartureBadgeInfo(r.employee, r.isDepartedNoLeavePad);
 
         return {
           index: idx + 1,
           employeeCode: r.employee?.employeeCode || '',
           fullName: `${r.employee?.firstName || ''} ${r.employee?.lastName || ''}`.trim() || r.employee?.employeeCode,
+          isDeparted: depInfo.isDeparted,
+          departureDate: depInfo.departureDate,
           role: r.employee?.role || '',
           workedHM: r.finalWorkedHM || '۰:۰۰',
           overtimeHours: roundMinutesToHourHelper(r.finalOtMinutes),
@@ -5567,6 +5614,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     } else if (monthlyRegisteredPayrollItems && monthlyRegisteredPayrollItems.length > 0) {
       rowsToPrint = monthlyRegisteredPayrollItems.map((item, idx) => {
         const emp = personnelByCodeMap.get(item.employeeCode);
+        const depInfo = getPayrollDepartureBadgeInfo(emp);
         const friPay = item.fridayWorkPay || 0;
         const holPay = item.holidayWorkPay || 0;
         const childAllowance = item.childAllowance || 0;
@@ -5585,6 +5633,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           index: idx + 1,
           employeeCode: item.employeeCode,
           fullName: emp ? `${emp.firstName || ''} ${emp.lastName || ''}`.trim() : item.employeeCode,
+          isDeparted: depInfo.isDeparted,
+          departureDate: depInfo.departureDate,
           role: emp?.role || '',
           workedHM: item.workedHoursHM || '۰:۰۰',
           overtimeHours: parseHMToRoundedHourHelper(item.overtimeHoursHM, item.overtimeHours),
@@ -5706,7 +5756,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const colWeights = colSpecs.map((spec, idx) => {
       if (idx === 2) {
         // Name column wraps nicely onto 1-2 lines so it shouldn't starve numeric columns
-        const maxNameLen = Math.min(20, Math.max(11, ...rowsToPrint.map(r => r.fullName.length)));
+        const maxNameLen = Math.min(20, Math.max(11, ...rowsToPrint.map(r => Math.max(r.fullName.length, r.isDeparted ? (r.departureDate ? 18 : 11) : 0))));
         return Math.max(spec.minUnits, maxNameLen * 0.72);
       }
       let maxContentUnits = measureUnits(spec.totalVal);
@@ -5814,6 +5864,19 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             line-height: 1.14;
             text-align: right;
             font-weight: 700;
+          }
+          .dep-badge {
+            display: inline-block;
+            margin-top: 1.5px;
+            padding: 0.5px 3px;
+            border-radius: 2px;
+            background-color: #ffe4e6 !important;
+            color: #9f1239 !important;
+            border: 0.5px solid #fda4af;
+            font-size: 0.82em;
+            font-weight: 800;
+            line-height: 1.15;
+            white-space: nowrap;
           }
           tfoot td {
             font-size: 0.96em;
@@ -5941,7 +6004,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <tr>
                   <td class="font-mono text-center">${toPersianDigits(r.index)}</td>
                   <td class="font-mono text-center">${toPersianDigits(r.employeeCode)}</td>
-                  <td class="name-cell">${r.fullName}</td>
+                  <td class="name-cell">
+                    <div>${r.fullName}</div>
+                    ${r.isDeparted ? `<div class="dep-badge">ترک کار${r.departureDate ? `: ${toPersianDigits(r.departureDate)}` : ''}</div>` : ''}
+                  </td>
                   
                   <!-- Attendance -->
                   <td class="font-mono text-center">${toPersianDigits(r.workedHM)}</td>
@@ -15769,6 +15835,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 employeeCode: item.employeeCode,
                                 insuranceCode: '-'
                               } as any;
+                              const depInfo = getPayrollDepartureBadgeInfo(emp);
                               const snapRow = lockedPerfSnapByEmpCodeMap.get(String(item.employeeCode || '').trim());
                               const rowWorkDays = item.workDaysCount ?? 30;
                               const rowAttDays = item.attendanceDaysWorked ?? snapRow?.daysWorkedCount ?? snapRow?.attendanceDaysWorked ?? rowWorkDays;
@@ -15798,7 +15865,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   <td className="px-2 py-3 text-center text-slate-700 font-mono border-l font-bold">{toPersianDigits(item.employeeCode)}</td>
                                   <td className="px-2 py-3 text-center text-slate-600 font-mono border-l">{toPersianDigits(emp.insuranceCode || '-')}</td>
                                   <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{emp.firstName}</td>
-                                  <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{emp.lastName}</td>
+                                  <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">
+                                    {emp.lastName}
+                                    {depInfo.isDeparted && (
+                                      <span
+                                        className="mr-1.5 inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-black"
+                                        title={depInfo.departureDate ? `ترک کار در تاریخ ${toPersianDigits(depInfo.departureDate)}` : 'ترک کار — محاسبه کارکرد تا سقف روزهای حضور با جبران کسری از اضافه‌کار/تعطیل‌کاری و مرخصی'}
+                                      >
+                                        ترک کار{depInfo.departureDate ? `: ${toPersianDigits(depInfo.departureDate)}` : ''}
+                                      </span>
+                                    )}
+                                  </td>
 
                                   {/* Group 1: Attendance HM */}
                                   <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-sky-50/10">{toPersianDigits(item.workedHoursHM || '-')}</td>
@@ -15923,14 +16000,18 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{row.employee.firstName}</td>
                               <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">
                                 {row.employee.lastName}
-                                {(row.isDepartedNoLeavePad || !!row.employee.departureDate || row.employee.isActive === false) && (
+                                {(() => {
+                                  const depInfo = getPayrollDepartureBadgeInfo(row.employee, row.isDepartedNoLeavePad);
+                                  if (!depInfo.isDeparted) return null;
+                                  return (
                                     <span
-                                      className="mr-1 inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-black"
-                                      title="ترک کار — محاسبه کارکرد تا سقف روزهای حضور با جبران کسری از اضافه‌کار/تعطیل‌کاری و مرخصی"
+                                      className="mr-1.5 inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-black"
+                                      title={depInfo.departureDate ? `ترک کار در تاریخ ${toPersianDigits(depInfo.departureDate)}` : 'ترک کار — محاسبه کارکرد تا سقف روزهای حضور با جبران کسری از اضافه‌کار/تعطیل‌کاری و مرخصی'}
                                     >
-                                      ترک کار
+                                      ترک کار{depInfo.departureDate ? `: ${toPersianDigits(depInfo.departureDate)}` : ''}
                                     </span>
-                                )}
+                                  );
+                                })()}
                               </td>
                               
                               {/* Group 1: Attendance HM */}
