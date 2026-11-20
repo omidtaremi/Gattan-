@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS app_collection_chunks (
   PRIMARY KEY (collection_key, chunk_index)
 );
 
+-- 4b. جدول ذخیره رکوردبه‌رکورد مجموعه‌های داده برای به‌روزرسانی سریع تفاضلی (Record-Level Delta Storage)
+CREATE TABLE IF NOT EXISTS app_collection_records (
+  collection_key TEXT NOT NULL REFERENCES app_collections(collection_key) ON DELETE CASCADE,
+  record_id TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  data JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (collection_key, record_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_collection_records_order
+  ON app_collection_records (collection_key, sort_order, record_id);
+
 -- 5. جدول فراداده پایگاه داده (Metadata)
 CREATE TABLE IF NOT EXISTS app_metadata (
   meta_key TEXT PRIMARY KEY,
@@ -115,7 +128,17 @@ SELECT
   elem->>'createdAt' AS created_at
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'periods' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'periods' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'name' AS name,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active,
+  r.data->>'startDate' AS start_date,
+  r.data->>'endDate' AS end_date,
+  r.data->>'createdAt' AS created_at
+FROM app_collection_records r
+WHERE r.collection_key = 'periods';
 
 CREATE OR REPLACE VIEW v_items AS
 SELECT
@@ -132,7 +155,22 @@ SELECT
   COALESCE((elem->>'isActive')::boolean, TRUE) AS is_active
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'items' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'items' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'code' AS code,
+  r.data->>'accountId' AS account_id,
+  r.data->>'name' AS name,
+  r.data->>'categoryId' AS category_id,
+  r.data->>'unit' AS unit,
+  r.data->>'barcode' AS barcode,
+  COALESCE((r.data->>'price')::numeric, 0) AS price,
+  COALESCE((r.data->>'reorderThreshold')::numeric, 0) AS reorder_threshold,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active
+FROM app_collection_records r
+WHERE r.collection_key = 'items';
 
 CREATE OR REPLACE VIEW v_products AS
 SELECT
@@ -149,7 +187,22 @@ SELECT
   COALESCE((elem->>'isWip')::boolean, FALSE) AS is_wip
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'products' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'products' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'code' AS code,
+  r.data->>'accountId' AS account_id,
+  r.data->>'name' AS name,
+  r.data->>'categoryId' AS category_id,
+  r.data->>'unit' AS unit,
+  r.data->>'barcode' AS barcode,
+  COALESCE((r.data->>'salePrice')::numeric, 0) AS sale_price,
+  COALESCE((r.data->>'cogsPrice')::numeric, 0) AS cogs_price,
+  COALESCE((r.data->>'isWip')::boolean, FALSE) AS is_wip
+FROM app_collection_records r
+WHERE r.collection_key = 'products';
 
 CREATE OR REPLACE VIEW v_product_formulas AS
 SELECT
@@ -161,7 +214,17 @@ SELECT
   elem->'ingredients' AS ingredients
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'productFormulas' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'productFormulas' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'productId' AS product_account_code,
+  r.data->>'name' AS formula_name,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active,
+  r.data->'ingredients' AS ingredients
+FROM app_collection_records r
+WHERE r.collection_key = 'productFormulas';
 
 CREATE OR REPLACE VIEW v_personnel AS
 SELECT
@@ -176,7 +239,20 @@ SELECT
   COALESCE((elem->>'isActive')::boolean, TRUE) AS is_active
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'personnel' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'personnel' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'employeeCode' AS employee_code,
+  r.data->>'accountCode' AS account_code,
+  r.data->>'attendanceCode' AS attendance_code,
+  COALESCE(r.data->>'firstName', '') AS first_name,
+  COALESCE(r.data->>'lastName', '') AS last_name,
+  r.data->>'nationalId' AS national_id,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active
+FROM app_collection_records r
+WHERE r.collection_key = 'personnel';
 
 CREATE OR REPLACE VIEW v_customers AS
 SELECT
@@ -190,7 +266,19 @@ SELECT
   COALESCE((elem->>'isActive')::boolean, TRUE) AS is_active
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'customers' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'customers' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'code' AS code,
+  r.data->>'accountingCode' AS accounting_code,
+  r.data->>'name' AS name,
+  r.data->>'type' AS customer_type,
+  r.data->>'phone' AS phone,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active
+FROM app_collection_records r
+WHERE r.collection_key = 'customers';
 
 CREATE OR REPLACE VIEW v_suppliers AS
 SELECT
@@ -201,4 +289,13 @@ SELECT
   COALESCE((elem->>'isActive')::boolean, TRUE) AS is_active
 FROM app_collections c,
 LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.data) = 'array' THEN c.data ELSE '[]'::jsonb END) AS elem
-WHERE c.collection_key = 'suppliers' AND c.is_chunked = FALSE;
+WHERE c.collection_key = 'suppliers' AND c.is_chunked = FALSE
+UNION ALL
+SELECT
+  r.data->>'id' AS id,
+  r.data->>'periodId' AS period_id,
+  r.data->>'name' AS name,
+  r.data->>'phone' AS phone,
+  COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active
+FROM app_collection_records r
+WHERE r.collection_key = 'suppliers';

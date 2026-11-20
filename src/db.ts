@@ -1374,6 +1374,72 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
 }
 
 /**
+ * Fast incremental sanitizer for live in-app edits:
+ * Only inspects array collections whose reference actually changed since prevDb,
+ * avoiding full 47-collection scans and cloning on every single edit.
+ */
+export function sanitizeChangedCollections(prevDb: AppDatabase | null, updatedDb: AppDatabase): AppDatabase {
+  if (!prevDb) {
+    return sanitizeAndMergeDatabase(updatedDb);
+  }
+
+  let result: AppDatabase = updatedDb;
+  let clonedResult = false;
+  const ensureMutable = () => {
+    if (!clonedResult) {
+      result = { ...updatedDb };
+      clonedResult = true;
+    }
+    return result as any;
+  };
+
+  const keys = Object.keys(updatedDb) as Array<keyof AppDatabase>;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const nextVal = updatedDb[key];
+    if (nextVal === prevDb[key]) continue;
+    if (!Array.isArray(nextVal)) continue;
+
+    const arr = nextVal as any[];
+    const seenIds = new Set<string>();
+    let needsFix = false;
+    for (let idx = 0; idx < arr.length; idx++) {
+      const item = arr[idx];
+      if (item && typeof item === 'object') {
+        const rawId = item.id ? String(item.id).trim() : '';
+        if (!rawId || seenIds.has(rawId) || rawId !== item.id) {
+          needsFix = true;
+          break;
+        }
+        seenIds.add(rawId);
+      }
+    }
+
+    if (needsFix) {
+      const seenIdsFull = new Set<string>();
+      const fixedArr = arr.map((item: any, idx: number) => {
+        if (item && typeof item === 'object') {
+          let itemId = item.id ? String(item.id).trim() : '';
+          if (!itemId || seenIdsFull.has(itemId)) {
+            itemId = `${String(key)}-${itemId || 'entry'}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
+            seenIdsFull.add(itemId);
+            return { ...item, id: itemId };
+          }
+          seenIdsFull.add(itemId);
+          if (itemId !== item.id) {
+            return { ...item, id: itemId };
+          }
+        }
+        return item;
+      });
+      ensureMutable()[key] = fixedArr;
+    }
+  }
+
+  return result;
+}
+
+/**
  * بارگیری نامتقارن پایگاه داده از IndexedDB (با ظرفیت نامحدود) و مهاجرت خودکار از LocalStorage
  */
 export async function loadDatabaseAsync(): Promise<AppDatabase> {
@@ -1439,6 +1505,8 @@ let pendingBrowserPersistDb: AppDatabase | null = null;
 let isLocalStorageOversized = false;
 let unloadFlushRegistered = false;
 
+let browserSaveSkipLocalStorage = false;
+
 function flushBrowserDatabaseSave() {
   if (browserSaveDebounceTimeout) {
     clearTimeout(browserSaveDebounceTimeout);
@@ -1453,8 +1521,8 @@ function flushBrowserDatabaseSave() {
     console.warn('IndexedDB save notice:', err);
   });
 
-  // 2. Safe local storage write (skip repeated synchronous JSON.stringify once quota is known exceeded)
-  if (!isLocalStorageOversized) {
+  // 2. Safe local storage write (skipped in PostgreSQL server mode or once quota is exceeded to avoid main-thread JSON.stringify lag)
+  if (!isLocalStorageOversized && !browserSaveSkipLocalStorage) {
     try {
       const serialized = JSON.stringify(dbToFlush);
       if (serialized.length > 4_000_000) {
@@ -1474,10 +1542,11 @@ function flushBrowserDatabaseSave() {
   }
 }
 
-export function saveDatabase(db: AppDatabase) {
+export function saveDatabase(db: AppDatabase, options?: { skipLocalStorage?: boolean }) {
   try {
     inMemoryDb = db;
     pendingBrowserPersistDb = db;
+    browserSaveSkipLocalStorage = Boolean(options?.skipLocalStorage);
 
     if (!unloadFlushRegistered && typeof window !== 'undefined') {
       unloadFlushRegistered = true;
@@ -1488,9 +1557,10 @@ export function saveDatabase(db: AppDatabase) {
     if (browserSaveDebounceTimeout) {
       clearTimeout(browserSaveDebounceTimeout);
     }
+    const debounceMs = options?.skipLocalStorage ? 1200 : 350;
     browserSaveDebounceTimeout = setTimeout(() => {
       flushBrowserDatabaseSave();
-    }, 350);
+    }, debounceMs);
 
     // 3. If google sheets webhook script URL is configured and browser is online, queue/sync background
     const isWebHookUrl = Boolean(

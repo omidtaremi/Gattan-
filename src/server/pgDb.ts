@@ -104,14 +104,24 @@ let isPgConfigured = false;
 let isPgReady = false;
 let lastPgError: string | null = null;
 
+function isPlaceholderValue(val?: string): boolean {
+  if (!val) return false;
+  const trimmed = val.trim();
+  return trimmed === '' || trimmed.includes('CHANGE_ME_');
+}
+
 function hasPostgresEnv(): boolean {
-  return Boolean(
-    (process.env.DATABASE_URL && process.env.DATABASE_URL.trim() !== '') ||
-      (process.env.PGHOST &&
-        process.env.PGHOST.trim() !== '' &&
-        process.env.PGDATABASE &&
-        process.env.PGDATABASE.trim() !== '')
-  );
+  const dbUrl = (process.env.DATABASE_URL || '').trim();
+  if (dbUrl && !isPlaceholderValue(dbUrl)) {
+    return true;
+  }
+  const pgHost = (process.env.PGHOST || '').trim();
+  const pgDb = (process.env.PGDATABASE || '').trim();
+  const pgPass = (process.env.PGPASSWORD || '').trim();
+  if (pgHost && pgDb && !isPlaceholderValue(pgHost) && !isPlaceholderValue(pgDb) && !isPlaceholderValue(pgPass)) {
+    return true;
+  }
+  return false;
 }
 
 function createPgPool(): Pool {
@@ -197,6 +207,11 @@ export async function initPostgres(): Promise<void> {
 
   try {
     pool = createPgPool();
+    pool.on('error', (poolErr) => {
+      isPgReady = false;
+      lastPgError = poolErr?.message || String(poolErr);
+      console.warn('[PostgreSQL] Pool background notice:', lastPgError);
+    });
     const client = await pool.connect();
     try {
       const schemaPath = path.resolve(process.cwd(), 'db', 'schema.sql');
@@ -290,7 +305,19 @@ export async function initPostgres(): Promise<void> {
   } catch (err: any) {
     isPgReady = false;
     lastPgError = err?.message || String(err);
-    console.error('[PostgreSQL] Initialization failed:', lastPgError);
+    const code = err?.code || '';
+    if (pool) {
+      await pool.end().catch(() => {});
+      pool = null;
+    }
+    if (code === 'ECONNREFUSED' || lastPgError.includes('ECONNREFUSED')) {
+      isPgConfigured = false;
+      console.warn(
+        `[PostgreSQL] Server unreachable (${lastPgError}). Falling back to local browser storage mode.`
+      );
+    } else {
+      console.error('[PostgreSQL] Initialization failed:', lastPgError);
+    }
   }
 }
 
@@ -872,6 +899,73 @@ async function logAuditAction(
   }
 }
 
+export interface RecordPatchUpsert {
+  id: string;
+  sortOrder?: number;
+  data: Record<string, unknown>;
+}
+
+export interface RecordPatchInput {
+  upserts?: RecordPatchUpsert[];
+  deletes?: string[];
+}
+
+const RECORD_STORE_STUB = JSON.stringify({ __recordStore: true });
+const RECORD_UPSERT_BATCH_SIZE = 1000;
+
+function isRecordStoreMarker(data: unknown): boolean {
+  return Boolean(
+    data &&
+      typeof data === 'object' &&
+      !Array.isArray(data) &&
+      (data as Record<string, unknown>).__recordStore === true
+  );
+}
+
+function canStoreAsRecords(value: unknown): value is Array<Record<string, unknown>> {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const rawId = (item as Record<string, unknown>).id;
+    if (typeof rawId !== 'string' || !rawId.trim()) return false;
+    const cleanId = rawId.trim();
+    if (seen.has(cleanId)) return false;
+    seen.add(cleanId);
+  }
+  return true;
+}
+
+async function bulkUpsertRecordsInTx(
+  client: PoolClient,
+  collectionKey: string,
+  entries: Array<{ id: string; sortOrder: number; data: unknown }>
+): Promise<void> {
+  if (entries.length === 0) return;
+  for (let offset = 0; offset < entries.length; offset += RECORD_UPSERT_BATCH_SIZE) {
+    const batch = entries.slice(offset, offset + RECORD_UPSERT_BATCH_SIZE);
+    const ids: string[] = new Array(batch.length);
+    const orders: number[] = new Array(batch.length);
+    const payloads: string[] = new Array(batch.length);
+    for (let i = 0; i < batch.length; i++) {
+      ids[i] = batch[i].id;
+      orders[i] = batch[i].sortOrder;
+      payloads[i] = safePgJsonStringify(batch[i].data);
+    }
+    await client.query(
+      `INSERT INTO app_collection_records (collection_key, record_id, sort_order, data, updated_at)
+       SELECT $1, r_id, r_ord, r_data, NOW()
+       FROM UNNEST($2::text[], $3::int[], $4::jsonb[]) AS t(r_id, r_ord, r_data)
+       ON CONFLICT (collection_key, record_id) DO UPDATE
+       SET data = EXCLUDED.data,
+           sort_order = CASE WHEN EXCLUDED.sort_order >= 0 THEN EXCLUDED.sort_order ELSE app_collection_records.sort_order END,
+           updated_at = NOW()`,
+      [collectionKey, ids, orders, payloads]
+    );
+  }
+}
+
 async function saveCollectionInTx(
   client: PoolClient,
   collectionKey: string,
@@ -881,9 +975,37 @@ async function saveCollectionInTx(
   await client.query('DELETE FROM app_collection_chunks WHERE collection_key = $1', [
     collectionKey,
   ]);
+  await client.query('DELETE FROM app_collection_records WHERE collection_key = $1', [
+    collectionKey,
+  ]);
 
   const isArr = Array.isArray(value);
   const itemCount = isArr ? (value as unknown[]).length : value && typeof value === 'object' ? 1 : 0;
+
+  // Store ID-bearing array collections in app_collection_records for instant record-level future edits
+  if (canStoreAsRecords(value)) {
+    const { rows } = await client.query<{ version: string }>(
+      `INSERT INTO app_collections (collection_key, data, item_count, is_chunked, version, updated_by, updated_at)
+       VALUES ($1, $2::jsonb, $3, FALSE, 1, $4, NOW())
+       ON CONFLICT (collection_key) DO UPDATE
+       SET data = EXCLUDED.data,
+           item_count = EXCLUDED.item_count,
+           is_chunked = FALSE,
+           version = app_collections.version + 1,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = NOW()
+       RETURNING version::text AS version`,
+      [collectionKey, RECORD_STORE_STUB, value.length, username]
+    );
+
+    const entries = value.map((item, idx) => ({
+      id: String(item.id).trim(),
+      sortOrder: idx,
+      data: item,
+    }));
+    await bulkUpsertRecordsInTx(client, collectionKey, entries);
+    return Number(rows[0]?.version || 1);
+  }
 
   if (isArr && (value as unknown[]).length > CHUNK_SIZE) {
     const arr = value as unknown[];
@@ -904,14 +1026,18 @@ async function saveCollectionInTx(
       [collectionKey, safePgJsonStringify(stub), arr.length, username]
     );
 
+    const chunkIndices: number[] = [];
+    const chunkPayloads: string[] = [];
     for (let c = 0; c < chunkCount; c++) {
-      const slice = arr.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
-      await client.query(
-        `INSERT INTO app_collection_chunks (collection_key, chunk_index, data)
-         VALUES ($1, $2, $3::jsonb)`,
-        [collectionKey, c, safePgJsonStringify(slice)]
-      );
+      chunkIndices.push(c);
+      chunkPayloads.push(safePgJsonStringify(arr.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE)));
     }
+    await client.query(
+      `INSERT INTO app_collection_chunks (collection_key, chunk_index, data)
+       SELECT $1, c_idx, c_data
+       FROM UNNEST($2::int[], $3::jsonb[]) AS t(c_idx, c_data)`,
+      [collectionKey, chunkIndices, chunkPayloads]
+    );
 
     return Number(rows[0]?.version || 1);
   }
@@ -932,6 +1058,129 @@ async function saveCollectionInTx(
   );
 
   return Number(rows[0]?.version || 1);
+}
+
+async function applyRecordPatchInTx(
+  client: PoolClient,
+  collectionKey: string,
+  patch: RecordPatchInput,
+  username: string
+): Promise<{ version: number; itemCount: number; upsertsCount: number; deletesCount: number }> {
+  const { rows: metaRows } = await client.query<{ data: unknown; is_chunked: boolean }>(
+    'SELECT data, is_chunked FROM app_collections WHERE collection_key = $1',
+    [collectionKey]
+  );
+
+  if (metaRows.length === 0) {
+    await client.query(
+      `INSERT INTO app_collections (collection_key, data, item_count, is_chunked, version, updated_by, updated_at)
+       VALUES ($1, $2::jsonb, 0, FALSE, 0, $3, NOW())`,
+      [collectionKey, RECORD_STORE_STUB, username]
+    );
+  } else if (!isRecordStoreMarker(metaRows[0].data)) {
+    // One-time transparent migration of existing collection into app_collection_records
+    let legacyItems: unknown[] = [];
+    if (metaRows[0].is_chunked) {
+      const { rows: chunkRows } = await client.query<{ data: unknown[] }>(
+        'SELECT data FROM app_collection_chunks WHERE collection_key = $1 ORDER BY chunk_index ASC',
+        [collectionKey]
+      );
+      for (const ch of chunkRows) {
+        if (Array.isArray(ch.data)) {
+          for (let i = 0; i < ch.data.length; i++) {
+            legacyItems.push(ch.data[i]);
+          }
+        }
+      }
+      await client.query('DELETE FROM app_collection_chunks WHERE collection_key = $1', [
+        collectionKey,
+      ]);
+    } else if (Array.isArray(metaRows[0].data)) {
+      legacyItems = metaRows[0].data as unknown[];
+    }
+
+    await client.query('DELETE FROM app_collection_records WHERE collection_key = $1', [
+      collectionKey,
+    ]);
+
+    const seenIds = new Set<string>();
+    const migratedEntries: Array<{ id: string; sortOrder: number; data: unknown }> = [];
+    for (let i = 0; i < legacyItems.length; i++) {
+      const item = legacyItems[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const rawId = (item as Record<string, unknown>).id;
+      const cleanId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `${collectionKey}-mig-${i}`;
+      if (seenIds.has(cleanId)) continue;
+      seenIds.add(cleanId);
+      migratedEntries.push({ id: cleanId, sortOrder: i, data: item });
+    }
+    await bulkUpsertRecordsInTx(client, collectionKey, migratedEntries);
+
+    await client.query(
+      `UPDATE app_collections
+       SET data = $2::jsonb, is_chunked = FALSE
+       WHERE collection_key = $1`,
+      [collectionKey, RECORD_STORE_STUB]
+    );
+  }
+
+  const cleanDeletes = Array.isArray(patch.deletes)
+    ? Array.from(
+        new Set(
+          patch.deletes
+            .filter((d): d is string => typeof d === 'string' && d.trim() !== '')
+            .map((d) => d.trim())
+        )
+      )
+    : [];
+
+  if (cleanDeletes.length > 0) {
+    await client.query(
+      'DELETE FROM app_collection_records WHERE collection_key = $1 AND record_id = ANY($2::text[])',
+      [collectionKey, cleanDeletes]
+    );
+  }
+
+  const upsertMap = new Map<string, { id: string; sortOrder: number; data: Record<string, unknown> }>();
+  if (Array.isArray(patch.upserts)) {
+    for (const entry of patch.upserts) {
+      if (!entry || typeof entry !== 'object') continue;
+      const rawId = typeof entry.id === 'string' ? entry.id.trim() : '';
+      const dataObj = entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data)
+        ? (entry.data as Record<string, unknown>)
+        : null;
+      const resolvedId = rawId || (dataObj && typeof dataObj.id === 'string' ? dataObj.id.trim() : '');
+      if (!resolvedId || !dataObj) continue;
+      const sortOrder =
+        typeof entry.sortOrder === 'number' && Number.isFinite(entry.sortOrder) && entry.sortOrder >= 0
+          ? Math.floor(entry.sortOrder)
+          : -1;
+      upsertMap.set(resolvedId, { id: resolvedId, sortOrder, data: dataObj });
+    }
+  }
+
+  const upsertEntries = Array.from(upsertMap.values());
+  if (upsertEntries.length > 0) {
+    await bulkUpsertRecordsInTx(client, collectionKey, upsertEntries);
+  }
+
+  const { rows: updatedMeta } = await client.query<{ version: string; item_count: number }>(
+    `UPDATE app_collections
+     SET item_count = (SELECT COUNT(*)::int FROM app_collection_records WHERE collection_key = $1),
+         version = version + 1,
+         updated_by = $2,
+         updated_at = NOW()
+     WHERE collection_key = $1
+     RETURNING version::text AS version, item_count`,
+    [collectionKey, username]
+  );
+
+  return {
+    version: Number(updatedMeta[0]?.version || 1),
+    itemCount: Number(updatedMeta[0]?.item_count || 0),
+    upsertsCount: upsertEntries.length,
+    deletesCount: cleanDeletes.length,
+  };
 }
 
 export async function getCollectionVersionsFromPg(): Promise<Record<string, number>> {
@@ -970,26 +1219,54 @@ export async function loadCollectionsFromPg(
 
   const collections: Record<string, unknown> = {};
   const versions: Record<string, number> = {};
+  const recordStoreKeys: string[] = [];
+  const chunkedKeys: string[] = [];
 
   for (const row of rows) {
     const key = String(row.collection_key);
     versions[key] = Number(row.version || 1);
-    if (row.is_chunked) {
-      const { rows: chunkRows } = await pool.query<{ data: unknown[] }>(
-        'SELECT data FROM app_collection_chunks WHERE collection_key = $1 ORDER BY chunk_index ASC',
-        [key]
-      );
-      const assembled: unknown[] = [];
-      for (const ch of chunkRows) {
-        if (Array.isArray(ch.data)) {
-          for (let i = 0; i < ch.data.length; i++) {
-            assembled.push(ch.data[i]);
-          }
-        }
-      }
-      collections[key] = assembled;
+    if (isRecordStoreMarker(row.data)) {
+      recordStoreKeys.push(key);
+      collections[key] = [];
+    } else if (row.is_chunked) {
+      chunkedKeys.push(key);
+      collections[key] = [];
     } else {
       collections[key] = row.data;
+    }
+  }
+
+  // Batch-load all record-backed collections in ONE query instead of N+1
+  if (recordStoreKeys.length > 0) {
+    const { rows: recRows } = await pool.query<{ collection_key: string; data: unknown }>(
+      `SELECT collection_key, data
+       FROM app_collection_records
+       WHERE collection_key = ANY($1::text[])
+       ORDER BY collection_key ASC, sort_order ASC, record_id ASC`,
+      [recordStoreKeys]
+    );
+    for (const r of recRows) {
+      const target = collections[r.collection_key] as unknown[];
+      if (target) target.push(r.data);
+    }
+  }
+
+  // Batch-load any legacy chunked collections in ONE query
+  if (chunkedKeys.length > 0) {
+    const { rows: chunkRows } = await pool.query<{ collection_key: string; data: unknown[] }>(
+      `SELECT collection_key, data
+       FROM app_collection_chunks
+       WHERE collection_key = ANY($1::text[])
+       ORDER BY collection_key ASC, chunk_index ASC`,
+      [chunkedKeys]
+    );
+    for (const ch of chunkRows) {
+      const target = collections[ch.collection_key] as unknown[];
+      if (target && Array.isArray(ch.data)) {
+        for (let i = 0; i < ch.data.length; i++) {
+          target.push(ch.data[i]);
+        }
+      }
     }
   }
 
@@ -1070,7 +1347,8 @@ export async function syncCollectionsDeltaToPg(
   actor: AuthUserLike,
   changes: Record<string, unknown>,
   baseVersions: Record<string, number>,
-  ipAddress?: string
+  ipAddress?: string,
+  recordPatches?: Record<string, RecordPatchInput>
 ): Promise<{
   ok: boolean;
   versions: Record<string, number>;
@@ -1089,16 +1367,29 @@ export async function syncCollectionsDeltaToPg(
     };
   }
 
-  const candidateKeys = Object.keys(changes || {}).filter(
-    (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles'
-  );
+  const safeChanges = changes && typeof changes === 'object' ? changes : {};
+  const safePatches = recordPatches && typeof recordPatches === 'object' ? recordPatches : {};
+
+  const candidateKeySet = new Set<string>();
+  for (const k of Object.keys(safeChanges)) {
+    if (!CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles') {
+      candidateKeySet.add(k);
+    }
+  }
+  for (const k of Object.keys(safePatches)) {
+    if (!CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles') {
+      candidateKeySet.add(k);
+    }
+  }
+
+  const candidateKeys = Array.from(candidateKeySet);
 
   if (candidateKeys.length === 0) {
     const versions = await getCollectionVersionsFromPg();
     return { ok: true, versions, conflicts: [], conflictedCollections: {} };
   }
 
-  // RBAC check
+  // RBAC check across both full changes and record-level patches
   const forbiddenKeys = candidateKeys.filter((k) => !canWriteCollection(actor, k));
   if (forbiddenKeys.length > 0) {
     return {
@@ -1145,26 +1436,51 @@ export async function syncCollectionsDeltaToPg(
         continue;
       }
 
-      const val = changes[key];
-      const newVer = await saveCollectionInTx(
-        client,
-        key,
-        val,
-        actor.username || 'unknown'
-      );
-      updatedVersions[key] = newVer;
+      if (Object.prototype.hasOwnProperty.call(safePatches, key) && safePatches[key]) {
+        const patchResult = await applyRecordPatchInTx(
+          client,
+          key,
+          safePatches[key],
+          actor.username || 'unknown'
+        );
+        updatedVersions[key] = patchResult.version;
 
-      const count = Array.isArray(val) ? val.length : 1;
-      await logAuditAction(
-        client,
-        actor.id || null,
-        actor.username || 'unknown',
-        'SYNC',
-        key,
-        count,
-        { newVersion: newVer },
-        ipAddress
-      );
+        await logAuditAction(
+          client,
+          actor.id || null,
+          actor.username || 'unknown',
+          'SYNC_PATCH',
+          key,
+          patchResult.itemCount,
+          {
+            newVersion: patchResult.version,
+            upserts: patchResult.upsertsCount,
+            deletes: patchResult.deletesCount,
+          },
+          ipAddress
+        );
+      } else {
+        const val = safeChanges[key];
+        const newVer = await saveCollectionInTx(
+          client,
+          key,
+          val,
+          actor.username || 'unknown'
+        );
+        updatedVersions[key] = newVer;
+
+        const count = Array.isArray(val) ? val.length : 1;
+        await logAuditAction(
+          client,
+          actor.id || null,
+          actor.username || 'unknown',
+          'SYNC',
+          key,
+          count,
+          { newVersion: newVer },
+          ipAddress
+        );
+      }
     }
 
     await client.query(

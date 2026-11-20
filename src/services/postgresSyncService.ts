@@ -78,6 +78,47 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
+export interface RecordPatchUpsertPayload {
+  id: string;
+  sortOrder?: number;
+  data: Record<string, unknown>;
+}
+
+export interface RecordPatchPayload {
+  upserts?: RecordPatchUpsertPayload[];
+  deletes?: string[];
+}
+
+const GZIP_MIN_BYTES = 2048;
+
+async function buildCompressedJsonBody(
+  payload: unknown
+): Promise<{ body: BodyInit; headers: Record<string, string> }> {
+  const jsonText = JSON.stringify(payload);
+  if (jsonText.length >= GZIP_MIN_BYTES && typeof CompressionStream !== 'undefined') {
+    try {
+      const encoded = new TextEncoder().encode(jsonText);
+      const stream = new Blob([encoded]).stream().pipeThrough(new CompressionStream('gzip'));
+      const compressedBuffer = await new Response(stream).arrayBuffer();
+      if (compressedBuffer.byteLength > 0 && compressedBuffer.byteLength < encoded.byteLength) {
+        return {
+          body: new Uint8Array(compressedBuffer),
+          headers: authHeaders({
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip',
+          }),
+        };
+      }
+    } catch {
+      // Graceful fallback to uncompressed JSON if browser stream fails
+    }
+  }
+  return {
+    body: jsonText,
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+  };
+}
+
 export async function fetchPostgresStatus(): Promise<ServerDbStatus> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
@@ -249,7 +290,8 @@ export async function fetchPostgresVersions(): Promise<{
 
 export async function syncDeltaToPostgres(
   changes: Record<string, unknown>,
-  baseVersions: Record<string, number>
+  baseVersions: Record<string, number>,
+  recordPatches?: Record<string, RecordPatchPayload>
 ): Promise<{
   ok: boolean;
   status: number;
@@ -258,10 +300,15 @@ export async function syncDeltaToPostgres(
   conflictedCollections: Record<string, unknown>;
   error?: string;
 }> {
+  const payload: Record<string, unknown> = { changes, baseVersions };
+  if (recordPatches && Object.keys(recordPatches).length > 0) {
+    payload.recordPatches = recordPatches;
+  }
+  const { body, headers } = await buildCompressedJsonBody(payload);
   const res = await fetch('/api/db/sync', {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ changes, baseVersions }),
+    headers,
+    body,
   });
   const data = await res.json().catch(() => ({}));
   return {
@@ -281,7 +328,7 @@ interface StagedChunkPayload {
   data: unknown;
 }
 
-const MAX_STAGE_BATCH_BYTES = 380_000;
+const MAX_STAGE_BATCH_BYTES = 1_200_000;
 
 export async function importDatabaseToPostgres(
   database: AppDatabase,
@@ -364,13 +411,14 @@ export async function importDatabaseToPostgres(
       }
     }
 
-    // Estimate total JSON size: if tiny (< 320KB), single /api/db/import works immediately
+    // Estimate total JSON size: if small (< 1MB uncompressed, ~100KB gzipped), single /api/db/import works immediately
     const totalEstimatedBytes = chunks.reduce((sum, c) => sum + c.byteEstimate, 0);
-    if (totalEstimatedBytes < 320_000) {
+    if (totalEstimatedBytes < 1_000_000) {
+      const { body, headers } = await buildCompressedJsonBody({ database, source });
       const res = await fetch('/api/db/import', {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ database, source }),
+        headers,
+        body,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -383,17 +431,18 @@ export async function importDatabaseToPostgres(
       };
     }
 
-    // Large payload path: send in <= ~380KB batches via /api/db/import/stage then /api/db/import/commit
+    // Large payload path: send gzipped batches via /api/db/import/stage then /api/db/import/commit
     const importId = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     let currentBatch: StagedChunkPayload[] = [];
     let currentBatchBytes = 0;
 
     const flushBatch = async (batch: StagedChunkPayload[]) => {
       if (batch.length === 0) return;
+      const { body, headers } = await buildCompressedJsonBody({ importId, chunks: batch });
       const stageRes = await fetch('/api/db/import/stage', {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ importId, chunks: batch }),
+        headers,
+        body,
       });
       const stageData = await stageRes.json().catch(() => ({}));
       if (!stageRes.ok) {

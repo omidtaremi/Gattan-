@@ -52,7 +52,7 @@ nano .env
 ```
 مقدار `DATABASE_URL` را به شکل زیر تنظیم نمایید:
 ```env
-NODE_ENV=production
+APP_ENV=production
 PORT=3000
 DATABASE_URL="postgresql://gatan_user:YOUR_STRONG_PASSWORD@127.0.0.1:5432/gatan_db"
 AUTH_SECRET="یک-رشته-تصادفی-طولانی-امنیتی"

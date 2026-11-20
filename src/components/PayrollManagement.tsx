@@ -1647,16 +1647,47 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   
   const onUpdateDb = (updated: AppDatabase) => {
     const hasExistingSchemes = Array.isArray(updated.shiftSchemes) && updated.shiftSchemes.length > 0;
-    const shiftDepsUnchanged =
+    const baseShiftDepsUnchanged =
       hasExistingSchemes &&
       updated.productionSections === db.productionSections &&
       updated.shiftAssignments === db.shiftAssignments &&
-      updated.personnel === db.personnel &&
       updated.shiftSchemes === db.shiftSchemes;
 
-    if (shiftDepsUnchanged) {
-      onUpdateDbOriginal(updated);
-      return;
+    if (baseShiftDepsUnchanged) {
+      if (updated.personnel === db.personnel) {
+        onUpdateDbOriginal(updated);
+        return;
+      }
+      // Personnel array changed: only touch shiftSchemes if any employee's capabilities actually changed
+      const prevCapsByCode = new Map<string, string[]>();
+      (db.personnel || []).forEach(p => {
+        if (p.employeeCode) prevCapsByCode.set(p.employeeCode, p.capabilities || []);
+      });
+      let capabilitiesChanged = false;
+      const nextPersonnel = updated.personnel || [];
+      let nextCodedCount = 0;
+      for (let i = 0; i < nextPersonnel.length; i++) {
+        const p = nextPersonnel[i];
+        if (!p.employeeCode) continue;
+        nextCodedCount++;
+        const prevCaps = prevCapsByCode.get(p.employeeCode);
+        const nextCaps = p.capabilities || [];
+        if (!prevCaps || prevCaps.length !== nextCaps.length) {
+          capabilitiesChanged = true;
+          break;
+        }
+        for (let j = 0; j < nextCaps.length; j++) {
+          if (prevCaps[j] !== nextCaps[j]) {
+            capabilitiesChanged = true;
+            break;
+          }
+        }
+        if (capabilitiesChanged) break;
+      }
+      if (!capabilitiesChanged && nextCodedCount === prevCapsByCode.size) {
+        onUpdateDbOriginal(updated);
+        return;
+      }
     }
 
     let schemes = updated.shiftSchemes ? [...updated.shiftSchemes] : [];

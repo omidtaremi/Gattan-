@@ -72,7 +72,7 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 cat > "${ENV_FILE}" <<EOF
-NODE_ENV=production
+APP_ENV=production
 PORT=${APP_PORT}
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}"
 PGHOST=127.0.0.1

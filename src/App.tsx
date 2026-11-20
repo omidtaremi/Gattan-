@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { AppDatabase, User, Period } from './types';
-import { loadDatabase, loadDatabaseAsync, saveDatabase, getInitialDatabase, syncWithGoogleSheets, loadDatabaseFromSqlServer, saveDatabaseToSqlServer, sanitizeAndMergeDatabase } from './db';
+import { loadDatabase, loadDatabaseAsync, saveDatabase, getInitialDatabase, syncWithGoogleSheets, loadDatabaseFromSqlServer, saveDatabaseToSqlServer, sanitizeAndMergeDatabase, sanitizeChangedCollections } from './db';
 import LoginScreen from './components/LoginScreen';
 import ItemManagement from './components/ItemManagement';
 import SupplierManagement from './components/SupplierManagement';
@@ -41,6 +41,7 @@ import {
   importDatabaseToPostgres,
   type ServerDbStatus,
   type PublicUserSummary,
+  type RecordPatchPayload,
 } from './services/postgresSyncService';
 
 import { 
@@ -532,6 +533,41 @@ export default function App() {
     }
   };
 
+  const isUniqueIdRecordArray = (val: unknown): val is Array<Record<string, unknown>> => {
+    if (!Array.isArray(val)) return false;
+    const seen = new Set<string>();
+    for (let i = 0; i < val.length; i++) {
+      const item = val[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+      const rawId = (item as Record<string, unknown>).id;
+      if (typeof rawId !== 'string' || !rawId.trim()) return false;
+      const cleanId = rawId.trim();
+      if (seen.has(cleanId)) return false;
+      seen.add(cleanId);
+    }
+    return true;
+  };
+
+  const areRecordsStructurallyEqual = (a: Record<string, unknown>, b: Record<string, unknown>): boolean => {
+    if (a === b) return true;
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (let i = 0; i < keysA.length; i++) {
+      const k = keysA[i];
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      const va = a[k];
+      const vb = b[k];
+      if (va === vb) continue;
+      if (va && vb && typeof va === 'object' && typeof vb === 'object') {
+        if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
+      } else {
+        return false;
+      }
+    }
+    return true;
+  };
+
   const flushDeltaToPostgres = async () => {
     const user = currentUserRef.current;
     const latest = latestDbRef.current;
@@ -544,7 +580,10 @@ export default function App() {
 
     const baseline = lastSyncedDbRef.current;
     const changes: Record<string, unknown> = {};
+    const recordPatches: Record<string, RecordPatchPayload> = {};
+    const syncedSnapshots: Record<string, unknown> = {};
     const baseVersions: Record<string, number> = {};
+    const noOpKeys: string[] = [];
 
     const keys = Object.keys(latest) as Array<keyof AppDatabase>;
     for (const k of keys) {
@@ -552,20 +591,69 @@ export default function App() {
       if (CLIENT_ONLY_DB_KEYS.has(keyStr) || keyStr === 'users' || keyStr === 'roles') continue;
       if (!canWriteCollection(user, keyStr)) continue;
       if (!baseline || latest[k] !== baseline[k]) {
-        changes[keyStr] = latest[k];
-        if (collectionVersionsRef.current[keyStr]) {
-          baseVersions[keyStr] = collectionVersionsRef.current[keyStr];
+        const nextVal = latest[k];
+        const prevVal = baseline ? baseline[k] : undefined;
+
+        if (baseline && isUniqueIdRecordArray(prevVal) && isUniqueIdRecordArray(nextVal)) {
+          const prevMap = new Map<string, { item: Record<string, unknown>; idx: number }>();
+          for (let i = 0; i < prevVal.length; i++) {
+            const id = String(prevVal[i].id).trim();
+            prevMap.set(id, { item: prevVal[i], idx: i });
+          }
+
+          const upserts: Array<{ id: string; sortOrder: number; data: Record<string, unknown> }> = [];
+          for (let idx = 0; idx < nextVal.length; idx++) {
+            const item = nextVal[idx];
+            const id = String(item.id).trim();
+            const prevEntry = prevMap.get(id);
+            if (!prevEntry) {
+              upserts.push({ id, sortOrder: idx, data: item });
+            } else {
+              prevMap.delete(id);
+              if (prevEntry.item !== item && !areRecordsStructurallyEqual(prevEntry.item, item)) {
+                upserts.push({ id, sortOrder: idx, data: item });
+              }
+            }
+          }
+          const deletes = Array.from(prevMap.keys());
+
+          if (upserts.length === 0 && deletes.length === 0) {
+            noOpKeys.push(keyStr);
+            continue;
+          }
+
+          recordPatches[keyStr] = { upserts, deletes };
+          syncedSnapshots[keyStr] = nextVal;
+          if (collectionVersionsRef.current[keyStr]) {
+            baseVersions[keyStr] = collectionVersionsRef.current[keyStr];
+          }
+        } else {
+          changes[keyStr] = nextVal;
+          syncedSnapshots[keyStr] = nextVal;
+          if (collectionVersionsRef.current[keyStr]) {
+            baseVersions[keyStr] = collectionVersionsRef.current[keyStr];
+          }
         }
       }
     }
 
-    if (Object.keys(changes).length === 0) return;
+    // Advance baseline references for cloned-but-identical arrays so we don't re-diff them next tick
+    if (noOpKeys.length > 0 && baseline) {
+      const updatedBaseline: AppDatabase = { ...baseline };
+      for (const nk of noOpKeys) {
+        (updatedBaseline as any)[nk] = (latest as any)[nk];
+      }
+      lastSyncedDbRef.current = updatedBaseline;
+    }
+
+    const touchedKeys = Object.keys(syncedSnapshots);
+    if (touchedKeys.length === 0) return;
 
     isPgSyncInFlightRef.current = true;
     setPgSyncState('syncing');
 
     try {
-      const res = await syncDeltaToPostgres(changes, baseVersions);
+      const res = await syncDeltaToPostgres(changes, baseVersions, recordPatches);
       if (res.status === 401) {
         setCurrentUser(null);
         setPgSyncState('offline');
@@ -580,9 +668,9 @@ export default function App() {
       }
 
       if (res.ok) {
-        const nextBaseline: AppDatabase = { ...(baseline || latest) };
-        for (const k of Object.keys(changes)) {
-          (nextBaseline as any)[k] = changes[k];
+        const nextBaseline: AppDatabase = { ...(lastSyncedDbRef.current || latest) };
+        for (const k of touchedKeys) {
+          (nextBaseline as any)[k] = syncedSnapshots[k];
         }
         lastSyncedDbRef.current = nextBaseline;
         setPgSyncState('synced');
@@ -595,10 +683,10 @@ export default function App() {
           ...currentLatest,
           ...res.conflictedCollections,
         } as AppDatabase);
-        const nextBaseline: AppDatabase = { ...(baseline || reconciled) };
-        for (const k of Object.keys(changes)) {
+        const nextBaseline: AppDatabase = { ...(lastSyncedDbRef.current || reconciled) };
+        for (const k of touchedKeys) {
           if (!res.conflicts.includes(k)) {
-            (nextBaseline as any)[k] = changes[k];
+            (nextBaseline as any)[k] = syncedSnapshots[k];
           }
         }
         for (const ck of res.conflicts) {
@@ -607,7 +695,7 @@ export default function App() {
         lastSyncedDbRef.current = nextBaseline;
         latestDbRef.current = reconciled;
         setDb(reconciled);
-        saveDatabase(reconciled);
+        saveDatabase(reconciled, { skipLocalStorage: true });
         setPgSyncState('synced');
         setSyncNotice('تغییرات هم‌زمان کاربر دیگر از سرور بارگیری و جایگزین شد.');
       } else {
@@ -632,8 +720,26 @@ export default function App() {
     pgSyncTimeoutRef.current = setTimeout(() => {
       pgSyncTimeoutRef.current = null;
       flushDeltaToPostgres();
-    }, 600);
+    }, 400);
   };
+
+  // Prevent accidental tab close while a PostgreSQL sync is still pending/in-flight
+  useEffect(() => {
+    if (serverMode !== 'postgres') return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isPgSyncInFlightRef.current || pgSyncTimeoutRef.current !== null) {
+        if (pgSyncTimeoutRef.current) {
+          clearTimeout(pgSyncTimeoutRef.current);
+          pgSyncTimeoutRef.current = null;
+          flushDeltaToPostgres();
+        }
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [serverMode]);
 
   const handleMigrateLocalToPostgres = async () => {
     const targetDb = latestDbRef.current || db;
@@ -788,7 +894,7 @@ export default function App() {
         lastSyncedDbRef.current = merged;
         latestDbRef.current = merged;
         setDb(merged);
-        saveDatabase(merged);
+        saveDatabase(merged, { skipLocalStorage: true });
         setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
       } catch {
         // silent background retry next tick
@@ -796,7 +902,7 @@ export default function App() {
     }, 12000);
 
     return () => clearInterval(intervalId);
-  }, [serverMode, currentUser, db]);
+  }, [serverMode, currentUser?.id]);
 
   // Automatic Daily Database Backup Scheduler (System Admin Only)
   useEffect(() => {
@@ -842,10 +948,10 @@ export default function App() {
 
   // Update central state and save to local storage + schedule PostgreSQL delta sync
   const handleUpdateDatabase = (updatedDb: AppDatabase) => {
-    const sanitized = sanitizeAndMergeDatabase(updatedDb);
+    const sanitized = sanitizeChangedCollections(latestDbRef.current, updatedDb);
     latestDbRef.current = sanitized;
     setDb(sanitized);
-    saveDatabase(sanitized);
+    saveDatabase(sanitized, { skipLocalStorage: serverMode === 'postgres' });
 
     if (serverMode === 'postgres' && currentUserRef.current) {
       schedulePostgresDeltaSync();

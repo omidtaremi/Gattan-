@@ -5,6 +5,7 @@
 
 import 'dotenv/config';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import compression from 'compression';
@@ -126,6 +127,74 @@ async function startServer() {
   app.set('trust proxy', 1);
   app.use(compression());
   app.use(cors());
+
+  // Safe streaming gzip JSON request decompression (with strict compressed & decompressed size bounds)
+  const MAX_COMPRESSED_BYTES = 50 * 1024 * 1024;
+  const MAX_DECOMPRESSED_BYTES = 150 * 1024 * 1024;
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const encoding = String(req.headers['content-encoding'] || '').trim().toLowerCase();
+    if (encoding !== 'gzip') {
+      next();
+      return;
+    }
+
+    const declaredLen = Number(req.headers['content-length'] || 0);
+    if (declaredLen > MAX_COMPRESSED_BYTES) {
+      res.status(413).json({ ok: false, error: 'حجم بسته فشرده ارسالی بیش از حد مجاز است.' });
+      return;
+    }
+
+    let compressedBytes = 0;
+    let decompressedBytes = 0;
+    let settled = false;
+    const chunks: Buffer[] = [];
+    const gunzip = zlib.createGunzip();
+
+    const fail = (status: number, message: string) => {
+      if (settled) return;
+      settled = true;
+      req.unpipe(gunzip);
+      gunzip.destroy();
+      res.status(status).json({ ok: false, error: message });
+    };
+
+    req.on('data', (chunk: Buffer) => {
+      compressedBytes += chunk.length;
+      if (compressedBytes > MAX_COMPRESSED_BYTES) {
+        fail(413, 'حجم بسته فشرده ارسالی بیش از حد مجاز است.');
+      }
+    });
+
+    req.on('error', () => fail(400, 'خطا در دریافت بدنه درخواست.'));
+
+    gunzip.on('data', (chunk: Buffer) => {
+      decompressedBytes += chunk.length;
+      if (decompressedBytes > MAX_DECOMPRESSED_BYTES) {
+        fail(413, 'حجم داده پس از بازگشایی بیش از حد مجاز است.');
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    gunzip.on('error', () => fail(400, 'بسته فشرده ارسالی نامعتبر است.'));
+
+    gunzip.on('end', () => {
+      if (settled) return;
+      settled = true;
+      try {
+        const rawText = Buffer.concat(chunks).toString('utf8');
+        req.body = rawText.trim() ? JSON.parse(rawText) : {};
+        (req as any)._body = true;
+        delete req.headers['content-encoding'];
+        next();
+      } catch {
+        res.status(400).json({ ok: false, error: 'ساختار JSON ارسالی نامعتبر است.' });
+      }
+    });
+
+    req.pipe(gunzip);
+  });
+
   app.use(express.json({ limit: '150mb' }));
 
   // 1. Health & Database Status
@@ -369,12 +438,13 @@ async function startServer() {
 
   app.post('/api/db/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { changes, baseVersions } = req.body || {};
+      const { changes, recordPatches, baseVersions } = req.body || {};
       const result = await syncCollectionsDeltaToPg(
         req.authUser!,
-        changes || {},
-        baseVersions || {},
-        getClientIp(req)
+        changes && typeof changes === 'object' ? changes : {},
+        baseVersions && typeof baseVersions === 'object' ? baseVersions : {},
+        getClientIp(req),
+        recordPatches && typeof recordPatches === 'object' ? recordPatches : undefined
       );
       if (result.forbiddenKeys && result.forbiddenKeys.length > 0) {
         res.status(403).json(result);
@@ -456,7 +526,7 @@ async function startServer() {
   });
 
   // 5. Vite Middleware (Dev) or Static Dist (Production)
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'production' || process.env.APP_ENV === 'production';
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
