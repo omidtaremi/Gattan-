@@ -437,6 +437,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const [bulkEditFeedback, setBulkEditFeedback] = useState<string>('');
 
   const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [itemBarcodeScanValue, setItemBarcodeScanValue] = useState<string>('');
+  const [itemBarcodeScanFeedback, setItemBarcodeScanFeedback] = useState<{ type: 'warning'; text: string } | null>(null);
+  const itemBarcodeScanInputRef = React.useRef<HTMLInputElement>(null);
+  const itemNameInputRef = React.useRef<HTMLInputElement>(null);
+  const itemBarcodeScanDebounceRef = React.useRef<number | null>(null);
   const [newItem, setNewItem] = useState<Partial<Item>>({
     code: '',
     accountId: '',
@@ -453,6 +458,140 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     isActive: true,
     warehouse: ''
   });
+
+  const focusItemBarcodeScannerInput = React.useCallback(() => {
+    window.setTimeout(() => {
+      if (itemBarcodeScanInputRef.current) {
+        itemBarcodeScanInputRef.current.focus();
+        itemBarcodeScanInputRef.current.select();
+      }
+    }, 80);
+  }, []);
+
+  React.useEffect(() => {
+    if (activeTab === 'items') {
+      focusItemBarcodeScannerInput();
+    }
+    return () => {
+      if (itemBarcodeScanDebounceRef.current) {
+        window.clearTimeout(itemBarcodeScanDebounceRef.current);
+        itemBarcodeScanDebounceRef.current = null;
+      }
+    };
+  }, [activeTab, focusItemBarcodeScannerInput]);
+
+  const openScannedItemForEdit = (matched: Item) => {
+    if (itemBarcodeScanDebounceRef.current) {
+      window.clearTimeout(itemBarcodeScanDebounceRef.current);
+      itemBarcodeScanDebounceRef.current = null;
+    }
+    setEditingItem(matched);
+    setItemBarcodeScanValue('');
+    setItemBarcodeScanFeedback(null);
+    window.setTimeout(() => {
+      if (itemNameInputRef.current) {
+        itemNameInputRef.current.focus();
+        itemNameInputRef.current.select();
+      }
+    }, 90);
+  };
+
+  const handleItemBarcodeScanSubmit = (rawOverride?: string) => {
+    if (itemBarcodeScanDebounceRef.current) {
+      window.clearTimeout(itemBarcodeScanDebounceRef.current);
+      itemBarcodeScanDebounceRef.current = null;
+    }
+    const raw = rawOverride !== undefined ? rawOverride : itemBarcodeScanValue;
+    const normalized = toEnglishDigits(raw || '').trim();
+    if (!normalized) {
+      focusItemBarcodeScannerInput();
+      return;
+    }
+
+    const lower = normalized.toLowerCase();
+    let matched =
+      items.find(i => toEnglishDigits(i.systemBarcode || '').trim().toLowerCase() === lower) ||
+      items.find(i => toEnglishDigits(i.barcode || '').trim().toLowerCase() === lower) ||
+      items.find(i => toEnglishDigits(i.code || '').trim().toLowerCase() === lower);
+
+    if (!matched) {
+      const partials = items.filter(i =>
+        toEnglishDigits(i.systemBarcode || '').trim().toLowerCase().includes(lower) ||
+        toEnglishDigits(i.barcode || '').trim().toLowerCase().includes(lower)
+      );
+      if (partials.length === 1) {
+        matched = partials[0];
+      }
+    }
+
+    if (matched) {
+      openScannedItemForEdit(matched);
+    } else {
+      setEditingItem(null);
+      setNewItem({
+        code: generateNextItemCode(items),
+        accountId: '',
+        name: '',
+        categoryId: categories[0]?.id || '',
+        unit: 'کیلویی',
+        barcode: normalized,
+        systemBarcode: '',
+        packageType: 'کارتن',
+        qtyPerPackage: 1,
+        weightPerPackage: 1,
+        reorderThreshold: 10,
+        price: 0,
+        isActive: true,
+        warehouse: ''
+      });
+      setItemBarcodeScanValue('');
+      setItemBarcodeScanFeedback({
+        type: 'warning',
+        text: `کالایی با بارکد «${toPersianDigits(normalized)}» یافت نشد — فرم در حالت تعریف کالای جدید آماده و بارکد ثبت شد.`
+      });
+      window.setTimeout(() => {
+        if (itemNameInputRef.current) {
+          itemNameInputRef.current.focus();
+          itemNameInputRef.current.select();
+        }
+      }, 90);
+    }
+  };
+
+  const handleItemBarcodeInputChange = (rawVal: string) => {
+    setItemBarcodeScanValue(rawVal);
+    if (itemBarcodeScanFeedback) setItemBarcodeScanFeedback(null);
+
+    if (itemBarcodeScanDebounceRef.current) {
+      window.clearTimeout(itemBarcodeScanDebounceRef.current);
+      itemBarcodeScanDebounceRef.current = null;
+    }
+
+    const normalized = toEnglishDigits(rawVal || '').trim();
+    if (!normalized) return;
+
+    const lower = normalized.toLowerCase();
+    const exactBarcodeMatch =
+      items.find(i => toEnglishDigits(i.systemBarcode || '').trim().toLowerCase() === lower) ||
+      items.find(i => toEnglishDigits(i.barcode || '').trim().toLowerCase() === lower);
+
+    if (exactBarcodeMatch) {
+      const hasLongerPrefixCollision = items.some(i => {
+        if (i.id === exactBarcodeMatch.id) return false;
+        const sys = toEnglishDigits(i.systemBarcode || '').trim().toLowerCase();
+        const bar = toEnglishDigits(i.barcode || '').trim().toLowerCase();
+        return (sys.length > lower.length && sys.startsWith(lower)) || (bar.length > lower.length && bar.startsWith(lower));
+      });
+      if (!hasLongerPrefixCollision) {
+        openScannedItemForEdit(exactBarcodeMatch);
+        return;
+      }
+    }
+
+    itemBarcodeScanDebounceRef.current = window.setTimeout(() => {
+      handleItemBarcodeScanSubmit(rawVal);
+    }, 450);
+  };
 
   // Keep newItem.categoryId synced when categories or activePeriodId change
   React.useEffect(() => {
@@ -823,6 +962,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
 
     onUpdateDb({ ...db, items: updatedItems, stockCounts: updatedStockCounts, productFormulas: updatedFormulas });
+    setItemBarcodeScanValue('');
+    setItemBarcodeScanFeedback(null);
+    focusItemBarcodeScannerInput();
   };
 
   const deleteItem = (id: string) => {
@@ -1752,9 +1894,39 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   // ==========================================
   // TAB 4: INVENTORY AUDITS (انبارگردانی و شمارش)
   // ==========================================
-  const [selectedAuditId, setSelectedAuditId] = useState(audits[0]?.id || '');
+  const latestAudit = useMemo(() => {
+    if (audits.length === 0) return undefined;
+    const normalizeDateKey = (dateStr?: string) => {
+      const eng = toEnglishDigits(dateStr || '').trim();
+      const parts = eng.split(/[\/\-]/).map(p => p.trim());
+      if (parts.length === 3) {
+        return `${parts[0].padStart(4, '0')}/${parts[1].padStart(2, '0')}/${parts[2].padStart(2, '0')}`;
+      }
+      return eng;
+    };
+    return audits.reduce(
+      (best, curr, idx) => {
+        const bestKey = normalizeDateKey(best.audit.date);
+        const currKey = normalizeDateKey(curr.date);
+        if (currKey > bestKey || (currKey === bestKey && idx > best.idx)) {
+          return { audit: curr, idx };
+        }
+        return best;
+      },
+      { audit: audits[0], idx: 0 }
+    ).audit;
+  }, [audits]);
+
+  const [selectedAuditId, setSelectedAuditId] = useState(latestAudit?.id || '');
   const [newAuditTitle, setNewAuditTitle] = useState('');
   const [newAuditDate, setNewAuditDate] = useState(getTodayJalali());
+
+  // Always default to the latest inventory audit when entering the stock count tab or switching period
+  React.useEffect(() => {
+    if (activeTab === 'inventory') {
+      setSelectedAuditId(latestAudit?.id || '');
+    }
+  }, [activeTab, activePeriodId, latestAudit?.id]);
 
   // Input states for counting inside selected audit cycle
   const [countWarehouseFilter, setCountWarehouseFilter] = useState<string>('all');
@@ -2040,10 +2212,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       setCountRecordWarehouse(matched.warehouse);
     }
     setBarcodeScanValue('');
-    setBarcodeScanFeedback({
-      type: 'success',
-      text: `کالا انتخاب شد: ${matched.name} (کد: ${toPersianDigits(matched.code)}${matched.systemBarcode ? ` | بارکد سیستمی: ${toPersianDigits(matched.systemBarcode)}` : ''})`
-    });
+    setBarcodeScanFeedback(null);
     window.setTimeout(() => {
       if (countPacksInputRef.current) {
         countPacksInputRef.current.focus();
@@ -2890,12 +3059,12 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           <tr>
             <td style="text-align: center; font-weight: 700; color: #334155;">${toPersianDigits(idx + 1)}</td>
             <td style="text-align: center; padding: 2px 3px; background: #ffffff !important;">${barcodeSvg}</td>
-            <td style="text-align: center; font-weight: 800; color: #0f172a; font-size: 8.5pt;">${toPersianDigits(item.code || '-')}</td>
             <td style="text-align: right; font-weight: 800; color: #0f172a; font-size: 8.5pt; line-height: 1.3; padding: 3px 6px;">${item.name}</td>
             <td style="text-align: center; font-weight: 700; color: #1e293b; font-size: 8pt;">${weightLabel}</td>
             <td class="write-cell"></td>
             <td class="write-cell"></td>
             <td class="write-cell write-total"></td>
+            <td class="write-cell"></td>
           </tr>
         `;
       }).join('');
@@ -2927,13 +3096,13 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             <thead>
               <tr>
                 <th style="width: 24px;">ردیف</th>
-                <th style="width: 132px;">بارکد شناسه سیستمی</th>
-                <th style="width: 52px;">کد کالا</th>
+                <th style="width: 130px;">بارکد شناسه سیستمی</th>
                 <th>نام کالا</th>
-                <th style="width: 68px;">وزن بسته</th>
-                <th style="width: 68px;">تعداد بسته کامل</th>
-                <th style="width: 68px;">مقدار جزئی / فله</th>
-                <th style="width: 78px;">مجموع شمارش</th>
+                <th style="width: 62px;">وزن بسته</th>
+                <th style="width: 62px;">تعداد بسته کامل</th>
+                <th style="width: 62px;">مقدار جزئی / فله</th>
+                <th style="width: 68px;">مجموع شمارش</th>
+                <th style="width: 96px;">توضیحات</th>
               </tr>
             </thead>
             <tbody>
@@ -3246,6 +3415,65 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               {editingItem ? <Edit2 className="h-4.5 w-4.5 text-rose-500 animate-pulse" /> : <Plus className="h-4.5 w-4.5 text-rose-500" />}
               {editingItem ? 'ویرایش شناسنامه کالا' : 'تعریف کالای جدید خط تولید'}
             </h3>
+
+            {/* Auto-focused Barcode Scanner Search Bar for Item Definition */}
+            <div className="bg-sky-950/25 border border-sky-500/35 p-3.5 rounded-xl space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                <label htmlFor="item-barcode-scanner-input" className="text-xs font-extrabold text-sky-300 flex items-center gap-1.5">
+                  <ScanLine className="h-4 w-4 text-sky-400" />
+                  <span>جستجو و انتخاب سریع با بارکدخوان (بارکد شناسه سیستمی یا بارکد کالا)</span>
+                </label>
+                <span className="text-[10px] text-sky-400/80 font-medium">
+                  در صورت یافتن کالا: حالت ویرایش | در صورت عدم وجود: حالت تعریف کالای جدید
+                </span>
+              </div>
+              <div className="relative">
+                <ScanLine className="h-4 w-4 text-sky-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  ref={itemBarcodeScanInputRef}
+                  id="item-barcode-scanner-input"
+                  type="text"
+                  dir="ltr"
+                  autoComplete="off"
+                  value={itemBarcodeScanValue}
+                  onChange={(e) => handleItemBarcodeInputChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (itemBarcodeScanValue.trim()) {
+                        handleItemBarcodeScanSubmit();
+                      }
+                    }
+                  }}
+                  placeholder="بارکد شناسه سیستمی یا بارکد کالا را اسکن یا وارد نمایید..."
+                  className="w-full pr-9 pl-9 py-2.5 bg-zinc-950 border border-sky-500/40 focus:border-sky-400 focus:ring-2 focus:ring-sky-500/25 rounded-xl text-sky-100 text-xs font-mono text-left placeholder:text-right placeholder:text-zinc-500 focus:outline-none transition-all"
+                />
+                {itemBarcodeScanValue && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (itemBarcodeScanDebounceRef.current) {
+                        window.clearTimeout(itemBarcodeScanDebounceRef.current);
+                        itemBarcodeScanDebounceRef.current = null;
+                      }
+                      setItemBarcodeScanValue('');
+                      setItemBarcodeScanFeedback(null);
+                      focusItemBarcodeScannerInput();
+                    }}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 p-1 cursor-pointer"
+                    title="پاک کردن بارکد"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              {itemBarcodeScanFeedback && (
+                <div className="text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 bg-amber-950/50 text-amber-300 border border-amber-500/30">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span>{itemBarcodeScanFeedback.text}</span>
+                </div>
+              )}
+            </div>
             
             <form onSubmit={handleCreateOrUpdateItem} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -3305,6 +3533,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     نام دقیق کالا / مواد اولیه <span className="text-rose-500">*</span>
                   </label>
                   <input
+                    ref={itemNameInputRef}
                     id="item-name-input"
                     type="text"
                     className="w-full px-3.5 py-2 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 hover:border-zinc-700 transition-all font-medium"
@@ -3527,7 +3756,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   {editingItem && (
                     <button
                       type="button"
-                      onClick={() => setEditingItem(null)}
+                      onClick={() => {
+                        setEditingItem(null);
+                        setItemBarcodeScanFeedback(null);
+                        focusItemBarcodeScannerInput();
+                      }}
                       className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs font-semibold rounded-xl transition-all cursor-pointer"
                     >
                       انصراف
@@ -5096,31 +5329,31 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       {activeTab === 'inventory' && (
         <div className="space-y-6 animate-fade-in">
           {/* Auditing Setup Panel - Full Width on Top */}
-          <div className="relative z-20 bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-5 sm:p-6 rounded-2xl shadow-xl space-y-4">
+          <div className="relative z-20 bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-3.5 sm:p-6 rounded-2xl shadow-xl space-y-4 max-w-full">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-zinc-800 pb-3 gap-2">
               <h3 className="text-sm font-extrabold text-[#fafafa] flex items-center gap-2">
-                <Calendar className="h-4.5 w-4.5 text-rose-500" />
+                <Calendar className="h-4.5 w-4.5 text-rose-500 shrink-0" />
                 <span>تعریف یا گزینش انبارگردانی فیزیکی</span>
               </h3>
               {selectedAuditId && (
-                <div className="text-xs bg-rose-955/20 text-rose-400 px-3.5 py-1.5 rounded-xl border border-rose-500/20 font-bold flex items-center gap-2">
+                <div className="w-full sm:w-auto max-w-full text-xs bg-rose-955/20 text-rose-400 px-3 py-1.5 rounded-xl border border-rose-500/20 font-bold flex flex-wrap items-center gap-1.5">
                   <span>انبارگردانی فعال:</span>
-                  <strong className="text-rose-300 font-extrabold">{activeAuditData?.title}</strong>
+                  <strong className="text-rose-300 font-extrabold break-words">{activeAuditData?.title}</strong>
                   <span className="font-mono text-zinc-400">({toPersianDigits(activeAuditData?.date || '')})</span>
                 </div>
               )}
             </div>
             
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 items-start">
               {/* Select Active Audit */}
-              <div className="lg:col-span-5 space-y-3 bg-zinc-950/40 p-4 rounded-xl border border-zinc-850">
+              <div className="lg:col-span-5 min-w-0 w-full max-w-full space-y-3 bg-zinc-950/40 p-3.5 sm:p-4 rounded-xl border border-zinc-850">
                 <label htmlFor="audit-cycle-select" className="block text-[11px] font-bold text-zinc-400">
                   دوره انبارگردانی فعال در سیستم
                 </label>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-full min-w-0 max-w-full">
                   <select
                     id="audit-cycle-select"
-                    className="flex-1 px-3.5 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 cursor-pointer font-bold"
+                    className="flex-1 min-w-0 w-full max-w-full truncate px-3 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 cursor-pointer font-bold"
                     value={selectedAuditId}
                     onChange={(e) => setSelectedAuditId(e.target.value)}
                   >
@@ -5141,7 +5374,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   )}
                 </div>
                 {activeAuditData && (
-                  <div className="flex items-center justify-between text-2xs text-zinc-400 pt-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-2xs text-zinc-400 pt-1">
                     <span>تعداد ردیف‌های ثبت‌شده: <strong className="text-zinc-200 font-mono font-bold">{toPersianDigits(activeCounts.length)}</strong></span>
                     <span>ارزش لحظه‌ای: <strong className="text-emerald-400 font-mono font-bold">{formatWithCommas(roundTo2Decimals(auditValuation))} ریال</strong></span>
                   </div>
@@ -5149,27 +5382,27 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               </div>
 
               {/* Create New Audit Inline Form */}
-              <div className="lg:col-span-7 bg-zinc-950/40 p-4 rounded-xl border border-zinc-850 space-y-3">
+              <div className="lg:col-span-7 min-w-0 w-full max-w-full bg-zinc-950/40 p-3.5 sm:p-4 rounded-xl border border-zinc-850 space-y-3">
                 <h4 className="text-[11px] font-extrabold text-zinc-300 flex items-center gap-1.5">
-                  <Plus className="h-3.5 w-3.5 text-rose-500" />
+                  <Plus className="h-3.5 w-3.5 text-rose-500 shrink-0" />
                   <span>ایجاد انبارگردانی جدید برای این دوره مالی:</span>
                 </h4>
                 <form onSubmit={createNewAudit} className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                  <div className="sm:col-span-5">
+                  <div className="sm:col-span-5 min-w-0">
                     <label htmlFor="audit-title-input" className="block text-[10px] font-bold text-zinc-400 mb-1">
                       عنوان انبارگردانی <span className="text-rose-500">*</span>
                     </label>
                     <input
                       id="audit-title-input"
                       type="text"
-                      className="w-full px-3.5 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 placeholder-zinc-650"
+                      className="w-full min-w-0 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/20 placeholder-zinc-650"
                       placeholder="مانند: انبارگردانی پایان سال یا میاندوره"
                       value={newAuditTitle}
                       onChange={(e) => setNewAuditTitle(e.target.value)}
                       required
                     />
                   </div>
-                  <div className="sm:col-span-4">
+                  <div className="sm:col-span-4 min-w-0">
                     <ShamsiDatePicker
                       id="audit-date-input"
                       label={
@@ -5184,12 +5417,12 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                       buttonClassName="w-full flex items-center justify-between px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs font-bold cursor-pointer hover:bg-zinc-900 transition-all focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                     />
                   </div>
-                  <div className="sm:col-span-3">
+                  <div className="sm:col-span-3 min-w-0">
                     <button
                       type="submit"
                       className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2 rounded-xl text-xs transition-all shadow-md shadow-rose-600/10 cursor-pointer flex items-center justify-center gap-1.5"
                     >
-                      <Plus className="h-4 w-4" />
+                      <Plus className="h-4 w-4 shrink-0" />
                       <span>ثبت دوره</span>
                     </button>
                   </div>
@@ -5198,25 +5431,25 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             </div>
 
             {/* Blank Physical Inventory Sheet Print Panel by Warehouse */}
-            <div className="bg-sky-950/25 border border-sky-500/30 p-3.5 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
+            <div className="bg-sky-950/25 border border-sky-500/30 p-3.5 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 min-w-0 max-w-full">
+              <div className="flex items-center gap-2.5 min-w-0">
                 <div className="p-2 bg-sky-500/15 border border-sky-500/30 rounded-xl text-sky-400 shrink-0">
                   <Printer className="h-4.5 w-4.5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <h4 className="text-xs font-extrabold text-sky-200">
                     چاپ فرم خام انبارگردانی فیزیکی به تفکیک انبار (A4 بهینه با بارکد شناسه سیستمی)
                   </h4>
                   <p className="text-[11px] text-zinc-400 mt-0.5">
-                    جهت تکمیل کاغذی توسط تیم شمارش (شامل بارکد سیستمی قابل اسکن، کد و نام کالا، وزن بسته و ستون‌های خالی شمارش)
+                    جهت تکمیل کاغذی توسط تیم شمارش (شامل بارکد سیستمی قابل اسکن، نام کالا، وزن بسته، ستون‌های خالی شمارش و توضیحات)
                   </p>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full md:w-auto min-w-0">
                 <select
                   value={blankPrintWarehouse}
                   onChange={(e) => setBlankPrintWarehouse(e.target.value)}
-                  className="flex-1 md:flex-initial px-3 py-2 bg-zinc-950 border border-sky-500/30 rounded-xl text-xs text-sky-100 font-bold focus:outline-none focus:border-sky-400 cursor-pointer"
+                  className="w-full sm:flex-1 md:flex-initial min-w-0 max-w-full truncate px-3 py-2 bg-zinc-950 border border-sky-500/30 rounded-xl text-xs text-sky-100 font-bold focus:outline-none focus:border-sky-400 cursor-pointer"
                 >
                   <option value="all">همه انبارها (هر انبار صفحه مجزا)</option>
                   {itemWarehouseOptions.map(wh => (
@@ -5227,7 +5460,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                 <button
                   type="button"
                   onClick={() => printBlankStockCountSheet()}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl shadow-md shadow-sky-600/20 flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
+                  className="w-full sm:w-auto px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl shadow-md shadow-sky-600/20 flex items-center justify-center gap-1.5 cursor-pointer transition-all shrink-0"
                 >
                   <Printer className="h-4 w-4" />
                   <span>چاپ فرم خام انبارگردانی</span>
@@ -5247,10 +5480,6 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                         اجرای عملیات شمارش کالا: {activeAuditData?.title} 
                       </h4>
                       <p className="text-2xs text-zinc-500 mt-1 font-mono">تاریخ ثبت تاریخچه فیزیکی: {activeAuditData?.date}</p>
-                    </div>
-
-                    <div className="bg-emerald-950/30 text-emerald-400 p-2.5 text-2xs rounded-xl border border-emerald-900/50 font-bold">
-                      ارزش ریالی شمارش در لحظه: {formatWithCommas(roundTo2Decimals(auditValuation))} ریال
                     </div>
                   </div>
 
@@ -5374,6 +5603,8 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                               <span>وزن بسته: <strong className="text-sky-300">{toPersianDigits(selectedCountItemData.weightPerPackage)} کیلو</strong></span>
                               <span className="text-zinc-700">|</span>
                               <span>فی: <strong className="text-emerald-400">{formatWithCommas(selectedCountItemData.price)} ریال</strong></span>
+                              <span className="text-zinc-700">|</span>
+                              <span>انبار: <strong className="text-amber-300 font-sans">{selectedCountItemData.warehouse || 'تعیین نشده'}</strong></span>
                             </div>
 
                             <button
@@ -5509,6 +5740,14 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                       </div>
                     </div>
                   </form>
+
+                  {/* Live Audit Valuation Banner below Count Submission Form */}
+                  <div className="bg-emerald-950/30 text-emerald-400 px-4 py-3 text-xs rounded-xl border border-emerald-900/50 font-bold flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-emerald-300/90">ارزش ریالی شمارش در لحظه:</span>
+                    <span className="font-mono text-sm font-black text-emerald-300">
+                      {formatWithCommas(roundTo2Decimals(auditValuation))} <span className="text-[11px] font-bold text-emerald-400/80">ریال</span>
+                    </span>
+                  </div>
 
                   {/* List of counts */}
                   <div className="space-y-3 pt-3">
