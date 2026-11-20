@@ -9,13 +9,15 @@
 import { AppDatabase } from '../types';
 
 const DB_NAME = 'GatanSystemDatabase';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'app_state';
+export const DAILY_BACKUPS_STORE = 'daily_backups';
+export const BACKUP_CONFIG_STORE = 'backup_config';
 const RECORD_KEY = 'gatan_system_db';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function getIDB(): Promise<IDBDatabase> {
+export function getGatanIDB(): Promise<IDBDatabase> {
   if (typeof window === 'undefined' || !window.indexedDB) {
     return Promise.reject(new Error('IndexedDB is not supported in this browser environment'));
   }
@@ -29,6 +31,12 @@ function getIDB(): Promise<IDBDatabase> {
           const db = request.result;
           if (!db.objectStoreNames.contains(STORE_NAME)) {
             db.createObjectStore(STORE_NAME);
+          }
+          if (!db.objectStoreNames.contains(DAILY_BACKUPS_STORE)) {
+            db.createObjectStore(DAILY_BACKUPS_STORE, { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains(BACKUP_CONFIG_STORE)) {
+            db.createObjectStore(BACKUP_CONFIG_STORE);
           }
         };
 
@@ -55,7 +63,7 @@ function getIDB(): Promise<IDBDatabase> {
  */
 export async function saveToIndexedDB(database: AppDatabase): Promise<boolean> {
   try {
-    const db = await getIDB();
+    const db = await getGatanIDB();
     return new Promise((resolve) => {
       try {
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -92,7 +100,7 @@ export async function saveToIndexedDB(database: AppDatabase): Promise<boolean> {
  */
 export async function loadFromIndexedDB(): Promise<AppDatabase | null> {
   try {
-    const db = await getIDB();
+    const db = await getGatanIDB();
     return new Promise((resolve) => {
       try {
         const tx = db.transaction(STORE_NAME, 'readonly');

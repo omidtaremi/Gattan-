@@ -26,6 +26,7 @@ import {
   deleteRoleAdminInPg,
   getCollectionVersionsFromPg,
   loadCollectionsFromPg,
+  exportFullDatabaseFromPg,
   syncCollectionsDeltaToPg,
   importFullDatabaseToPg,
   stageImportChunksInPg,
@@ -345,6 +346,15 @@ async function startServer() {
       res.json({ ok: true, ...data });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در خواندن پایگاه داده' });
+    }
+  });
+
+  app.get('/api/db/backup', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const backup = await exportFullDatabaseFromPg(req.authUser!, getClientIp(req));
+      res.json({ ok: true, mode: 'postgres', ...backup });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در تهیه نسخه پشتیبان کامل از PostgreSQL' });
     }
   });
 

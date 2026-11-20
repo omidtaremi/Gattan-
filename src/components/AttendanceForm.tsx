@@ -12,6 +12,18 @@ import {
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import AttendanceDeviceManagement from './AttendanceDeviceManagement';
+import {
+  didSettleLeaveThroughMonth,
+  findFirstAttendanceDateForCode,
+  isDepartedOrSettlingInMonth,
+  resolveDepartedMonthAttendancePerf
+} from '../utils/payrollSettlementSync';
+import {
+  buildCandidateShiftsPool,
+  runSmartShiftDiagnosticEngine,
+  SmartShiftDiagnosticCandidate,
+  SmartShiftSourceCategory
+} from '../utils/smartShiftDiagnostic';
 
 interface AttendanceFormProps {
   db: AppDatabase;
@@ -129,6 +141,10 @@ function parseDateToJalali(dateStr: string): string {
   if (y >= 2000) {
     const { jy, jm, jd } = gregorianToJalali(y, m, d);
     return `${jy}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')}`;
+  }
+
+  if (d >= 1300 && d < 1600 && m >= 1 && m <= 12 && y >= 1 && y <= 31) {
+    return `${d}/${String(m).padStart(2, '0')}/${String(y).padStart(2, '0')}`;
   }
   
   return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
@@ -868,8 +884,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
   const [editingExit, setEditingExit] = useState<string>('');
 
   const [isSmartFixModalOpen, setIsSmartFixModalOpen] = useState<boolean>(false);
-  const [smartFixCandidates, setSmartFixCandidates] = useState<any[]>([]);
+  const [smartFixCandidates, setSmartFixCandidates] = useState<SmartShiftDiagnosticCandidate[]>([]);
   const [selectedFixKeys, setSelectedFixKeys] = useState<Set<string>>(new Set());
+  const [smartFixFilter, setSmartFixFilter] = useState<'all' | SmartShiftSourceCategory>('all');
 
   const getAuthorizedCapabilitiesForEmployee = (emp: Personnel | undefined | null): string[] => {
     if (!emp) return [];
@@ -1056,102 +1073,45 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       alert('سند حقوق و دستمزد این ماه قفل شده است و امکان پایش و تغییر شیفت وجود ندارد.');
       return;
     }
-    const candidates: any[] = [];
-    const sections = db.productionSections || [];
-    const defaultShifts = db.shifts || [
-      { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-      { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-      { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-    ];
 
-    const candidateShiftsList: { id: string; name: string; startTime: string; endTime: string }[] = [];
-    sections.forEach(s => {
-      if (s.startTime && s.endTime) {
-        candidateShiftsList.push({
-          id: s.id,
-          name: s.name,
-          startTime: toEnglishDigits(s.startTime).trim(),
-          endTime: toEnglishDigits(s.endTime).trim()
-        });
-      }
-    });
-    defaultShifts.forEach(sh => {
-      if (!candidateShiftsList.some(c => c.id === sh.id)) {
-        candidateShiftsList.push({
-          id: sh.id,
-          name: sh.name,
-          startTime: toEnglishDigits(sh.startTime).trim(),
-          endTime: toEnglishDigits(sh.endTime).trim()
-        });
-      }
-    });
+    const candidateShiftsPool = buildCandidateShiftsPool(db.productionSections, db.shifts);
 
-    allMismatches.forEach(m => {
-      const recordKey = `${m.employee.id}-${m.dateStr}`;
-      if (approvedMismatches.includes(recordKey)) return;
-
-      const realEmp = (db.personnel || []).find(p => p.id === m.employee.id || p.employeeCode === m.employee.employeeCode) || m.employee;
-      const empCapabilities = getAuthorizedCapabilitiesForEmployee(realEmp);
-
-      // STRICT CAPABILITY MATRIX CHECK:
-      // If employee has no authorized shifts in the capability matrix, do NOT propose any shift!
-      if (empCapabilities.length === 0) {
-        return;
-      }
-
-      const currentResolved = m.shift
-        ? resolveEntryExitTimesForShift([m.firstEntry, m.lastExit], m.shift.startTime, m.shift.endTime)
-        : null;
-      const currentDiffSum = currentResolved
-        ? (getCircularMinutesDiff(currentResolved.firstEntryMins, currentResolved.shiftStartMins) +
-           getCircularMinutesDiff(currentResolved.lastExitMins, currentResolved.shiftEndMins))
-        : 0;
-
-      let bestCandidate: any = null;
-      let bestDiffSum = currentDiffSum > 0 ? currentDiffSum : Infinity;
-
-      candidateShiftsList.forEach(cand => {
-        if (cand.id === m.currentSectionId) return;
-
-        // STRICT CAPABILITY MATRIX CHECK:
-        // Suggested shift MUST strictly be one of the sections/shifts defined in the personnel capability matrix!
-        if (!empCapabilities.includes(cand.id)) {
-          return;
-        }
-
-        const candResolved = resolveEntryExitTimesForShift([m.firstEntry, m.lastExit], cand.startTime, cand.endTime);
-        const eDiff = getCircularMinutesDiff(candResolved.firstEntryMins, candResolved.shiftStartMins);
-        const xDiff = getCircularMinutesDiff(candResolved.lastExitMins, candResolved.shiftEndMins);
-        const sum = eDiff + xDiff;
-
-        // Select the authorized candidate shift that yields the minimum total entry and exit discrepancy
-        if (sum < bestDiffSum) {
-          bestDiffSum = sum;
-          bestCandidate = {
-            shiftId: cand.id,
-            name: cand.name,
-            startTime: cand.startTime,
-            endTime: cand.endTime,
-            entryDiff: eDiff,
-            exitDiff: xDiff
-          };
+    const getRawTimesForDay = (emp: Personnel, dateStr: string): string[] => {
+      const normDate = normalizeDateStr(dateStr);
+      const merged: string[] = [];
+      records.forEach(r => {
+        if (normalizeDateStr(r.date) === normDate && isRecordForEmployee(r, emp)) {
+          (r.times || []).forEach(t => {
+            if (t && !merged.includes(t)) merged.push(t);
+          });
         }
       });
+      return merged;
+    };
 
-      if (bestCandidate) {
-        candidates.push({
-          key: recordKey,
-          mismatch: m,
-          suggestedShift: bestCandidate
-        });
-      }
+    const candidates = runSmartShiftDiagnosticEngine({
+      activeMismatches: activeMismatchesUnfiltered,
+      activeAnomalies: activeAnomaliesUnfiltered,
+      approvedItems: approvedMismatchItems,
+      candidateShiftsPool,
+      getAuthorizedCapabilities: (emp) => getAuthorizedCapabilitiesForEmployee(emp),
+      getRawTimesForDay,
+      rules: db.payrollCalculationRules
     });
 
     if (candidates.length === 0) {
-      alert('پایش هوشمند انجام شد: هیچ شیفت پیشنهادی بهتری (منطبق با ماتریس ارزیابی توانمندی پرسنل) برای رفع خودکار مغایرت‌ها پیدا نشد.');
+      alert('پایش هوشمند انجام شد: هیچ شیفت پیشنهادی مناسب‌تر یا قابل تاییدی (منطبق با ماتریس توانمندی پرسنل) برای ترددهای دارای عدم تطابق، بدون شیفت، تایید شده یا مغایرت‌های غیرمجاز پیدا نشد.');
       return;
     }
 
+    // Stage the best suggested / approvable shift into table row dropdowns so even manual row inspection reflects it
+    const nextDrafts = { ...draftShifts };
+    candidates.forEach(c => {
+      nextDrafts[c.key] = c.suggestedShift.shiftId;
+    });
+    setDraftShifts(nextDrafts);
+
+    setSmartFixFilter('all');
     setSmartFixCandidates(candidates);
     setSelectedFixKeys(new Set(candidates.map(c => c.key)));
     setIsSmartFixModalOpen(true);
@@ -1168,28 +1128,34 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     const newApproved = [...approvedMismatches];
 
     const nextDrafts = { ...draftShifts };
-    let appliedCount = 0;
+    let assignedCount = 0;
+    let approvedCount = 0;
+
     smartFixCandidates.forEach(cand => {
       if (!selectedFixKeys.has(cand.key)) return;
-      const { mismatch, suggestedShift } = cand;
+      const { mismatch, suggestedShift, requiresUserApproval, approvalKeysToAdd } = cand;
       const empCapabilities = getAuthorizedCapabilitiesForEmployee(mismatch.employee);
       if (!empCapabilities.includes(suggestedShift.shiftId)) return;
 
       delete nextDrafts[cand.key];
-      appliedCount++;
+      if (requiresUserApproval) {
+        approvedCount++;
+      } else {
+        assignedCount++;
+      }
 
       const targetCode = mismatch.employee.employeeCode || mismatch.employee.attendanceCode || '';
       const cleanDate = normalizeDateStr(mismatch.dateStr);
 
-      const existingAssign = updatedAssignments.find(a => 
+      const existingAssign = updatedAssignments.find(a =>
         a.date && normalizeDateStr(a.date) === cleanDate &&
         isShiftAssignmentForEmployee(a, mismatch.employee)
       );
 
       if (existingAssign) {
-        updatedAssignments = updatedAssignments.map(a => 
-          a.id === existingAssign.id ? { 
-            ...a, 
+        updatedAssignments = updatedAssignments.map(a =>
+          a.id === existingAssign.id ? {
+            ...a,
             periodId: activePeriodId,
             year: Number(selectedYear),
             month: Number(selectedMonth),
@@ -1226,7 +1192,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           : r
       );
 
-      newApproved.push(cand.key);
+      if (requiresUserApproval && approvalKeysToAdd && approvalKeysToAdd.length > 0) {
+        approvalKeysToAdd.forEach(k => newApproved.push(k));
+      }
     });
 
     setDraftShifts(nextDrafts);
@@ -1246,7 +1214,11 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     setRecords(updatedAttendanceRecords.filter(r => r.periodId === activePeriodId && Number(r.year) === Number(selectedYear) && Number(r.month) === Number(selectedMonth)));
 
     setIsSmartFixModalOpen(false);
-    alert(`تعداد ${toPersianDigits(appliedCount)} شیفت پیشنهادی با موفقیت به طور مستقیم در دیتابیس ثبت و مغایرت‌ها برطرف گردید (بدون نیاز به ثبت مجدد).`);
+    const totalProcessed = assignedCount + approvedCount;
+    const summaryParts: string[] = [];
+    if (assignedCount > 0) summaryParts.push(`${toPersianDigits(assignedCount)} مورد اصلاح و انتساب بهترین شیفت مجاز`);
+    if (approvedCount > 0) summaryParts.push(`${toPersianDigits(approvedCount)} مورد تایید مغایرت غیرمجاز با انتخاب بهترین شیفت مجاز`);
+    alert(`عملیات پایش هوشمند با موفقیت برای ${toPersianDigits(totalProcessed)} مورد ثبت شد (${summaryParts.join(' و ')}).`);
   };
 
   const handleUpdateShiftForDay = (empObj: any, weekdayName: string, selectedSectionId: string, dateStr?: string, customApprovedMismatches?: string[]) => {
@@ -1508,9 +1480,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       return;
     }
     const recordKey = `${item.employee.id}-${item.dateStr}`;
-    const nextApproved = approvedMismatches.filter(
-      k => k !== item.approvalKey && k !== recordKey && k !== `anomaly-${recordKey}`
-    );
+    const keysToRemove = new Set<string>([
+      item.approvalKey,
+      recordKey,
+      `anomaly-${recordKey}`,
+      ...(Array.isArray(item.approvalKeys) ? item.approvalKeys : [])
+    ]);
+    const nextApproved = approvedMismatches.filter(k => !keysToRemove.has(k));
     setApprovedMismatches(nextApproved);
     try {
       localStorage.setItem('approved_mismatches', JSON.stringify(nextApproved));
@@ -1713,9 +1689,12 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           fridayWorkMin = rulesObj.calculateFridayWork ? adjustedWorkedMin : 0;
           if (isHoliday && rulesObj.calculateHolidayWork) {
             holidayWorkMin = Math.max(0, adjustedWorkedMin);
+            normalWorkMin = 0;
+            overtimeMandatoryMin = 0;
+          } else {
+            normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
+            overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
           }
-          normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
-          overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
         } else {
           normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
           overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
@@ -1853,7 +1832,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     const prevSnap = prevRegPeriod?.attendancePerformanceSnapshot?.find(
       (s: any) => s?.employee?.id === emp.id || (emp.employeeCode && s?.employee?.employeeCode === emp.employeeCode)
     );
-    if (prevSnap) {
+    if (didSettleLeaveThroughMonth(emp, prevY, prevM, db.personnelSettlements, activePeriodId)) {
+      prevLeaveMinutes = 0;
+    } else if (prevSnap) {
       prevLeaveMinutes = Number(prevSnap.finalLeaveMinutes || 0);
     } else {
       const prevSetting = (db.monthlyWorkdaySettings || []).find(s => Number(s.year) === prevY && Number(s.month) === prevM);
@@ -1866,6 +1847,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       });
       if (prevEmpRecs.length > 0) {
         let pPresence = 0;
+        let pNormalOnly = 0;
+        let pMandatoryOt = 0;
+        let pHolidayPresence = 0;
         let pDelayN = 0, pDelayF = 0, pDelayH = 0;
         let pNormDays = 0, pFriDays = 0, pHolDays = 0;
         const prevMap = new Map<string, any>();
@@ -1890,77 +1874,172 @@ export default function AttendanceForm(props: AttendanceFormProps) {
             if (le > se) pLate = se ? le - se : 0;
           }
           const pUnauth = (rulesObj.calculateEarlyOvertime ? 0 : pEarly) + (rulesObj.calculateLateOvertime ? 0 : pLate);
-          pPresence += Math.max(0, pWorked - pBreak - pUnauth);
+          const pAdjusted = Math.max(0, pWorked - pBreak - pUnauth);
+          pPresence += pAdjusted;
           const pWeekday = getPersianWeekdayOfDate(pDateStr);
           const pIsFri = normalizeWeekday(pWeekday) === normalizeWeekday('جمعه');
           const pIsHol = (db.officialHolidays || []).some(h => toEnglishDigits(h.date).replace(/[-\/]/g, '/') === toEnglishDigits(pDateStr).replace(/[-\/]/g, '/'));
-          if (pIsHol && !pIsFri) { if (rulesObj.calculateHolidayWork) pHolDays++; else pNormDays++; }
-          else if (pIsFri) pFriDays++;
-          else pNormDays++;
+          const pStdCap = 480 - pBreak;
+          if (pIsHol && !pIsFri) {
+            if (rulesObj.calculateHolidayWork) {
+              pHolidayPresence += pAdjusted;
+              pHolDays++;
+            } else {
+              const pNC = Math.min(pAdjusted, pStdCap);
+              pNormalOnly += pNC;
+              pMandatoryOt += Math.max(0, pAdjusted - pNC);
+              pNormDays++;
+            }
+          } else if (pIsFri) {
+            if (pIsHol && rulesObj.calculateHolidayWork) {
+              pHolidayPresence += pAdjusted;
+            } else {
+              const pNC = Math.min(pAdjusted, pStdCap);
+              pNormalOnly += pNC;
+              pMandatoryOt += Math.max(0, pAdjusted - pNC);
+            }
+            pFriDays++;
+          } else {
+            const pNC = Math.min(pAdjusted, pStdCap);
+            pNormalOnly += pNC;
+            pMandatoryOt += Math.max(0, pAdjusted - pNC);
+            pNormDays++;
+          }
           if (pDelay > 0) {
             if (pIsFri) pDelayF += pDelay;
             else if (pIsHol) pDelayH += pDelay;
             else pDelayN += pDelay;
           }
         }
-        const pActiveDelay = rulesObj.calculateEntryDelayFine ? (pDelayN + pDelayF + pDelayH) * delayFineRate : 0;
-        const pActiveClothes = rulesObj.deductClothesChangingTime ? (pNormDays + pFriDays + pHolDays) * clothesDur : 0;
+        const pActiveDelayN = rulesObj.calculateEntryDelayFine ? pDelayN * delayFineRate : 0;
+        const pActiveDelayF = rulesObj.calculateEntryDelayFine ? pDelayF * delayFineRate : 0;
+        const pActiveDelayH = rulesObj.calculateEntryDelayFine ? pDelayH * delayFineRate : 0;
+        const pActiveDelay = pActiveDelayN + pActiveDelayF + pActiveDelayH;
+        const pActiveClothesN = rulesObj.deductClothesChangingTime ? pNormDays * clothesDur : 0;
+        const pActiveClothesF = rulesObj.deductClothesChangingTime ? pFriDays * clothesDur : 0;
+        const pActiveClothesH = rulesObj.deductClothesChangingTime ? pHolDays * clothesDur : 0;
+        const pActiveClothes = pActiveClothesN + pActiveClothesF + pActiveClothesH;
         const prevOverrideKey = `${activePeriodId}_${prevY}_${prevM}`;
         const pMgmtMin = Math.round(Math.max(0, Number(db.payrollManualOverrides?.[prevOverrideKey]?.normalMgmtDeductions?.[emp.employeeCode] || 0)) * 60);
         const pNetWork = Math.max(0, pPresence - pActiveDelay - pActiveClothes - pMgmtMin);
-        const pAllocLeave = pNetWork >= prevReqMins ? 20 * 60 : (prevReqMins > 0 ? Math.round((pNetWork / prevReqMins) * 20 * 60) : 0);
-        if (pNetWork >= prevReqMins) {
-          prevLeaveMinutes = pAllocLeave;
+        const prevSkipLeave = isDepartedOrSettlingInMonth(
+          emp,
+          prevY,
+          prevM,
+          db.personnelSettlements,
+          activePeriodId
+        );
+        if (prevSkipLeave) {
+          const pNonHolDed =
+            pActiveDelayN +
+            pActiveDelayF +
+            pActiveClothesN +
+            pActiveClothesF +
+            (rulesObj.calculateHolidayWork ? 0 : pActiveDelayH + pActiveClothesH);
+          const pNetNormalOnly = Math.max(0, pNormalOnly - pNonHolDed - pMgmtMin);
+          const pNetHoliday = Math.max(0, pHolidayPresence - pActiveDelayH - pActiveClothesH);
+          const pDepPerf = resolveDepartedMonthAttendancePerf({
+            netNormalOnlyMinutes: pNetNormalOnly,
+            mandatoryOtMinutes: pMandatoryOt,
+            netHolidayMinutes: pNetHoliday,
+            requiredMinutes: prevReqMins,
+            presenceDaysCount: pNormDays + pFriDays + pHolDays,
+            prevLeaveMinutes: 0,
+            totalDaysInMonth: prevDaysCount
+          });
+          prevLeaveMinutes = pDepPerf.finalLeaveMinutes;
         } else {
-          const pDeficit = prevReqMins - pNetWork;
-          prevLeaveMinutes = Math.max(0, pAllocLeave - Math.min(pDeficit, pAllocLeave));
+          const pAllocLeave = pNetWork >= prevReqMins ? 20 * 60 : (prevReqMins > 0 ? Math.round((pNetWork / prevReqMins) * 20 * 60) : 0);
+          if (pNetWork >= prevReqMins) {
+            prevLeaveMinutes = pAllocLeave;
+          } else {
+            const pDeficit = prevReqMins - pNetWork;
+            prevLeaveMinutes = Math.max(0, pAllocLeave - Math.min(pDeficit, pAllocLeave));
+          }
         }
       }
     }
 
-    // مرخصی تعلق گرفته
-    let allocatedLeaveMinutes = 0;
-    if (netWorkMinutes >= requiredMinutes) {
-      allocatedLeaveMinutes = 20 * 60;
-    } else if (requiredMinutes > 0) {
-      allocatedLeaveMinutes = Math.round((netWorkMinutes / requiredMinutes) * 20 * 60);
-    }
+    const skipLeaveInjection = isDepartedOrSettlingInMonth(
+      emp,
+      Number(selectedYear),
+      Number(selectedMonth),
+      db.personnelSettlements,
+      activePeriodId
+    );
 
-    const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
+    const nonHolidayDelayAndClothes =
+      activeDelayFineNormal +
+      activeDelayFineFriday +
+      activeClothesNormal +
+      activeClothesFriday +
+      (rulesObj.calculateHolidayWork ? 0 : activeDelayFineHoliday + activeClothesHoliday);
+    const netNormalOnlyMinutes = Math.max(0, totalNormalWorkMinutes - nonHolidayDelayAndClothes - normalMgmtDeductionMinutes);
+    const totalDailyMandatoryOtMinutes = daysDetails.reduce((s, d) => s + (d.overtimeMandatoryMin || 0), 0);
+
     const extraRequiredMinutes = Math.max(0, netWorkMinutes - requiredMinutes);
 
+    let allocatedLeaveMinutes = 0;
     let currentWorkedMinutes = netWorkMinutes;
     let finalOtMinutes = 0;
-    let finalLeaveMinutes = totalLeaveMinutes;
+    let finalLeaveMinutes = prevLeaveMinutes;
     let finalHolidayMinutes = 0;
     let finalFridayMinutes = netFridayMinutes;
+    let finalDaysWorked = 0;
 
-    // ۱. حالت اول: کارکرد بیشتر یا مساوی موظفی ماه
-    if (netWorkMinutes >= requiredMinutes) {
-      currentWorkedMinutes = requiredMinutes;
-      finalHolidayMinutes = Math.min(netHolidayMinutes, extraRequiredMinutes);
-      finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
-      finalLeaveMinutes = totalLeaveMinutes;
+    if (skipLeaveInjection) {
+      const depPerf = resolveDepartedMonthAttendancePerf({
+        netNormalOnlyMinutes,
+        mandatoryOtMinutes: totalDailyMandatoryOtMinutes,
+        netHolidayMinutes,
+        requiredMinutes,
+        presenceDaysCount: presentDaysCount,
+        prevLeaveMinutes,
+        totalDaysInMonth: getJalaliDaysInMonth(Number(selectedYear), Number(selectedMonth))
+      });
+      allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
+      currentWorkedMinutes = depPerf.finalWorkedMinutes;
+      finalOtMinutes = depPerf.finalOtMinutes;
+      finalHolidayMinutes = depPerf.finalHolidayMinutes;
+      finalLeaveMinutes = depPerf.finalLeaveMinutes;
+      finalDaysWorked = depPerf.attendanceDaysWorked;
     } else {
-      // ۲. حالت دوم: کارکرد کمتر از موظفی ماه (تامین کسری صرفاً از مرخصی دوره؛ اضافه کار و تعطیل کاری صفر)
-      if (currentWorkedMinutes < requiredMinutes && finalLeaveMinutes > 0) {
-        const deficit = requiredMinutes - currentWorkedMinutes;
-        const leaveUsed = Math.min(deficit, finalLeaveMinutes);
-        currentWorkedMinutes += leaveUsed;
-        finalLeaveMinutes -= leaveUsed;
+      if (netWorkMinutes >= requiredMinutes) {
+        allocatedLeaveMinutes = 20 * 60;
+      } else if (requiredMinutes > 0) {
+        allocatedLeaveMinutes = Math.round((netWorkMinutes / requiredMinutes) * 20 * 60);
       }
-      finalOtMinutes = 0;
-      finalHolidayMinutes = 0;
+
+      const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
+      finalLeaveMinutes = totalLeaveMinutes;
+
+      if (netWorkMinutes >= requiredMinutes) {
+        // ۱. حالت اول: کارکرد بیشتر یا مساوی موظفی ماه
+        currentWorkedMinutes = requiredMinutes;
+        finalHolidayMinutes = Math.min(netHolidayMinutes, extraRequiredMinutes);
+        finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
+      } else {
+        // ۲. حالت دوم: کارکرد کمتر از موظفی ماه (تامین کسری صرفاً از مرخصی دوره)
+        if (currentWorkedMinutes < requiredMinutes && finalLeaveMinutes > 0) {
+          const deficit = requiredMinutes - currentWorkedMinutes;
+          const leaveUsed = Math.min(deficit, finalLeaveMinutes);
+          currentWorkedMinutes += leaveUsed;
+          finalLeaveMinutes -= leaveUsed;
+        }
+        finalOtMinutes = 0;
+        finalHolidayMinutes = 0;
+      }
+
+      // در نهایت ساعت کارکرد نهایی تقسیم بر 8 و رندینگ اعشاری
+      const rawDays = (currentWorkedMinutes / 60) / 8;
+      const intDays = Math.floor(rawDays);
+      const decDays = Number((rawDays - intDays).toFixed(4));
+      finalDaysWorked = decDays < 0.5 ? intDays : intDays + 1;
     }
 
     let finalWorkedMinutes = currentWorkedMinutes;
     let remainingLeaveMinutes = finalLeaveMinutes; // مانده مرخصی
 
-    // در نهایت ساعت کارکرد نهایی تقسیم بر 8 و رندینگ اعشاری
-    const rawDays = (finalWorkedMinutes / 60) / 8;
-    const intDays = Math.floor(rawDays);
-    const decDays = Number((rawDays - intDays).toFixed(4));
-    let finalDaysWorked = decDays < 0.5 ? intDays : intDays + 1;
     let resolvedRequiredHours = requiredHours;
     let resolvedRequiredMinutes = requiredMinutes;
     let resolvedNetWorkMinutes = netWorkMinutes;
@@ -2023,9 +2102,10 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       totalHolidayWorkMinutes,
       totalFridayWorkMinutes,
       daysDetails,
-      shiftMismatches
+      shiftMismatches,
+      isDepartedNoLeavePad: skipLeaveInjection
     };
-  }, [activeTab, inspectEmployeeId, records, calendarDays, db.personnel, db.productionSections, db.officialHolidays, db.shiftAssignments, db.payrollSettings, db.monthlyWorkdaySettings, db.payrollCalculationRules, db.payrollManualOverrides, db.payrollPeriods, db.attendanceRecords, db.shifts, db.personnelAllocations, activePeriodId, selectedYear, selectedMonth, isMonthLocked, fallbackShiftYearMonth]);
+  }, [activeTab, inspectEmployeeId, records, calendarDays, db.personnel, db.productionSections, db.officialHolidays, db.shiftAssignments, db.payrollSettings, db.monthlyWorkdaySettings, db.payrollCalculationRules, db.payrollManualOverrides, db.payrollPeriods, db.attendanceRecords, db.shifts, db.personnelAllocations, db.personnelSettlements, activePeriodId, selectedYear, selectedMonth, isMonthLocked, fallbackShiftYearMonth]);
 
   const approvedMismatchesSet = useMemo(() => new Set(approvedMismatches), [approvedMismatches]);
 
@@ -2310,9 +2390,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     });
 
     // 3. Build ALL approved mismatch / anomaly items for the active selected year/month
+    // Deduplicate strictly by (emp.id, normDate) so each personnel+day appears ONLY once
     const ymPrefix = `${selectedYear}/${String(selectedMonth).padStart(2, '0')}/`;
-    const approvedList: any[] = [];
-    const seenApprovedDayKey = new Set<string>();
+    const approvedByDayMap = new Map<string, any>();
     const mismatchByKey = new Map<string, any>();
     mismatchesList.forEach(m => mismatchByKey.set(`${m.employee.id}-${m.dateStr}`, m));
     const anomalyByKey = new Map<string, any>();
@@ -2327,37 +2407,54 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       const normDate = normalizeDateStr(match[3]);
       if (!normDate.startsWith(ymPrefix)) return;
 
-      const dayDedup = `${empId}-${normDate}-${approvalKind}`;
-      if (seenApprovedDayKey.has(dayDedup)) return;
-      seenApprovedDayKey.add(dayDedup);
-
       const emp = empById.get(empId) || allPeriodPersonnel.find(p => p.id === empId);
       if (!emp) return;
+
+      const dayKey = `${emp.id}-${normDate}`;
+      const existingApproved = approvedByDayMap.get(dayKey);
+      const activeM = mismatchByKey.get(dayKey);
+      const activeA = anomalyByKey.get(dayKey);
+
+      if (existingApproved) {
+        if (!existingApproved.approvalKeys.includes(rawKey)) {
+          existingApproved.approvalKeys.push(rawKey);
+        }
+        if (approvalKind === 'mismatch' && activeM) {
+          Object.assign(existingApproved, {
+            ...activeM,
+            approvalKey: existingApproved.approvalKey,
+            approvalKind: existingApproved.approvalKind,
+            approvalKeys: existingApproved.approvalKeys
+          });
+        } else if (approvalKind === 'anomaly' && activeA) {
+          existingApproved.hasExcessiveDelay = existingApproved.hasExcessiveDelay || activeA.hasExcessiveDelay;
+          existingApproved.hasExcessiveUnauthorized = existingApproved.hasExcessiveUnauthorized || activeA.hasExcessiveUnauthorized;
+          existingApproved.isNoShift = existingApproved.isNoShift || activeA.isNoShift;
+        }
+        return;
+      }
 
       const dateParts = normDate.split('/');
       const dayNum = parseInt(dateParts[2] || '0', 10) || 0;
       const weekdayName = getPersianWeekdayOfDate(normDate);
 
-      if (approvalKind === 'mismatch') {
-        const activeM = mismatchByKey.get(`${emp.id}-${normDate}`);
-        if (activeM) {
-          approvedList.push({
-            ...activeM,
-            approvalKey: rawKey,
-            approvalKind: 'mismatch'
-          });
-          return;
-        }
-      } else {
-        const activeA = anomalyByKey.get(`${emp.id}-${normDate}`);
-        if (activeA) {
-          approvedList.push({
-            ...activeA,
-            approvalKey: rawKey,
-            approvalKind: 'anomaly'
-          });
-          return;
-        }
+      if (approvalKind === 'mismatch' && activeM) {
+        approvedByDayMap.set(dayKey, {
+          ...activeM,
+          approvalKey: rawKey,
+          approvalKind: 'mismatch',
+          approvalKeys: [rawKey]
+        });
+        return;
+      }
+      if (approvalKind === 'anomaly' && activeA) {
+        approvedByDayMap.set(dayKey, {
+          ...activeA,
+          approvalKey: rawKey,
+          approvalKind: 'anomaly',
+          approvalKeys: [rawKey]
+        });
+        return;
       }
 
       // Reconstruct live current state (e.g. shift was updated when approved)
@@ -2399,7 +2496,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         lastExit = resolved.sortedTimes.length >= 2 ? resolved.sortedTimes[resolved.sortedTimes.length - 1] : '';
       }
 
-      approvedList.push({
+      approvedByDayMap.set(dayKey, {
         employee: emp,
         dayNum,
         dateStr: normDate,
@@ -2414,12 +2511,14 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         currentSectionId,
         approvalKey: rawKey,
         approvalKind,
+        approvalKeys: [rawKey],
         isNoShift: resolvedCandidates.length === 0,
         hasExcessiveDelay: delayMin > 120,
         hasExcessiveUnauthorized: unauthorizedPresenceMin > 120
       });
     });
 
+    const approvedList = Array.from(approvedByDayMap.values());
     approvedList.sort((a, b) => a.dayNum - b.dayNum || (a.employee.fullName || '').localeCompare(b.employee.fullName || '', 'fa'));
 
     return {
@@ -3264,6 +3363,8 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     let updatedPersonnel = [...(db.personnel || [])];
     const registeredNow: Personnel[] = [];
 
+    const combinedAttendanceRecords = [...(db.attendanceRecords || []), ...records];
+
     unregisteredCodes.forEach(code => {
       const cleanCode = toEnglishDigits(String(code)).trim();
       const normClean = stripLeadingZeros(normalizeAttCode(cleanCode));
@@ -3283,6 +3384,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       });
       if (alreadyHas) return;
 
+      const firstAttDate = findFirstAttendanceDateForCode(combinedAttendanceRecords, cleanCode, activePeriodId);
       const newEmpId = `emp-unknown-${Date.now()}-${cleanCode}`;
       const newEmp: Personnel = {
         id: newEmpId,
@@ -3292,6 +3394,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         lastName: `(کد ${cleanCode})`,
         fullName: `نامشخص (کد ${cleanCode})`,
         attendanceCode: cleanCode,
+        entryDate: firstAttDate || undefined,
         isActive: true,
         isMarried: false,
         childrenCount: 0,
@@ -3355,7 +3458,10 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     const cleanWithoutZeros = stripLeadingZeros(cleanInput);
     const displayCode = toEnglishDigits(String(code)).trim();
 
-    // 1. Update the target personnel's attendanceCode and delete any dummy placeholder personnel previously generated for this code
+    const combinedAttendanceRecords = [...(db.attendanceRecords || []), ...records];
+    const firstAttDate = findFirstAttendanceDateForCode(combinedAttendanceRecords, code, activePeriodId);
+
+    // 1. Update the target personnel's attendanceCode (and entryDate if empty) and delete any dummy placeholder personnel previously generated for this code
     const updatedPersonnel = (db.personnel || [])
       .filter(p => {
         if (p.id !== pId && p.periodId === activePeriodId) {
@@ -3369,9 +3475,11 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       })
       .map(p => {
         if (p.id === pId) {
+          const hasEntryDate = Boolean(p.entryDate && String(p.entryDate).trim() && String(p.entryDate).trim() !== '-');
           return {
             ...p,
-            attendanceCode: displayCode
+            attendanceCode: displayCode,
+            entryDate: hasEntryDate ? p.entryDate : (firstAttDate || p.entryDate)
           };
         }
         return p;
@@ -6024,7 +6132,11 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                 <span className="text-base font-black text-teal-400 font-mono block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.remainingLeaveMinutes)}
                 </span>
-                <span className="text-[9px] text-slate-500 block truncate" title="مرخصی مصرف‌نشده دوره">مانده قابل انتقال</span>
+                <span className="text-[9px] text-slate-500 block truncate" title="مرخصی مصرف‌نشده دوره">
+                  {inspectionDetails.isDepartedNoLeavePad
+                    ? 'ترک کار — محفوظ جهت تسویه حساب'
+                    : 'مانده قابل انتقال'}
+                </span>
               </div>
             </div>
           </div>
@@ -6980,105 +7092,264 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
       )}
 
       {/* Smart Auto-Diagnostic and Shift Fix Modal */}
-      {isSmartFixModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn" dir="rtl">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-2xl w-full p-6 text-right shadow-2xl flex flex-col gap-4 max-h-[85vh] overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2 text-amber-400">
-                <Sparkles className="h-5 w-5 animate-pulse" />
-                <h3 className="text-sm font-black text-white">نتایج پایش هوشمند خودکار و پیشنهاد شیفت‌های منطبق</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsSmartFixModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+      {isSmartFixModalOpen && (() => {
+        const fmtHM = (mins: number) =>
+          toPersianDigits(`${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`);
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              سیستم به صورت خودکار ترددهای ثبت‌شده پرسنل را بررسی کرده و تعداد <span className="font-extrabold text-amber-400">{toPersianDigits(smartFixCandidates.length)} مورد</span> پیشنهاد اصلاح شیفت برای رفع کامل عدم تطابق پیدا نموده است:
-            </p>
+        const mismatchCnt = smartFixCandidates.filter(c => c.sourceCategory === 'mismatch').length;
+        const noShiftCnt = smartFixCandidates.filter(c => c.sourceCategory === 'no_shift').length;
+        const approvedImproveCnt = smartFixCandidates.filter(c => c.sourceCategory === 'approved_improvement').length;
+        const needsApprovalCnt = smartFixCandidates.filter(c => c.sourceCategory === 'unauthorized_needs_approval').length;
 
-            <div className="overflow-y-auto max-h-[50vh] border border-slate-800 rounded-xl p-2 bg-slate-950/50 space-y-2">
-              {smartFixCandidates.map((cand) => {
-                const { mismatch, suggestedShift, key } = cand;
-                const isSelected = selectedFixKeys.has(key);
+        const visibleCandidates = smartFixFilter === 'all'
+          ? smartFixCandidates
+          : smartFixCandidates.filter(c => c.sourceCategory === smartFixFilter);
 
-                return (
-                  <div
-                    key={key}
-                    onClick={() => {
-                      const next = new Set(selectedFixKeys);
-                      if (isSelected) next.delete(key);
-                      else next.add(key);
-                      setSelectedFixKeys(next);
-                    }}
-                    className={`p-3 rounded-xl border transition-all cursor-pointer flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 ${
-                      isSelected
-                        ? 'bg-amber-955/20 border-amber-500/40 text-slate-100'
-                        : 'bg-slate-900/40 border-slate-800 text-slate-400 opacity-60'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => {}}
-                        className="h-4 w-4 rounded accent-amber-500 cursor-pointer"
-                      />
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-xs text-white">
-                          {mismatch.employee.fullName} <span className="text-[10px] text-slate-400 font-normal">({mismatch.dateStr} - {mismatch.weekday})</span>
-                        </div>
-                        <div className="text-[11px] text-slate-300">
-                          تردد واقعی: <span className="font-mono text-emerald-400 font-bold">{toPersianDigits(mismatch.firstEntry)}</span> تا <span className="font-mono text-emerald-400 font-bold">{toPersianDigits(mismatch.lastExit)}</span>
-                        </div>
-                      </div>
-                    </div>
+        const categoryBadge = (cat: SmartShiftSourceCategory) => {
+          switch (cat) {
+            case 'mismatch':
+              return { label: 'عدم تطابق شیفت', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' };
+            case 'no_shift':
+              return { label: 'تردد بدون شیفت', cls: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30' };
+            case 'approved_improvement':
+              return { label: 'تایید شده (بهبود شیفت)', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' };
+            case 'unauthorized_needs_approval':
+              return { label: 'مغایرت غیرمجاز نیازمند تایید', cls: 'bg-rose-500/15 text-rose-300 border-rose-500/30' };
+          }
+        };
 
-                    <div className="text-left sm:text-right bg-slate-950 p-2 rounded-lg border border-slate-800 text-xs">
-                      <div className="text-[10px] text-slate-400">شیفت جدید پیشنهادی:</div>
-                      <div className="font-black text-amber-300">
-                        {suggestedShift.name} ({toPersianDigits(suggestedShift.startTime)} الی {toPersianDigits(suggestedShift.endTime)})
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex items-center gap-2 justify-between pt-2 border-t border-slate-800">
-              <span className="text-xs text-slate-400 font-bold">
-                {toPersianDigits(selectedFixKeys.size)} مورد انتخاب شده
-              </span>
-              <div className="flex items-center gap-2">
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn" dir="rtl">
+            <div className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-4xl w-full p-6 text-right shadow-2xl flex flex-col gap-4 max-h-[88vh] overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2 text-amber-400">
+                  <Sparkles className="h-5 w-5 animate-pulse" />
+                  <h3 className="text-sm font-black text-white">نتایج پایش هوشمند شیفت‌ها (بر اساس ماتریس توانمندی مجاز پرسنل)</h3>
+                </div>
                 <button
                   type="button"
                   onClick={() => setIsSmartFixModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
                 >
-                  انصراف
+                  <X className="h-5 w-5" />
                 </button>
-                <button
-                  type="button"
-                  onClick={handleApplySmartShiftFixes}
-                  disabled={selectedFixKeys.size === 0 || isMonthLocked}
-                  className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                    selectedFixKeys.size > 0 && !isMonthLocked
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-lg shadow-amber-500/20'
-                      : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                  }`}
-                >
-                  <Check className="h-4 w-4" />
-                  تأیید و اعمال اصلاحات انتخاب شده
-                </button>
+              </div>
+
+              <div className="text-xs text-slate-300 leading-relaxed space-y-2">
+                <p>
+                  سیستم ترددهای عدم تطابق، بدون شیفت، تایید شده و مغایرت‌های غیرمجاز را بررسی کرد و <span className="font-extrabold text-amber-400">{toPersianDigits(smartFixCandidates.length)} مورد</span> پیشنهاد یا شیفت قابل تایید مجاز یافت شده است:
+                </p>
+
+                {/* Filter & Bulk Controls */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSmartFixFilter('all')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                        smartFixFilter === 'all' ? 'bg-slate-200 text-slate-950 border-slate-200' : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                      }`}
+                    >
+                      همه ({toPersianDigits(smartFixCandidates.length)})
+                    </button>
+                    {mismatchCnt > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSmartFixFilter('mismatch')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                          smartFixFilter === 'mismatch' ? 'bg-amber-500 text-slate-950 border-amber-400' : 'bg-slate-950 text-amber-300 border-amber-500/20 hover:bg-amber-500/10'
+                        }`}
+                      >
+                        عدم تطابق ({toPersianDigits(mismatchCnt)})
+                      </button>
+                    )}
+                    {noShiftCnt > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSmartFixFilter('no_shift')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                          smartFixFilter === 'no_shift' ? 'bg-cyan-500 text-slate-950 border-cyan-400' : 'bg-slate-950 text-cyan-300 border-cyan-500/20 hover:bg-cyan-500/10'
+                        }`}
+                      >
+                        بدون شیفت ({toPersianDigits(noShiftCnt)})
+                      </button>
+                    )}
+                    {approvedImproveCnt > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSmartFixFilter('approved_improvement')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                          smartFixFilter === 'approved_improvement' ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-slate-950 text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/10'
+                        }`}
+                      >
+                        تاییدشده قابل بهبود ({toPersianDigits(approvedImproveCnt)})
+                      </button>
+                    )}
+                    {needsApprovalCnt > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSmartFixFilter('unauthorized_needs_approval')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                          smartFixFilter === 'unauthorized_needs_approval' ? 'bg-rose-500 text-white border-rose-400' : 'bg-slate-950 text-rose-300 border-rose-500/20 hover:bg-rose-500/10'
+                        }`}
+                      >
+                        نیازمند تایید با بهترین شیفت ({toPersianDigits(needsApprovalCnt)})
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFixKeys(new Set(smartFixCandidates.map(c => c.key)))}
+                      className="px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
+                    >
+                      انتخاب همه
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFixKeys(new Set(smartFixCandidates.filter(c => !c.requiresUserApproval).map(c => c.key)))}
+                      className="px-2 py-1 rounded-lg text-[10px] font-bold bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/20 cursor-pointer"
+                    >
+                      فقط انتساب شیفت مجاز
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFixKeys(new Set())}
+                      className="px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+                    >
+                      لغو انتخاب همه
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto max-h-[50vh] border border-slate-800 rounded-xl p-2 bg-slate-950/50 space-y-2">
+                {visibleCandidates.map((cand) => {
+                  const { mismatch, suggestedShift, key, sourceCategory, requiresUserApproval, isSameShiftAsCurrent } = cand;
+                  const isSelected = selectedFixKeys.has(key);
+                  const badge = categoryBadge(sourceCategory);
+
+                  return (
+                    <div
+                      key={key}
+                      onClick={() => {
+                        const next = new Set(selectedFixKeys);
+                        if (isSelected) next.delete(key);
+                        else next.add(key);
+                        setSelectedFixKeys(next);
+                      }}
+                      className={`p-3 rounded-xl border transition-all cursor-pointer flex flex-col md:flex-row justify-between items-start md:items-center gap-3 ${
+                        isSelected
+                          ? requiresUserApproval
+                            ? 'bg-rose-950/20 border-rose-500/40 text-slate-100'
+                            : 'bg-amber-950/20 border-amber-500/40 text-slate-100'
+                          : 'bg-slate-900/40 border-slate-800 text-slate-400 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          className="h-4 w-4 mt-1 rounded accent-amber-500 cursor-pointer shrink-0"
+                        />
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-bold text-xs text-white">
+                              {mismatch.employee.fullName}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-normal">
+                              ({toPersianDigits(mismatch.dateStr)} - {mismatch.weekday})
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${badge.cls}`}>
+                              {badge.label}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                            <span>
+                              تردد واقعی: <span className="font-mono text-emerald-400 font-bold">{mismatch.firstEntry ? toPersianDigits(mismatch.firstEntry) : '---'}</span> تا <span className="font-mono text-emerald-400 font-bold">{mismatch.lastExit ? toPersianDigits(mismatch.lastExit) : '---'}</span>
+                            </span>
+                            <span className="text-slate-400">
+                              شیفت فعلی: <span className="text-slate-200 font-bold">{mismatch.currentSectionId === 'none' ? 'بدون شیفت' : (mismatch.shift?.name || resolveShiftDisplayName(mismatch.currentSectionId))}</span>
+                              {!mismatch.currentIsAuthorized && mismatch.currentSectionId !== 'none' && (
+                                <span className="text-rose-400 mr-1">(خارج از ماتریس مجاز)</span>
+                              )}
+                            </span>
+                          </div>
+                          {requiresUserApproval && (
+                            <div className="flex flex-wrap items-center gap-2 text-[10px] pt-0.5">
+                              {suggestedShift.hasExcessiveDelay && (
+                                <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
+                                  تاخیر روی بهترین شیفت: {fmtHM(suggestedShift.delayMin)}
+                                </span>
+                              )}
+                              {suggestedShift.hasExcessiveUnauthorized && (
+                                <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 font-bold">
+                                  ساعت غیرمجاز: {fmtHM(suggestedShift.unauthorizedPresenceMin)}
+                                </span>
+                              )}
+                              {suggestedShift.isMismatch && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">
+                                  اختلاف ورود/خروج باقیمانده: {fmtHM(suggestedShift.entryDiff)} / {fmtHM(suggestedShift.exitDiff)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className={`text-left sm:text-right bg-slate-950 p-2.5 rounded-lg border text-xs shrink-0 min-w-[220px] ${
+                        requiresUserApproval ? 'border-rose-500/30' : 'border-emerald-500/30'
+                      }`}>
+                        <div className="text-[10px] text-slate-400 mb-0.5">
+                          {requiresUserApproval
+                            ? (isSameShiftAsCurrent ? 'بهترین شیفت مجاز قابل تایید (تثبیت شیفت فعلی):' : 'بهترین شیفت مجاز انتخاب‌شده جهت تایید:')
+                            : 'بهترین شیفت مناسب و مجاز:'}
+                        </div>
+                        <div className={`font-black ${requiresUserApproval ? 'text-rose-300' : 'text-amber-300'}`}>
+                          {suggestedShift.name} ({toPersianDigits(suggestedShift.startTime)} الی {toPersianDigits(suggestedShift.endTime)})
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                          اختلاف ورود: {fmtHM(suggestedShift.entryDiff)} | خروج: {fmtHM(suggestedShift.exitDiff)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 justify-between pt-2 border-t border-slate-800">
+                <span className="text-xs text-slate-400 font-bold">
+                  {toPersianDigits(selectedFixKeys.size)} مورد انتخاب شده (هم‌زمان در لیست جدول نیز به عنوان شیفت پیشنهادی/قابل تایید انتخاب گردید)
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSmartFixModalOpen(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    انصراف
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApplySmartShiftFixes}
+                    disabled={selectedFixKeys.size === 0 || isMonthLocked}
+                    className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      selectedFixKeys.size > 0 && !isMonthLocked
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-lg shadow-amber-500/20'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    <Check className="h-4 w-4" />
+                    تأیید و اعمال اصلاحات انتخاب شده
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

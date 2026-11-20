@@ -26,6 +26,14 @@ import AttendanceForm from './AttendanceForm';
 import AttendanceSettingsForm from './AttendanceSettingsForm';
 import PersonnelSettlementTab from './payroll/PersonnelSettlementTab';
 import { PersonnelPayslipModal, PayslipItemData } from './payroll/PersonnelPayslipModal';
+import {
+  didEmployeeDepartInMonth,
+  didSettleLeaveThroughMonth,
+  findFirstAttendanceDateForCode,
+  isDepartedOrSettlingInMonth,
+  ProvisionalSettlementPreview,
+  resolveDepartedMonthAttendancePerf
+} from '../utils/payrollSettlementSync';
 import { 
   Users, Search, Plus, Trash, Trash2, Printer, CheckCircle, FileSpreadsheet, Sparkles, Layers,
   DollarSign, Briefcase, Calendar, ShieldCheck, Download, Award, ChevronLeft, CreditCard, ChevronDown, CheckSquare, Square, RefreshCcw, AlertTriangle, Tag, Copy,
@@ -35,14 +43,17 @@ import {
 function parseJalali(dateStr: string) {
   if (!dateStr) return null;
   const englishDigits = toEnglishDigits(dateStr);
-  const cleaned = englishDigits.replace(/[-\s]/g, '/');
-  const parts = cleaned.split('/');
+  const cleaned = englishDigits.replace(/[-_.\s/]+/g, '/');
+  const parts = cleaned.split('/').filter(Boolean);
   if (parts.length >= 3) {
-    const y = parseInt(parts[0], 10);
-    const m = parseInt(parts[1], 10);
-    const d = parseInt(parts[2], 10);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      return { y, m, d };
+    const p0 = parseInt(parts[0], 10);
+    const p1 = parseInt(parts[1], 10);
+    const p2 = parseInt(parts[2], 10);
+    if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+      if (p2 > 1300 && p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12) {
+        return { y: p2, m: p1, d: p0 };
+      }
+      return { y: p0, m: p1, d: p2 };
     }
   }
   return null;
@@ -50,14 +61,17 @@ function parseJalali(dateStr: string) {
 
 function normalizeDateStr(dateStr: string): string {
   if (!dateStr) return '';
-  const clean = toEnglishDigits(dateStr).trim().replace(/[-\/]/g, '/');
-  const parts = clean.split('/');
+  const clean = toEnglishDigits(dateStr).trim().replace(/[-_.\s/]+/g, '/');
+  const parts = clean.split('/').filter(Boolean);
   if (parts.length === 3) {
-    const y = parseInt(parts[0], 10);
-    const m = parseInt(parts[1], 10);
-    const d = parseInt(parts[2], 10);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
+    const p0 = parseInt(parts[0], 10);
+    const p1 = parseInt(parts[1], 10);
+    const p2 = parseInt(parts[2], 10);
+    if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+      if (p2 > 1300 && p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12) {
+        return `${p2}/${String(p1).padStart(2, '0')}/${String(p0).padStart(2, '0')}`;
+      }
+      return `${p0}/${String(p1).padStart(2, '0')}/${String(p2).padStart(2, '0')}`;
     }
   }
   return dateStr;
@@ -65,10 +79,13 @@ function normalizeDateStr(dateStr: string): string {
 
 function getJalaliYear(dateStr: string): string {
   if (!dateStr) return '';
-  const cleaned = toEnglishDigits(dateStr).replace(/[-\s]/g, '/');
-  const parts = cleaned.split('/');
-  if (parts.length > 0 && parts[0].length === 4) {
+  const cleaned = toEnglishDigits(dateStr).replace(/[-_.\s/]+/g, '/');
+  const parts = cleaned.split('/').filter(Boolean);
+  if (parts.length > 0 && parts[0].length === 4 && parseInt(parts[0], 10) > 1300) {
     return parts[0];
+  }
+  if (parts.length >= 3 && parts[2].length === 4 && parseInt(parts[2], 10) > 1300) {
+    return parts[2];
   }
   return '';
 }
@@ -1682,6 +1699,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   const [activeTab, setActiveTab] = useState<'employees' | 'payroll' | 'payrollConstants' | 'contracts' | 'attendanceSettings' | 'settlement'>('employees');
+  const [settlementPreselectEmpCode, setSettlementPreselectEmpCode] = useState<string>('');
+  const [settlementPreselectContext, setSettlementPreselectContext] = useState<{ year: number; month: number; readOnly?: boolean } | null>(null);
+  const [pendingSettlementPreview, setPendingSettlementPreview] = useState<ProvisionalSettlementPreview | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== 'settlement' && pendingSettlementPreview) {
+      setPendingSettlementPreview(null);
+    }
+  }, [activeTab, pendingSettlementPreview]);
 
   // --- States for Attendance-based Payroll ---
   const [payrollSubTab, setPayrollSubTab] = useState<'shifts' | 'attendance_records' | 'calc_attendance' | 'excel'>('shifts');
@@ -3637,7 +3663,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         for (let i = 0; i < prevRows.length; i++) {
           const pr = prevRows[i];
           if (pr?.employee?.id) {
-            prevLeaveMap.set(pr.employee.id, pr.finalLeaveMinutes || 0);
+            const settledPrior = didSettleLeaveThroughMonth(
+              pr.employee,
+              prevYear,
+              prevMonth,
+              db.personnelSettlements,
+              activePeriodId
+            );
+            prevLeaveMap.set(pr.employee.id, settledPrior ? 0 : (pr.finalLeaveMinutes || 0));
           }
         }
       }
@@ -3660,6 +3693,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const groupedRecordsByDate = groupRecordsByDate(empRecords);
 
         let totalPresenceMinutes = 0;
+        let totalNormalOnlyPresenceMinutes = 0;
+        let totalMandatoryOvertimeMinutes = 0;
         let totalHolidayPresenceMinutes = 0;
         let totalFridayPresenceMinutes = 0;
         let normalDaysWorkedCount = 0;
@@ -3706,22 +3741,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
           let fridayWorkMin = 0;
           let holidayWorkMin = 0;
+          let normalWorkMin = 0;
+          let overtimeMandatoryMin = 0;
 
           if (isPresent) {
+            const standardCap = 480 - breakMin;
             if (isHoliday && !isFriday) {
               if (rulesObj.calculateHolidayWork) {
                 holidayWorkMin = adjustedWorkedMin;
                 holidayDaysWorkedCount++;
               } else {
+                normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
+                overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
                 normalDaysWorkedCount++;
               }
             } else if (isFriday) {
               fridayWorkMin = rulesObj.calculateFridayWork ? adjustedWorkedMin : 0;
               if (isHoliday && rulesObj.calculateHolidayWork) {
                 holidayWorkMin = adjustedWorkedMin;
+              } else {
+                normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
+                overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
               }
               fridayDaysWorkedCount++;
             } else {
+              normalWorkMin = Math.min(adjustedWorkedMin, standardCap);
+              overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalWorkMin);
               normalDaysWorkedCount++;
             }
           }
@@ -3736,6 +3781,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             else delayMinNormal = delayMin;
           }
 
+          totalNormalOnlyPresenceMinutes += normalWorkMin;
+          totalMandatoryOvertimeMinutes += overtimeMandatoryMin;
           totalHolidayPresenceMinutes += holidayWorkMin;
           totalFridayPresenceMinutes += fridayWorkMin;
           totalDelayMinutesNormal += delayMinNormal;
@@ -3771,48 +3818,85 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           ? Math.max(0, totalFridayPresenceMinutes - activeFridayDelayFineMinutes - activeFridayClothesChangingMinutes)
           : 0;
 
-        let allocatedLeaveMinutes = 0;
-        if (netWorkMinutes >= reqMinutes) {
-          allocatedLeaveMinutes = 20 * 60;
-        } else if (reqMinutes > 0) {
-          allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * 20 * 60);
-        }
+        const skipLeaveInjection = isDepartedOrSettlingInMonth(
+          e,
+          pYear,
+          pMonth,
+          db.personnelSettlements,
+          activePeriodId,
+          pendingSettlementPreview
+        );
 
+        const nonHolidayDelayAndClothes =
+          activeDelayFineMinutes +
+          activeFridayDelayFineMinutes +
+          activeClothesChangingMinutes +
+          activeFridayClothesChangingMinutes +
+          (rulesObj.calculateHolidayWork ? 0 : activeHolidayDelayFineMinutes + activeHolidayClothesChangingMinutes);
+        const netNormalOnlyMinutes = Math.max(0, totalNormalOnlyPresenceMinutes - nonHolidayDelayAndClothes - prevMgmtMinutes);
+        const presenceDaysCount = normalDaysWorkedCount + holidayDaysWorkedCount + fridayDaysWorkedCount;
+        const pTotalDays = getShamsiMonthDays(pYear, pMonth) || 30;
         const prevLeaveMinutes = prevLeaveMap.get(e.id) || 0;
-        const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
-        const extraRequiredMinutes = Math.max(0, netWorkMinutes - reqMinutes);
 
+        let allocatedLeaveMinutes = 0;
         let currentWorkedMinutes = netWorkMinutes;
         let finalOtMinutes = 0;
-        let finalLeaveMinutes = totalLeaveMinutes;
+        let finalLeaveMinutes = prevLeaveMinutes;
         let finalHolidayMinutes = 0;
+        let daysWorkedCount = 0;
         const finalFridayMinutes = netFridayMinutes;
 
-        if (netWorkMinutes >= reqMinutes) {
-          currentWorkedMinutes = reqMinutes;
-          finalHolidayMinutes = Math.min(netHolidayMinutes, extraRequiredMinutes);
-          finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
-          finalLeaveMinutes = totalLeaveMinutes;
+        if (skipLeaveInjection) {
+          const depPerf = resolveDepartedMonthAttendancePerf({
+            netNormalOnlyMinutes,
+            mandatoryOtMinutes: totalMandatoryOvertimeMinutes,
+            netHolidayMinutes,
+            requiredMinutes: reqMinutes,
+            presenceDaysCount,
+            prevLeaveMinutes,
+            totalDaysInMonth: pTotalDays
+          });
+          allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
+          currentWorkedMinutes = depPerf.finalWorkedMinutes;
+          finalOtMinutes = depPerf.finalOtMinutes;
+          finalHolidayMinutes = depPerf.finalHolidayMinutes;
+          finalLeaveMinutes = depPerf.finalLeaveMinutes;
+          daysWorkedCount = depPerf.daysWorkedCount;
         } else {
-          if (currentWorkedMinutes < reqMinutes && finalLeaveMinutes > 0) {
-            const deficit2 = reqMinutes - currentWorkedMinutes;
-            const leaveUsed = Math.min(deficit2, finalLeaveMinutes);
-            currentWorkedMinutes += leaveUsed;
-            finalLeaveMinutes -= leaveUsed;
+          if (netWorkMinutes >= reqMinutes) {
+            allocatedLeaveMinutes = 20 * 60;
+          } else if (reqMinutes > 0) {
+            allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * 20 * 60);
           }
-          finalOtMinutes = 0;
-          finalHolidayMinutes = 0;
-        }
 
-        const rawDays = (currentWorkedMinutes / 60) / 8;
-        const intDays = Math.floor(rawDays);
-        const decDays = Number((rawDays - intDays).toFixed(4));
-        let daysWorkedCount = decDays < 0.5 ? intDays : intDays + 1;
+          const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
+          const extraRequiredMinutes = Math.max(0, netWorkMinutes - reqMinutes);
+          finalLeaveMinutes = totalLeaveMinutes;
 
-        const isNormalWorkFullOrMore = (currentWorkedMinutes >= reqMinutes || netWorkMinutes >= reqMinutes) && reqMinutes > 0;
-        if (isNormalWorkFullOrMore) {
-          const pTotalDays = getShamsiMonthDays(pYear, pMonth) || 30;
-          daysWorkedCount = pTotalDays;
+          if (netWorkMinutes >= reqMinutes) {
+            currentWorkedMinutes = reqMinutes;
+            finalHolidayMinutes = Math.min(netHolidayMinutes, extraRequiredMinutes);
+            finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
+          } else {
+            if (currentWorkedMinutes < reqMinutes && finalLeaveMinutes > 0) {
+              const deficit2 = reqMinutes - currentWorkedMinutes;
+              const leaveUsed = Math.min(deficit2, finalLeaveMinutes);
+              currentWorkedMinutes += leaveUsed;
+              finalLeaveMinutes -= leaveUsed;
+            }
+            finalOtMinutes = 0;
+            finalHolidayMinutes = 0;
+          }
+
+          const rawDays = (currentWorkedMinutes / 60) / 8;
+          const intDays = Math.floor(rawDays);
+          const decDays = Number((rawDays - intDays).toFixed(4));
+          daysWorkedCount = decDays < 0.5 ? intDays : intDays + 1;
+
+          const isNormalWorkFullOrMore = (currentWorkedMinutes >= reqMinutes || netWorkMinutes >= reqMinutes) && reqMinutes > 0;
+          if (isNormalWorkFullOrMore) {
+            daysWorkedCount = pTotalDays;
+          }
         }
 
         return {
@@ -3854,7 +3938,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       for (let i = 0; i < activePrevRows.length; i++) {
         const pr = activePrevRows[i];
         if (pr?.employee?.id) {
-          activePrevLeaveMap.set(pr.employee.id, pr.finalLeaveMinutes || 0);
+          const settledPrior = didSettleLeaveThroughMonth(
+            pr.employee,
+            prevCalcYear,
+            prevCalcMonth,
+            db.personnelSettlements,
+            activePeriodId
+          );
+          activePrevLeaveMap.set(pr.employee.id, settledPrior ? 0 : (pr.finalLeaveMinutes || 0));
         }
       }
     }
@@ -3903,6 +3994,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const uniqueDateRecords = Array.from(groupedRecordsByDate.values());
 
       let totalPresenceMinutes = 0;
+      let totalNormalOnlyPresenceMinutes = 0;
       let totalMandatoryOvertimeMinutes = 0;
       let totalHolidayPresenceMinutes = 0;
       let totalFridayPresenceMinutes = 0;
@@ -3972,6 +4064,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         let fridayWorkMin = 0;
         let holidayWorkMin = 0;
+        let normalWorkMin = 0;
         let overtimeMandatoryMin = 0;
 
         if (isPresent) {
@@ -3982,6 +4075,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               holidayDaysWorkedCount++;
             } else {
               const normalCap = Math.min(adjustedWorkedMin, standardCap);
+              normalWorkMin = normalCap;
               overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalCap);
               normalDaysWorkedCount++;
             }
@@ -3989,13 +4083,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             fridayWorkMin = rulesObj.calculateFridayWork ? adjustedWorkedMin : 0;
             if (isHoliday && rulesObj.calculateHolidayWork) {
               holidayWorkMin = adjustedWorkedMin;
+            } else {
+              const normalCap = Math.min(adjustedWorkedMin, standardCap);
+              normalWorkMin = normalCap;
+              overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalCap);
             }
             fridayDaysWorkedCount++;
-            const normalCap = Math.min(adjustedWorkedMin, standardCap);
-            overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalCap);
           } else {
             normalDaysWorkedCount++;
             const normalCap = Math.min(adjustedWorkedMin, standardCap);
+            normalWorkMin = normalCap;
             overtimeMandatoryMin = Math.max(0, adjustedWorkedMin - normalCap);
           }
         }
@@ -4010,6 +4107,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           else delayMinNormal = delayMin;
         }
 
+        totalNormalOnlyPresenceMinutes += normalWorkMin;
         totalMandatoryOvertimeMinutes += overtimeMandatoryMin;
         totalHolidayPresenceMinutes += holidayWorkMin;
         totalFridayPresenceMinutes += fridayWorkMin;
@@ -4036,6 +4134,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       const totalActiveDelayFineMinutes = activeDelayFineMinutes + activeFridayDelayFineMinutes + activeHolidayDelayFineMinutes;
       const totalActiveClothesChangingMinutes = activeClothesChangingMinutes + activeFridayClothesChangingMinutes + activeHolidayClothesChangingMinutes;
+
+      const nonHolidayDelayAndClothes =
+        activeDelayFineMinutes +
+        activeFridayDelayFineMinutes +
+        activeClothesChangingMinutes +
+        activeFridayClothesChangingMinutes +
+        (rulesObj.calculateHolidayWork ? 0 : activeHolidayDelayFineMinutes + activeHolidayClothesChangingMinutes);
+      const netNormalOnlyPresenceBaseMinutes = Math.max(0, totalNormalOnlyPresenceMinutes - nonHolidayDelayAndClothes);
 
       const netHolidayMinutes = Math.max(0, totalHolidayPresenceMinutes - activeHolidayDelayFineMinutes - activeHolidayClothesChangingMinutes);
       const netFridayMinutes = Math.max(0, totalFridayPresenceMinutes - activeFridayDelayFineMinutes - activeFridayClothesChangingMinutes);
@@ -4343,6 +4449,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         totalHolidayDelayFineHM: formatMinutesToHMHelper(activeHolidayDelayFineMinutes),
         totalActiveDelayFineMinutes,
         totalActiveClothesChangingMinutes,
+        netNormalOnlyPresenceBaseMinutes,
         totalHolidayPresenceMinutes,
         totalHolidayWorkHours,
         totalHolidayWorkHM: formatMinutesToHMHelper(netHolidayMinutes),
@@ -4374,6 +4481,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         requiredMinutes,
         requiredHM: formatMinutesToHMHelper(requiredMinutes),
         totalDaysInMonth,
+        presenceDaysCount,
         hasIncorrectAttendance,
         incorrectDates,
         hasShiftMismatch,
@@ -4430,6 +4538,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     db.personnelAllocations,
     db.approvedMismatches,
     db.taxBrackets,
+    db.personnelSettlements,
+    pendingSettlementPreview,
     personnel,
     calcYear,
     calcMonth,
@@ -4461,47 +4571,82 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const normalMgmtDeductionHM = formatMinutesToHMHelper(normalMgmtDeductionMinutes);
 
       const netWorkMinutes = Math.max(0, b.normalPlusExtraMinutes - b.totalActiveDelayFineMinutes - b.totalActiveClothesChangingMinutes - normalMgmtDeductionMinutes);
+      const netNormalOnlyMinutes = Math.max(0, (b.netNormalOnlyPresenceBaseMinutes ?? b.normalPlusExtraMinutes) - normalMgmtDeductionMinutes);
 
-      let allocatedLeaveMinutes = 0;
-      if (netWorkMinutes >= b.requiredMinutes) {
-        allocatedLeaveMinutes = 20 * 60;
-      } else if (b.requiredMinutes > 0) {
-        allocatedLeaveMinutes = Math.round((netWorkMinutes / b.requiredMinutes) * 20 * 60);
-      }
+      const isDepartedNoLeavePad = isDepartedOrSettlingInMonth(
+        emp,
+        calcYear,
+        calcMonth,
+        db.personnelSettlements,
+        activePeriodId,
+        pendingSettlementPreview
+      );
 
       const extraRequiredMinutes = Math.max(0, netWorkMinutes - b.requiredMinutes);
-      const totalLeaveMinutes = b.prevLeaveMinutes + allocatedLeaveMinutes;
 
+      let allocatedLeaveMinutes = 0;
+      let totalLeaveMinutes = b.prevLeaveMinutes;
       let currentWorkedMinutes = netWorkMinutes;
       let finalOtMinutes = 0;
-      let finalLeaveMinutes = totalLeaveMinutes;
+      let finalLeaveMinutes = b.prevLeaveMinutes;
       let finalHolidayMinutes = 0;
+      let attendanceDaysWorked = 0;
+      let isNormalWorkFullOrMore = false;
+      let daysWorkedCount = 0;
 
-      if (netWorkMinutes >= b.requiredMinutes) {
-        currentWorkedMinutes = b.requiredMinutes;
-        finalHolidayMinutes = Math.min(b.netHolidayMinutes, extraRequiredMinutes);
-        finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
+      if (isDepartedNoLeavePad) {
+        const depPerf = resolveDepartedMonthAttendancePerf({
+          netNormalOnlyMinutes,
+          mandatoryOtMinutes: b.mandatoryOtMinutes,
+          netHolidayMinutes: b.netHolidayMinutes,
+          requiredMinutes: b.requiredMinutes,
+          presenceDaysCount: b.presenceDaysCount ?? 0,
+          prevLeaveMinutes: b.prevLeaveMinutes,
+          totalDaysInMonth: b.totalDaysInMonth
+        });
+        allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
+        totalLeaveMinutes = depPerf.totalLeaveMinutes;
+        currentWorkedMinutes = depPerf.finalWorkedMinutes;
+        finalOtMinutes = depPerf.finalOtMinutes;
+        finalHolidayMinutes = depPerf.finalHolidayMinutes;
+        finalLeaveMinutes = depPerf.finalLeaveMinutes;
+        attendanceDaysWorked = depPerf.attendanceDaysWorked;
+        isNormalWorkFullOrMore = depPerf.isNormalWorkFullOrMore;
+        daysWorkedCount = depPerf.daysWorkedCount;
       } else {
-        if (currentWorkedMinutes < b.requiredMinutes && finalLeaveMinutes > 0) {
-          const deficit = b.requiredMinutes - currentWorkedMinutes;
-          const leaveUsed = Math.min(deficit, finalLeaveMinutes);
-          currentWorkedMinutes += leaveUsed;
-          finalLeaveMinutes -= leaveUsed;
+        if (netWorkMinutes >= b.requiredMinutes) {
+          allocatedLeaveMinutes = 20 * 60;
+        } else if (b.requiredMinutes > 0) {
+          allocatedLeaveMinutes = Math.round((netWorkMinutes / b.requiredMinutes) * 20 * 60);
         }
-        finalOtMinutes = 0;
-        finalHolidayMinutes = 0;
+        totalLeaveMinutes = b.prevLeaveMinutes + allocatedLeaveMinutes;
+        finalLeaveMinutes = totalLeaveMinutes;
+
+        if (netWorkMinutes >= b.requiredMinutes) {
+          currentWorkedMinutes = b.requiredMinutes;
+          finalHolidayMinutes = Math.min(b.netHolidayMinutes, extraRequiredMinutes);
+          finalOtMinutes = Math.max(0, extraRequiredMinutes - finalHolidayMinutes);
+        } else {
+          if (currentWorkedMinutes < b.requiredMinutes && finalLeaveMinutes > 0) {
+            const deficit = b.requiredMinutes - currentWorkedMinutes;
+            const leaveUsed = Math.min(deficit, finalLeaveMinutes);
+            currentWorkedMinutes += leaveUsed;
+            finalLeaveMinutes -= leaveUsed;
+          }
+          finalOtMinutes = 0;
+          finalHolidayMinutes = 0;
+        }
+
+        const rawDays = (currentWorkedMinutes / 60) / 8;
+        const intDays = Math.floor(rawDays);
+        const decDays = Number((rawDays - intDays).toFixed(4));
+        attendanceDaysWorked = decDays < 0.5 ? intDays : intDays + 1;
+        isNormalWorkFullOrMore = (currentWorkedMinutes >= b.requiredMinutes || netWorkMinutes >= b.requiredMinutes) && b.requiredMinutes > 0;
+        daysWorkedCount = isNormalWorkFullOrMore ? b.totalDaysInMonth : attendanceDaysWorked;
       }
 
       const finalWorkedMinutes = currentWorkedMinutes;
       const unusedLeaveMinutes = finalLeaveMinutes;
-
-      const rawDays = (finalWorkedMinutes / 60) / 8;
-      const intDays = Math.floor(rawDays);
-      const decDays = Number((rawDays - intDays).toFixed(4));
-      const attendanceDaysWorked = decDays < 0.5 ? intDays : intDays + 1;
-
-      const isNormalWorkFullOrMore = (finalWorkedMinutes >= b.requiredMinutes || netWorkMinutes >= b.requiredMinutes) && b.requiredMinutes > 0;
-      const daysWorkedCount = isNormalWorkFullOrMore ? b.totalDaysInMonth : attendanceDaysWorked;
 
       const netWorkHours = Number((netWorkMinutes / 60).toFixed(2));
       const allocatedLeaveHours = Number((allocatedLeaveMinutes / 60).toFixed(2));
@@ -4769,6 +4914,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         attendanceDaysWorked,
         isNormalWorkFullOrMore,
         daysWorkedCount,
+        isDepartedNoLeavePad,
         rawOtHours,
         rawFridayHours: b.rawFridayHours,
         rawHolidayHours
@@ -4787,7 +4933,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     attendanceBaseCalculations,
     userWorkDays,
     userInsuranceDays,
-    userNormalMgmtDeductions
+    userNormalMgmtDeductions,
+    db.personnelSettlements,
+    pendingSettlementPreview,
+    calcYear,
+    calcMonth,
+    activePeriodId
   ]);
 
   const activeAttendancePerfRows = useMemo(() => {
@@ -9808,7 +9959,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       mobile: newMobile.trim() || 'ثبت نشده',
       role: newRole.trim() || 'کارگر انبار',
       isActive: departureDate.trim() ? false : isActive,
-      departureDate: departureDate.trim() || undefined,
+      departureDate: departureDate.trim() ? normalizeDateStr(departureDate.trim()) : undefined,
       departureReason: departureDate.trim() ? (departureReason.trim() || 'استعفا') : undefined,
       isMarried: maritalStatus === 'متاهل',
       baseSalary: pBaseSalary,
@@ -10835,6 +10986,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         });
 
         if (!alreadyHas && cleanDisplay) {
+          const firstAttDate = findFirstAttendanceDateForCode(allAttendanceRecs, cleanDisplay, activePeriodId);
           const newEmp: Personnel = {
             id: `emp-auto-${Date.now()}-${cleanDisplay}`,
             periodId: activePeriodId,
@@ -10843,6 +10995,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             lastName: `(کد ${cleanDisplay})`,
             fullName: `نامشخص (کد ${cleanDisplay})`,
             attendanceCode: cleanDisplay,
+            entryDate: firstAttDate || undefined,
             isActive: true,
             isMarried: false,
             childrenCount: 0,
@@ -13049,6 +13202,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               >
                                 <option value="استعفا">استعفای کارمند</option>
                                 <option value="اتمام قرارداد">اتمام مدت قرارداد کاری</option>
+                                <option value="ترک کار بدون استعفا">ترک کار بدون استعفا</option>
+                                <option value="اخراج">اخراج</option>
                                 <option value="توافق طرفین">توافق طرفین (تسویه توافقی)</option>
                                 <option value="اخراج / قطع همکاری">اخراج / قطع همکاری توسط کارفرما</option>
                                 <option value="تعدیل نیرو">تعدیل نیرو</option>
@@ -15179,6 +15334,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                           ✅ صحیح
                                         </span>
                                       )}
+                                      {(row.isDepartedNoLeavePad || !!row.employee?.departureDate || row.employee?.isActive === false) && (
+                                          <span
+                                            className="inline-flex items-center gap-1 bg-rose-50 text-rose-800 border border-rose-200 p-0.5 px-2 rounded-lg text-[9.5px] font-bold"
+                                            title="در ماه ترک کار، کسری تا سقف روزهای حضور ابتدا از اضافه‌کار/تعطیل‌کاری و سپس مرخصی جبران شده و مازاد مرخصی در فرم تسویه حساب محاسبه می‌شود"
+                                          >
+                                            ترک کار (مرخصی در تسویه)
+                                          </span>
+                                      )}
                                     </div>
                                   </td>
                                 </tr>
@@ -15555,6 +15718,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                         <FileText className="h-3.5 w-3.5 text-white" />
                                         <span>فیش</span>
                                       </button>
+                                      {didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId) && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSettlementPreselectEmpCode(item.employeeCode);
+                                            setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: true });
+                                            setActiveTab('settlement');
+                                          }}
+                                          className="p-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                          title="مشاهده برگه تسویه حساب ثبت‌شده (سند حقوق قفل است)"
+                                        >
+                                          <Receipt className="h-3 w-3 text-white" />
+                                          <span>مشاهده تسویه حساب</span>
+                                        </button>
+                                      )}
                                       <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
                                         🔒 قفل
                                       </span>
@@ -15582,7 +15761,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l">{toPersianDigits(row.employee.employeeCode || '')}</td>
                               <td className="px-2 py-3 text-center text-slate-600 font-mono border-l">{toPersianDigits(row.employee.insuranceCode || '')}</td>
                               <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{row.employee.firstName}</td>
-                              <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{row.employee.lastName}</td>
+                              <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">
+                                {row.employee.lastName}
+                                {(row.isDepartedNoLeavePad || !!row.employee.departureDate || row.employee.isActive === false) && (
+                                    <span
+                                      className="mr-1 inline-block px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-black"
+                                      title="ترک کار — محاسبه کارکرد تا سقف روزهای حضور با جبران کسری از اضافه‌کار/تعطیل‌کاری و مرخصی"
+                                    >
+                                      ترک کار
+                                    </span>
+                                )}
+                              </td>
                               
                               {/* Group 1: Attendance HM */}
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-sky-50/10">{toPersianDigits(row.finalWorkedHM || '۰:۰۰')}</td>
@@ -15704,18 +15893,57 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                               {/* عملیات و فیش رسمی */}
                               <td className="px-2 py-2 text-center bg-slate-50">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedPayslipEmpCode(row.employee.employeeCode);
-                                    setIsPayslipModalOpen(true);
-                                  }}
-                                  className="p-1 px-2.5 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10.5px] rounded-lg font-bold flex items-center gap-1 mx-auto cursor-pointer transition-all shadow-xs"
-                                  title={`مشاهده و چاپ فیش رسمی حقوق ${row.employee.firstName} ${row.employee.lastName}`}
-                                >
-                                  <FileText className="h-3.5 w-3.5 text-rose-400" />
-                                  <span>فیش حقوق</span>
-                                </button>
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedPayslipEmpCode(row.employee.employeeCode);
+                                      setIsPayslipModalOpen(true);
+                                    }}
+                                    className="p-1 px-2.5 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                    title={`مشاهده و چاپ فیش رسمی حقوق ${row.employee.firstName} ${row.employee.lastName}`}
+                                  >
+                                    <FileText className="h-3.5 w-3.5 text-rose-400" />
+                                    <span>فیش حقوق</span>
+                                  </button>
+                                  {!isMonthLocked ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPendingSettlementPreview({
+                                          employeeCode: row.employee.employeeCode,
+                                          year: calcYear,
+                                          month: calcMonth,
+                                          settlementType: 'with_departure'
+                                        });
+                                        setSettlementPreselectEmpCode(row.employee.employeeCode);
+                                        setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
+                                        setActiveTab('settlement');
+                                      }}
+                                      className="p-1 px-2.5 bg-rose-600 hover:bg-rose-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                      title={`محاسبه و انجام تسویه حساب برای ${row.employee.firstName} ${row.employee.lastName}`}
+                                    >
+                                      <Receipt className="h-3 w-3 text-white" />
+                                      <span>تسویه حساب</span>
+                                    </button>
+                                  ) : didEmployeeDepartInMonth(row.employee, calcYear, calcMonth, db.personnelSettlements, activePeriodId) ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSettlementPreselectEmpCode(row.employee.employeeCode);
+                                        setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: true });
+                                        setActiveTab('settlement');
+                                      }}
+                                      className="p-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                      title={`مشاهده برگه تسویه حساب ${row.employee.firstName} ${row.employee.lastName}`}
+                                    >
+                                      <Receipt className="h-3 w-3 text-white" />
+                                      <span>مشاهده تسویه حساب</span>
+                                    </button>
+                                  ) : null}
+                                </div>
                               </td>
                             </tr>
                           ))
@@ -19389,6 +19617,20 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           db={db}
           onUpdateDb={onUpdateDb}
           activePeriodId={activePeriodId}
+          initialEmployeeCode={settlementPreselectEmpCode}
+          initialContext={settlementPreselectContext}
+          unlockedMonthsMap={recalculatedMonths}
+          provisionalSettlementPreview={pendingSettlementPreview}
+          onSettlementTypeChange={(settlementType) => {
+            setPendingSettlementPreview(prev => (prev ? { ...prev, settlementType } : null));
+          }}
+          onSettlementCloseOrCancel={() => {
+            setPendingSettlementPreview(null);
+          }}
+          onClearInitialEmployee={() => {
+            setSettlementPreselectEmpCode('');
+            setSettlementPreselectContext(null);
+          }}
         />
       )}
 

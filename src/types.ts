@@ -1289,7 +1289,8 @@ export interface CashierShiftCloseout {
   createdAt?: string;
 }
 
-export type SettlementReason = 'contract_end' | 'dismissal' | 'resignation'; // اتمام قرارداد | اخراج | استعفا
+export type SettlementReason = 'contract_end' | 'dismissal' | 'resignation' | 'abandonment'; // اتمام قرارداد | اخراج | استعفا | ترک کار بدون استعفا
+export type SettlementType = 'with_departure' | 'without_departure'; // تسویه حساب کامل به همراه ترک کار | تسویه حساب قرارداد بدون ترک کار
 
 export interface SettlementMonthlyDetail {
   monthIndex: number; // 1, 2, ...
@@ -1302,6 +1303,8 @@ export interface SettlementMonthlyDetail {
   holidayWorkHours: number; // ساعت تعطیل کاری
   fridayWorkHours: number; // ساعت جمعه کاری
   usedLeaveDays: number; // مرخصی استفاده شده ماه (روز)
+  usedLeaveHours?: number; // مرخصی استفاده شده ماه (ساعت)
+  usedLeaveMinutes?: number; // مرخصی استفاده شده ماه (دقیقه)
   
   // Salary Items
   dailyBaseSalary: number; // مزد روزانه
@@ -1316,10 +1319,23 @@ export interface SettlementMonthlyDetail {
   holidayWorkAmount: number; // حق تعطیل کاری
   fridayHourlyRate?: number; // نرخ ساعت جمعه‌کاری
   fridayWorkAmount: number; // حق جمعه کاری
+  seniorityBase?: number; // پایه سنوات ماه
+  monthlyEidi?: number; // عیدی ماهانه درج‌شده در لیست حقوق
+  monthlyYearsBenefit?: number; // سنوات ماهانه درج‌شده در لیست حقوق
+  jobAllowance?: number; // حق شغل / مسئولیت ماهانه
   grossSalary: number; // جمع ناخالص حقوق و مزایای ماه
   insurableGross?: number; // مبلغ مشمول کسر بیمه ماه
   workerInsuranceShare: number; // حق بیمه سهم کارگر (۷ درصد)
+  payrollTax?: number; // مالیات حقوق ماه
+  supplementaryInsurance?: number; // بیمه تکمیلی ماه
+  deductionsAmount?: number; // جمع کل کسورات ماه
   netSalaryPayable: number; // مبلغ حقوق قابل پرداخت ماه
+  syncedFromPayroll?: boolean; // آیا این ماه از اطلاعات حقوق و دستمزد تکمیل شده است
+  payrollSourceType?: 'locked_payroll' | 'live_attendance' | 'manual_contract'; // منبع محاسبه ماه
+  payrollItemPayable?: number; // مبلغ خالص فیش حقوق ثبت‌شده در سیستم حقوق و دستمزد
+  payrollLeaveRemainingMinutes?: number; // مانده مرخصی تجمعی تا پایان این ماه (دقیقه) طبق سیستم حقوق و حضور غیاب
+  alreadySettledInPrior?: boolean; // آیا این ماه قبلاً در سند تسویه حساب بدون ترک کار تسویه شده است
+  priorSettlementNo?: string; // شماره سند تسویه بدون ترک کار قبلی
 }
 
 export interface PersonnelSettlement {
@@ -1328,7 +1344,8 @@ export interface PersonnelSettlement {
   settlementNo: string; // شماره سند تسویه (e.g. SET-1403-001)
   employeeCode: string;
   contractId?: string; // شناسه قرارداد متناظر
-  reason: SettlementReason; // علت تسویه: اتمام قرارداد | اخراج | استعفا
+  settlementType?: SettlementType; // نوع تسویه: با ترک کار | قرارداد بدون ترک کار
+  reason: SettlementReason; // علت تسویه: اتمام قرارداد | اخراج | استعفا | ترک کار بدون استعفا
   
   // تاریخ‌های تسویه
   startDate: string; // تاریخ شروع کارکرد/قرارداد
@@ -1370,18 +1387,25 @@ export interface PersonnelSettlement {
   
   // مرخصی استحقاقی و مانده مرخصی
   totalEntitledLeaveDays: number; // سهم مرخصی پرسنل بر اساس مدت کارکرد (۲.۵ روز در ماه)
-  totalUsedLeaveDays: number; // مجموع مرخصی‌های استفاده شده طی دوره
-  unusedLeaveDays: number; // مانده مرخصی استفاده نشده
-  unusedLeaveAmount: number; // مبلغ بازخرید مانده مرخصی (مانده روز * مزد روزانه)
+  totalEntitledLeaveHours?: number; // سهم مرخصی پرسنل بر اساس ساعت (۲۰ ساعت در ماه)
+  totalUsedLeaveDays: number; // مجموع مرخصی‌های استفاده شده طی دوره (روز)
+  totalUsedLeaveHours?: number; // مجموع مرخصی‌های استفاده شده طی دوره (ساعت)
+  unusedLeaveDays: number; // مانده مرخصی استفاده نشده (روز)
+  unusedLeaveHours?: number; // مانده مرخصی استفاده نشده (ساعت)
+  unusedLeaveAmount: number; // مبلغ بازخرید مانده مرخصی (مانده ساعت * نرخ ساعتی مزد مبنا)
+
+  // طلب حساب از قبل (مانده طلب پرسنل مربوط به سال قبل)
+  previousYearReceivableAmount?: number; // مبلغ طلب حساب از قبل (ریال)
+  previousYearReceivableDescription?: string; // شرح و بابت طلب حساب از قبل
   
   // جمع کل مطالبات ناخالص
-  totalGrossPayable: number; // جمع کل مطالبات (حقوق ماه‌ها + سنوات + عیدی + مانده مرخصی)
+  totalGrossPayable: number; // جمع کل مطالبات (حقوق ماه‌ها + سنوات + عیدی + مانده مرخصی + طلب از قبل)
   
   // کسورات
   personnelPurchasesAmount: number; // خرید طی دوره پرسنل
   otherDeductionsAmount: number; // میزان سایر کسورات
   otherDeductionsDescription?: string; // توضیحات علت کسورات
-  totalDeductions: number; // مجموع کسورات (بیمه کارگر + خرید دوره + سایر کسورات)
+  totalDeductions: number; // مجموع کسورات (خرید دوره + سایر کسورات)
   
   // مبالغ پرداختی توسط کارفرما
   employerPaidAmount: number; // مبلغ پرداخت شده توسط کارفرما (مساعده / حقوق‌های قبلی)
@@ -1392,6 +1416,7 @@ export interface PersonnelSettlement {
   // وضعیت و فراداده
   status: 'draft' | 'finalized' | 'paid'; // پیش‌نویس | قطعی | پرداخت شده
   notes?: string;
+  payrollSyncedAt?: string; // زمان آخرین همگام‌سازی خودکار با حقوق و دستمزد
   registeredBy?: string;
   createdAt: string;
   updatedAt?: string;

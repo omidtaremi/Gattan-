@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import bcrypt from 'bcryptjs';
 import { User } from '../types';
 import { KeyRound, ShieldAlert, UserCheck, Smartphone, RefreshCw, LogIn, Server } from 'lucide-react';
 import { toPersianDigits } from '../utils/persianUtils';
@@ -79,9 +80,19 @@ export default function LoginScreen({
     }
 
     // Local / Offline mode fallback
-    const found = users.find(
-      (u) => u.username === selectedUsername && u.password === password
-    );
+    const found = users.find((u) => {
+      if (u.username !== selectedUsername) return false;
+      const storedPw = String(u.password || '');
+      if (storedPw === password) return true;
+      if (/^\$2[aby]\$\d{2}\$/.test(storedPw)) {
+        try {
+          return bcrypt.compareSync(password, storedPw);
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
 
     if (found) {
       if (found.is2FA) {

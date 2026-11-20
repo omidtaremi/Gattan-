@@ -567,7 +567,7 @@ export default function DatabaseServerPanel({
           onClick={onOpenBackupPanel}
           className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md transition-all shrink-0"
         >
-          <Download className="h-4 w-4" /> پشتیبان‌گیری اکسل (فوری)
+          <Download className="h-4 w-4" /> پشتیبان روزانه و بازیابی دیتابیس
         </button>
       </div>
 

@@ -257,12 +257,20 @@ option {
   border: 1px solid #000000 !important;
   font-weight: 900 !important;
   text-align: center !important;
+  vertical-align: middle !important;
+  overflow-wrap: break-word !important;
+  word-break: normal !important;
 }
 
 .official-print-sheet td {
   background-color: #ffffff !important;
   color: #000000 !important;
   border: 1px solid #000000 !important;
+  vertical-align: middle !important;
+}
+
+.official-print-sheet .tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 .official-print-sheet tr.even-row td,
@@ -367,6 +375,20 @@ option {
     color: #000000 !important;
     page-break-after: avoid;
     break-inside: auto;
+  }
+
+  .official-print-sheet thead {
+    display: table-header-group;
+  }
+
+  .official-print-sheet tfoot {
+    display: table-footer-group;
+  }
+
+  .official-print-sheet tr,
+  .official-print-sheet .print-avoid-break {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 
   /* Ensure all text inside the print sheet prints crisp black and legible */

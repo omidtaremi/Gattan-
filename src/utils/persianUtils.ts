@@ -467,9 +467,32 @@ export function isValidMobile(num: string | undefined | null): boolean {
  */
 export function normalizeJalaliDate(d: string | undefined | null): string {
   if (!d) return '';
-  const eng = toEnglishDigits(d).trim().replace(/[-_.]/g, '/');
-  const parts = eng.split('/').filter(Boolean);
+  const cleaned = toEnglishDigits(String(d))
+    .replace(/[\u200B-\u200F\u202A-\u202E\u00A0\uFEFF]/g, '')
+    .trim();
+  if (!cleaned) return '';
+
+  if (/^\d{8}$/.test(cleaned)) {
+    const y4 = parseInt(cleaned.substring(0, 4), 10);
+    if (y4 >= 1300 && y4 <= 1599) {
+      return `${cleaned.substring(0, 4)}/${cleaned.substring(4, 6)}/${cleaned.substring(6, 8)}`;
+    }
+  }
+
+  const eng = cleaned.replace(/[-_.]+/g, '/').replace(/\/+/g, '/');
+  const parts = eng.split('/').map(p => p.trim()).filter(Boolean);
   if (parts.length === 3) {
+    const n0 = parseInt(parts[0], 10);
+    const n1 = parseInt(parts[1], 10);
+    const n2 = parseInt(parts[2], 10);
+    if (!isNaN(n0) && !isNaN(n1) && !isNaN(n2)) {
+      if ((parts[0].length === 4 || n0 >= 1300) && n1 >= 1 && n1 <= 12 && n2 >= 1 && n2 <= 31) {
+        return `${n0}/${String(n1).padStart(2, '0')}/${String(n2).padStart(2, '0')}`;
+      }
+      if ((parts[2].length === 4 || n2 >= 1300) && n1 >= 1 && n1 <= 12 && n0 >= 1 && n0 <= 31) {
+        return `${n2}/${String(n1).padStart(2, '0')}/${String(n0).padStart(2, '0')}`;
+      }
+    }
     const y = parts[0];
     const m = parts[1].padStart(2, '0');
     const day = parts[2].padStart(2, '0');
@@ -754,15 +777,62 @@ export function parseShamsiYearMonth(dateStr?: string | null): { year: number; m
 }
 
 /**
- * Checks whether an employee has departed strictly BEFORE or prior to the target month,
- * meaning the target month is strictly AFTER the month of departure.
- * E.g., if departure is 1405/04/15 (month 4):
- *  - Month 1, 2, 3, 4: returns false (still active or active during month)
- *  - Month 5+: returns true (departed, omitted from month 5 onwards)
+ * Resolves the effective last-working `(year, month)` from a departure date.
+ * Because departure date is stored 1 day after the last attendance date,
+ * a departure date on day `01` (e.g., `1404/08/01` after working through `1404/07/30`)
+ * has its last active workday in the preceding month (`1404/07`), while days `>= 2`
+ * stay in the same `(year, month)`.
+ */
+export function parseEffectiveDepartureLastWorkYM(
+  departureDate?: string | null
+): { year: number; month: number } | null {
+  if (!departureDate) return null;
+  const eng = toEnglishDigits(String(departureDate)).replace(/[\u200B-\u200F\u202A-\u202E\u00A0\uFEFF]/g, '').trim();
+  if (!eng) return null;
+
+  let year: number | null = null;
+  let month: number | null = null;
+  let day: number | null = null;
+
+  if (/^\d{8}$/.test(eng)) {
+    year = parseInt(eng.substring(0, 4), 10);
+    month = parseInt(eng.substring(4, 6), 10);
+    day = parseInt(eng.substring(6, 8), 10);
+  } else {
+    const parts = eng.split(/[\/\-\.]+/).map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      const p0 = parseInt(parts[0], 10);
+      const p1 = parseInt(parts[1], 10);
+      const p2 = parts.length >= 3 ? parseInt(parts[2], 10) : NaN;
+      if (!isNaN(p0) && !isNaN(p1) && p0 > 1300 && p1 >= 1 && p1 <= 12) {
+        year = p0;
+        month = p1;
+        if (!isNaN(p2) && p2 >= 1 && p2 <= 31) day = p2;
+      } else if (!isNaN(p2) && !isNaN(p1) && p2 > 1300 && p1 >= 1 && p1 <= 12) {
+        year = p2;
+        month = p1;
+        if (!isNaN(p0) && p0 >= 1 && p0 <= 31) day = p0;
+      }
+    }
+  }
+
+  if (year === null || month === null || isNaN(year) || isNaN(month)) return null;
+  if (day === 1) {
+    return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+  }
+  return { year, month };
+}
+
+/**
+ * Checks whether an employee has departed before the target month starts,
+ * meaning the target month is strictly AFTER the employee's last active workday month.
+ * E.g., if last attendance was 1404/07/30 and departureDate is 1404/08/01:
+ *  - Month 7: returns false (last active month)
+ *  - Month 8+: returns true (already departed on 08/01)
  */
 export function isEmployeeDepartedInMonth(departureDate: string | undefined | null, targetYear: number, targetMonth: number): boolean {
   if (!departureDate || !String(departureDate).trim()) return false;
-  const parsed = parseShamsiYearMonth(departureDate);
+  const parsed = parseEffectiveDepartureLastWorkYM(departureDate);
   if (!parsed) return false;
   
   if (targetYear > parsed.year) return true;

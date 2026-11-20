@@ -18,6 +18,8 @@ import DibalScaleManagement from './components/DibalScaleManagement';
 import CustomerManagement from './components/CustomerManagement';
 import TreasuryManagement from './components/TreasuryManagement';
 import DatabaseServerPanel from './components/DatabaseServerPanel';
+import DatabaseBackupModal from './components/DatabaseBackupModal';
+import { performDatabaseBackup } from './services/backupService';
 import { testSqlServerConnection, pushToSqlServer, pullFromSqlServer, downloadSqlServerDDLScript } from './services/sqlServerService';
 import { exportDatabaseToExcel, importExcelToDatabase, exportDibalDataToExcel, importDibalDataFromExcel } from './utils/excelService';
 import {
@@ -67,6 +69,8 @@ export default function App() {
   const [lastPgSyncTime, setLastPgSyncTime] = useState('');
   const [showLocalMigrationBanner, setShowLocalMigrationBanner] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [backupRevision, setBackupRevision] = useState(0);
+  const [pendingBackupFolderPrompt, setPendingBackupFolderPrompt] = useState(false);
 
   const lastSyncedDbRef = useRef<AppDatabase | null>(null);
   const latestDbRef = useRef<AppDatabase | null>(null);
@@ -774,6 +778,48 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [serverMode, currentUser, db]);
 
+  // Automatic Daily Database Backup Scheduler (System Admin Only)
+  useEffect(() => {
+    if (!currentUser || !isAdminUser(currentUser) || !db) return;
+
+    let cancelled = false;
+    const checkAndRunDailyBackup = async () => {
+      if (cancelled) return;
+      const latest = latestDbRef.current || db;
+      if (!latest || !currentUserRef.current || !isAdminUser(currentUserRef.current)) return;
+
+      const res = await performDatabaseBackup({
+        trigger: 'auto',
+        serverMode,
+        currentDb: latest,
+        currentUser: currentUserRef.current,
+        interactiveFolderPrompt: false,
+      });
+
+      if (cancelled) return;
+      if (res.needsFolderPermission) {
+        setPendingBackupFolderPrompt(true);
+      } else if (res.ok && !res.skipped) {
+        setPendingBackupFolderPrompt(false);
+        setBackupRevision((prev) => prev + 1);
+      }
+    };
+
+    const initTimer = setTimeout(() => {
+      checkAndRunDailyBackup().catch(() => {});
+    }, 4500);
+
+    const intervalId = setInterval(() => {
+      checkAndRunDailyBackup().catch(() => {});
+    }, 15 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initTimer);
+      clearInterval(intervalId);
+    };
+  }, [currentUser?.id, serverMode, Boolean(db)]);
+
   // Update central state and save to local storage + schedule PostgreSQL delta sync
   const handleUpdateDatabase = (updatedDb: AppDatabase) => {
     const sanitized = sanitizeAndMergeDatabase(updatedDb);
@@ -830,7 +876,78 @@ export default function App() {
     }
   };
 
-  // 3. Backup and Restore (Excel backup) Section 1-b
+  // 3. Backup and Restore (JSON Daily Backup & Excel Backup) Section 1-b
+
+  const handleRestoreFullDatabase = async (
+    restoredDb: AppDatabase,
+    sourceLabel: string
+  ): Promise<boolean> => {
+    if (!isAdminUser(currentUser)) {
+      alert('فقط مدیر ارشد مجاز به بازیابی کامل پایگاه داده است.');
+      return false;
+    }
+
+    const sanitized = sanitizeAndMergeDatabase(restoredDb);
+    latestDbRef.current = sanitized;
+    setDb(sanitized);
+    saveDatabase(sanitized);
+
+    if (serverMode === 'postgres') {
+      try {
+        const pgRes = await importDatabaseToPostgres(sanitized, sourceLabel);
+        if (!pgRes.ok) {
+          alert(
+            `فایل پشتیبان خوانده شد، اما ذخیره در PostgreSQL با خطا مواجه شد:\n${
+              pgRes.error || 'خطای نامشخص سرور'
+            }`
+          );
+          return false;
+        }
+        if (pgRes.versions) collectionVersionsRef.current = pgRes.versions;
+        lastSyncedDbRef.current = sanitized;
+        setShowLocalMigrationBanner(false);
+        setPgSyncState('synced');
+        setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
+        fetchPostgresStatus().then(setServerStatus).catch(() => {});
+      } catch (pgErr: any) {
+        alert(
+          `ارسال داده‌های بازیابی‌شده به PostgreSQL با خطا مواجه شد: ${
+            pgErr?.message || String(pgErr)
+          }`
+        );
+        return false;
+      }
+    }
+
+    if (sanitized.periods.length > 0) {
+      const matched = sanitized.periods.find((p) => p.id === activePeriodId) || sanitized.periods[0];
+      setActivePeriodId(matched.id);
+    }
+    setBackupRevision((prev) => prev + 1);
+    return true;
+  };
+
+  const handleGrantBackupFolderWrite = async () => {
+    if (!db || !currentUser || !isAdminUser(currentUser)) return;
+    const res = await performDatabaseBackup({
+      trigger: 'manual',
+      serverMode,
+      currentDb: latestDbRef.current || db,
+      currentUser,
+      interactiveFolderPrompt: true,
+    });
+    if (res.ok) {
+      setPendingBackupFolderPrompt(false);
+      setBackupRevision((prev) => prev + 1);
+      alert(
+        res.method === 'folder'
+          ? 'نسخه پشتیبان روزانه امروز با موفقیت در پوشه متصل سیستم ذخیره شد.'
+          : `فایل پشتیبان (${res.filename}) با موفقیت ذخیره شد.`
+      );
+    } else if (res.error) {
+      alert(res.error);
+    }
+  };
 
   const handleExportExcelBackup = () => {
     if (!db) return;
@@ -1643,9 +1760,14 @@ export default function App() {
             {/* General Backup trigger */}
             <button
               onClick={() => setShowBackupPanel(true)}
-              className="p-2 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors"
+              className="p-2 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors relative"
+              title="پشتیبان‌گیری روزانه، خروجی و بازیابی کامل دیتابیس"
             >
-              <Database className="h-4 w-4 text-zinc-405" /> پشتیبان اکسل
+              <Database className="h-4 w-4 text-emerald-400" />
+              <span>پشتیبان و بازیابی</span>
+              {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+              )}
             </button>
 
             {/* Active Switcher for Period validation */}
@@ -1709,9 +1831,33 @@ export default function App() {
         </div>
       </header>
 
-      {/* First-Time Migration / Sync Conflict Banner */}
-      {(showLocalMigrationBanner || syncNotice) && (
+      {/* First-Time Migration / Sync Conflict / Daily Backup Folder Permission Banner */}
+      {(showLocalMigrationBanner || syncNotice || (pendingBackupFolderPrompt && isAdminUser(currentUser))) && (
         <div className="max-w-7xl w-full mx-auto px-4 md:px-6 lg:px-8 pt-4 space-y-2">
+          {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
+            <div className="p-3.5 rounded-2xl bg-amber-950/35 border border-amber-700/45 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="text-amber-100 leading-relaxed">
+                <strong className="text-amber-300 block mb-0.5">تایید دسترسی پوشه پشتیبان‌گیری روزانه</strong>
+                <span>مرورگر پس از باز شدن مجدد نیاز به تایید یک‌کلیکی برای ذخیره مستقیم فایل بکاپ امروز در پوشه انتخاب‌شده سیستم شما دارد.</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGrantBackupFolderWrite}
+                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-xl cursor-pointer transition-colors"
+                >
+                  ذخیره بکاپ امروز در پوشه
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingBackupFolderPrompt(false)}
+                  className="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 font-bold px-3 py-2 rounded-xl cursor-pointer"
+                >
+                  بستن
+                </button>
+              </div>
+            </div>
+          )}
           {showLocalMigrationBanner && serverMode === 'postgres' && isAdminUser(currentUser) && (
             <div className="p-4 rounded-2xl bg-blue-950/30 border border-blue-700/40 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
               <div className="text-blue-200 leading-relaxed">
@@ -2064,135 +2210,21 @@ export default function App() {
           )}
         </section>
       </main>
-      {showBackupPanel && (
-        <div className="fixed inset-0 bg-zinc-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in font-sans" dir="rtl">
-          <div className="glass-card rounded-3xl p-6 max-w-2xl w-full space-y-4 text-zinc-100 overflow-y-auto max-h-[90vh]">
-            <div>
-              <h3 className="text-base font-extrabold text-white flex items-center gap-1.5">
-                <Database className="h-5 w-5 text-emerald-500" />
-                سامانه پشتیبان‌گیری کل ارقام دیتابیس (Excel)
-              </h3>
-              <p className="text-xs text-zinc-400 mt-1">
-                می‌توانید کل اطلاعات شامل دوره‌ها، کالاها، فرمول‌ها، رکوردهای فروش، فاکتورها، مدیریت ترازوهای دیبال M-525، کاتالوگ PLU، پرسنل، سوابق بیمه تأمین اجتماعی، قراردادهای کار، <strong className="text-emerald-400 font-bold">ریز محاسبات حقوق و دستمزد (Payroll Calculations)</strong>، <strong className="text-emerald-400 font-bold">احکام و اسناد تسویه حساب پرسنل (Settlements)</strong>، ثوابت قانونی، قوانین مالیات و اسناد حقوق و دستمزد مستقیم را در قالب فایل اکسل جامع (چند برگه‌ای) خروجی بگیرید یا بازیابی کنید.
-              </p>
-              <div className="flex flex-wrap gap-1.5 mt-2.5">
-                <span className="text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-md font-medium flex items-center gap-1">
-                  <CheckCircle className="h-3 w-3 text-emerald-400" /> شامل شیت اختصاصی ریز محاسبات حقوق و دستمزد (Payroll Calculations)
-                </span>
-                <span className="text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-md font-medium flex items-center gap-1">
-                  <CheckCircle className="h-3 w-3 text-emerald-400" /> شامل لیست‌های ۱۲ ماهه حقوق و اقلام کارکرد پرسنل
-                </span>
-                <span className="text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-md font-medium flex items-center gap-1">
-                  <CheckCircle className="h-3 w-3 text-emerald-400" /> شامل شیت اختصاصی تسویه حساب پرسنل
-                </span>
-                <span className="text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-md font-medium flex items-center gap-1">
-                  <CheckCircle className="h-3 w-3 text-emerald-400" /> شامل جداول مالیات حقوق و معافیت‌ها
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-4 pt-2">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="border border-zinc-800 p-4 rounded-2xl bg-zinc-900/40 flex flex-col justify-between items-center text-center space-y-3">
-                  <div>
-                    <h4 className="text-xs font-black text-zinc-200">خروجی اکسل چند برگه‌ای (دانلود بکاپ)</h4>
-                    <p className="text-[10px] text-zinc-500 mt-1 leading-normal">دریافت فایل XLSX منظم و شیت بندی شده منطبق با فازهای سامانه جهت ذخیره‌سازی آفلاین</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleExportExcelBackup}
-                    className="w-full bg-zinc-800 text-emerald-450 border border-zinc-700 hover:bg-zinc-700 hover:text-emerald-300 font-bold py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
-                  >
-                    <Download className="h-4 w-4" /> تهیه فایل اکسل جامع
-                  </button>
-                </div>
-
-                {isAdminUser(currentUser) && (
-                  <div className="border border-zinc-800 p-4 rounded-2xl bg-zinc-900/40 flex flex-col justify-between items-center text-center space-y-3">
-                    <div>
-                      <h4 className="text-xs font-black text-zinc-200">وارد کردن کل اطلاعات از اکسل (بازیابی بکاپ)</h4>
-                      <p className="text-[10px] text-zinc-500 mt-1 leading-normal">بارگذاری شیت‌های ویرایش‌شده اکسل به صورت گروهی در پایگاه اطلاعات و بازنویسی دیتای فعلی</p>
-                    </div>
-                    <label className="w-full bg-indigo-650 hover:bg-indigo-600 text-white font-bold py-2 rounded-xl text-xs cursor-pointer text-center flex items-center justify-center gap-1.5 transition-all">
-                      <Upload className="h-4 w-4" /> بارگذاری فایل اکسل جامع
-                      <input
-                        id="db-backup-excel-import"
-                        type="file"
-                        accept=".xlsx,.xls,.xlsm"
-                        onChange={handleImportExcelBackup}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-                )}
-              </div>
-
-              {/* Dibal Scale Management Backup Block */}
-              <div className="border border-rose-900/50 p-4 rounded-2xl bg-rose-950/20 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Scale className="h-4.5 w-4.5 text-rose-400" />
-                    <h4 className="text-xs font-black text-rose-200">پشتیبان‌گیری اختصاصی فرم مدیریت ترازوهای دیبال (Dibal M-525 Excel)</h4>
-                  </div>
-                  <span className="text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 px-2 py-0.5 rounded-full font-mono">
-                    Model M-525 DFW
-                  </span>
-                </div>
-                <p className="text-[11px] text-zinc-400 leading-normal">
-                  ارسال و دریافت اطلاعات کامل فرم مدیریت ترازو دیبال شامل تنظیمات شبکه‌ای (RX/TX)، جدول کد کالاها (PLU)، کلیدهای مستقیم کیپد (Keypad Preset) و سوابق قبوض وزن‌کشی از/به اکسل.
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleExportDibalExcelBackup}
-                    className="bg-zinc-800 hover:bg-zinc-700 text-rose-300 border border-zinc-700 font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
-                  >
-                    <Download className="h-4 w-4" /> ارسال اطلاعات ترازو دیبال به اکسل
-                  </button>
-                  <label className="bg-rose-900/80 hover:bg-rose-800 text-white font-bold py-2 px-3 rounded-xl text-xs cursor-pointer text-center flex items-center justify-center gap-1.5 transition-all border border-rose-700">
-                    <Upload className="h-4 w-4" /> دریافت اطلاعات ترازو دیبال از اکسل
-                    <input
-                      id="dibal-backup-excel-import"
-                      type="file"
-                      accept=".xlsx, .xls"
-                      onChange={handleImportDibalExcelBackup}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            {isAdminUser(currentUser) && (
-              <div className="border border-rose-950/40 bg-zinc-900/30 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-right">
-                <div>
-                  <h4 className="text-xs font-bold text-rose-300 flex items-center gap-1">
-                    <ShieldAlert className="h-4 w-4 text-rose-400 animate-pulse" /> پاک‌سازی و ریست کارخانه کل سیستم
-                  </h4>
-                  <p className="text-[10px] text-zinc-400 mt-1 leading-normal">حذف همگانی و بازنشانی کلیه اقلام، دسته‌بندی‌ها، فاکتورهای خرید، فاکتورهای فروش و دوره‌های انبارگردانی به خام اولیه.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handlePurgeAllDatabase}
-                  className="w-full sm:w-auto px-4 py-2 bg-rose-700/80 hover:bg-rose-700 text-white font-bold text-xs rounded-xl border border-rose-600 shadow cursor-pointer transition-colors shrink-0"
-                >
-                  پاک‌سازی دیتابیس
-                </button>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-3 border-t border-zinc-800/80">
-              <button
-                type="button"
-                onClick={() => setShowBackupPanel(false)}
-                className="px-4 py-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 font-bold text-xs rounded-xl cursor-pointer transition-colors"
-              >
-                بستن پنجره پشتیبان
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DatabaseBackupModal
+        isOpen={showBackupPanel}
+        onClose={() => setShowBackupPanel(false)}
+        db={db}
+        currentUser={currentUser}
+        serverMode={serverMode}
+        backupRevision={backupRevision}
+        onRestoreDatabase={handleRestoreFullDatabase}
+        onExportExcelBackup={handleExportExcelBackup}
+        onImportExcelBackup={handleImportExcelBackup}
+        onExportDibalExcelBackup={handleExportDibalExcelBackup}
+        onImportDibalExcelBackup={handleImportDibalExcelBackup}
+        onPurgeAllDatabase={handlePurgeAllDatabase}
+        askConfirm={askConfirm}
+      />
 
       {/* ================= MODAL WINDOW B: NEW TIME PERIOD POPUP ================= */}
       {showPeriodManager && (

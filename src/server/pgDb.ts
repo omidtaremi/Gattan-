@@ -1021,6 +1021,51 @@ export async function loadCollectionsFromPg(
   return { collections, versions, isEmpty };
 }
 
+export async function exportFullDatabaseFromPg(
+  actor: AuthUserLike,
+  ipAddress?: string
+): Promise<{
+  exportedAt: string;
+  database: Record<string, unknown>;
+}> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  if (!isAdminUser(actor)) {
+    throw new Error('فقط مدیر ارشد مجاز به دریافت فایل کامل پشتیبان پایگاه داده است.');
+  }
+
+  const { collections } = await loadCollectionsFromPg(actor);
+  const { rows: userRows } = await pool.query(
+    `SELECT * FROM app_users ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, created_at ASC`
+  );
+  const fullUsers = userRows.map((row) => ({
+    ...mapUserRow(row, true),
+    password: String(row.password_hash || ''),
+  }));
+  const roles = await getRolesAdminFromPg();
+
+  const database: Record<string, unknown> = {
+    ...collections,
+    roles,
+    users: fullUsers,
+  };
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'BACKUP_EXPORT',
+    '*',
+    Object.keys(database).length,
+    { mode: 'postgres_json_backup' },
+    ipAddress
+  );
+
+  return {
+    exportedAt: new Date().toISOString(),
+    database,
+  };
+}
+
 export async function syncCollectionsDeltaToPg(
   actor: AuthUserLike,
   changes: Record<string, unknown>,

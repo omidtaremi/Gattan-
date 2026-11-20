@@ -8,12 +8,13 @@ import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { 
   AppDatabase, Personnel, PersonnelContract, SalaryBaseRate,
-  PersonnelSettlement, SettlementMonthlyDetail, SettlementReason
+  PersonnelSettlement, SettlementMonthlyDetail, SettlementReason, SettlementType
 } from '../../types';
 import { 
   toPersianDigits, toEnglishDigits, formatWithCommas, parseNumber, 
   downloadCSV, printElement, matchPersianString, getTodayJalali, 
-  numberToWordsPersian, isValidJalaliDate, normalizeJalaliDate
+  numberToWordsPersian, isValidJalaliDate, normalizeJalaliDate,
+  parseEffectiveDepartureLastWorkYM
 } from '../../utils/persianUtils';
 import { 
   Calculator, FileText, Printer, Download, Plus, Search, Trash2, 
@@ -23,17 +24,39 @@ import {
   Eye, Copy, ZoomIn, ZoomOut, Maximize2, Building2, ShieldCheck
 } from 'lucide-react';
 import { getInsuredSalaryItemsForContract, getTaxableSalaryItemsForContract, getSalaryBaseRateForContract } from '../PayrollManagement';
+import {
+  addDaysToJalali,
+  computeMonthlyPayrollSnapshotForEmployee,
+  findFirstAttendanceDateForCode,
+  findLastAttendanceDateForEmployee,
+  getEmployeeRegisteredPayrollsSummary,
+  getEmployeeTreasuryPaidInPeriod,
+  getPriorWithoutDepartureSettlements,
+  getSettlementReasonLabel,
+  isPayrollMonthLocked,
+  mapPersianReasonToSettlementReason,
+  ProvisionalSettlementPreview
+} from '../../utils/payrollSettlementSync';
 
 interface PersonnelSettlementTabProps {
   db: AppDatabase;
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
+  initialEmployeeCode?: string;
+  initialContext?: { year: number; month: number; readOnly?: boolean } | null;
+  unlockedMonthsMap?: Record<string, boolean>;
+  provisionalSettlementPreview?: ProvisionalSettlementPreview | null;
+  onSettlementTypeChange?: (settlementType: SettlementType) => void;
+  onSettlementCloseOrCancel?: () => void;
+  onClearInitialEmployee?: () => void;
 }
 
 const JALALI_MONTH_NAMES = [
   'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
   'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
 ];
+
+const CURRENT_YEAR_CONTRACT_ID = '__CURRENT_YEAR__';
 
 function getShamsiMonthDays(year: number, month: number): number {
   if (month >= 1 && month <= 6) return 31;
@@ -45,23 +68,180 @@ function getShamsiMonthDays(year: number, month: number): number {
 
 function parseJalali(dateStr: string): { y: number; m: number; d: number } | null {
   if (!dateStr) return null;
-  const clean = toEnglishDigits(dateStr).trim().replace(/[-\s]/g, '/');
-  const parts = clean.split('/');
+  const clean = toEnglishDigits(dateStr).trim().replace(/[-_.\s/]+/g, '/');
+  const parts = clean.split('/').filter(Boolean);
   if (parts.length === 3) {
-    const y = parseInt(parts[0], 10);
-    const m = parseInt(parts[1], 10);
-    const d = parseInt(parts[2], 10);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      return { y, m, d };
+    const p0 = parseInt(parts[0], 10);
+    const p1 = parseInt(parts[1], 10);
+    const p2 = parseInt(parts[2], 10);
+    if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+      if (p2 > 1300 && p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12) {
+        return { y: p2, m: p1, d: p0 };
+      }
+      return { y: p0, m: p1, d: p2 };
     }
   }
   return null;
 }
 
+interface DepartureMonthUnpaidLeaveInfo {
+  year: number;
+  month: number;
+  monthName: string;
+  calendarDaysToDeparture: number;
+  workedDays: number;
+  unpaidDays: number;
+}
+
+/**
+ * کسر عیدی و سنوات ماهانه (پایان خدمت) از ناخالص و خالص ماهانه در جدول مرحله ۲ تسویه حساب
+ * تا از محاسبه مضاعف با بخش مزایای پایان خدمت در مرحله ۳ جلوگیری شود.
+ */
+function normalizeMonthlyDetailForSettlement(m: SettlementMonthlyDetail): SettlementMonthlyDetail {
+  const eidiAndYears = (m.monthlyEidi || 0) + (m.monthlyYearsBenefit || 0);
+  if (eidiAndYears === 0) return m;
+  const nextGross = Math.max(0, (m.grossSalary || 0) - eidiAndYears);
+  const nextNet = Math.max(0, (m.netSalaryPayable || 0) - eidiAndYears);
+  const nextPayrollItemPayable =
+    m.payrollItemPayable !== undefined ? Math.max(0, m.payrollItemPayable - eidiAndYears) : undefined;
+  return {
+    ...m,
+    monthlyEidi: 0,
+    monthlyYearsBenefit: 0,
+    grossSalary: nextGross,
+    netSalaryPayable: nextNet,
+    ...(nextPayrollItemPayable !== undefined ? { payrollItemPayable: nextPayrollItemPayable } : {})
+  };
+}
+
+function normalizeSettlementForDisplay(s: PersonnelSettlement): PersonnelSettlement {
+  const details = s.monthlyDetails || [];
+  const needsNormalization = details.some(
+    m => (m.monthlyEidi || 0) > 0 || (m.monthlyYearsBenefit || 0) > 0
+  );
+  if (!needsNormalization) return s;
+
+  const normalizedDetails = details.map(normalizeMonthlyDetailForSettlement);
+  let totalGrossSalaries = 0;
+  let totalNetSalaries = 0;
+  normalizedDetails.forEach(m => {
+    if (m.alreadySettledInPrior) return;
+    totalGrossSalaries += m.grossSalary || 0;
+    totalNetSalaries += m.netSalaryPayable || 0;
+  });
+  const totalGrossPayable =
+    totalNetSalaries +
+    (s.severanceAmount || 0) +
+    (s.bonusAmount || 0) +
+    (s.unusedLeaveAmount || 0) +
+    (s.previousYearReceivableAmount || 0);
+  const finalNetPayable = Math.max(
+    0,
+    totalGrossPayable - (s.totalDeductions || 0) - (s.employerPaidAmount || 0)
+  );
+  return {
+    ...s,
+    monthlyDetails: normalizedDetails,
+    totalGrossSalaries,
+    totalNetSalaries,
+    totalGrossPayable,
+    finalNetPayable
+  };
+}
+
+function getDepartureMonthUnpaidLeaveInfo(
+  settlementType: SettlementType | undefined,
+  startDateStr: string | undefined,
+  endDateStr: string | undefined,
+  monthlyDetails: SettlementMonthlyDetail[] | undefined
+): DepartureMonthUnpaidLeaveInfo | null {
+  if ((settlementType || 'with_departure') !== 'with_departure') return null;
+  const normEnd = endDateStr
+    ? normalizeJalaliDate(toEnglishDigits(endDateStr)) || toEnglishDigits(endDateStr)
+    : '';
+  if (!normEnd) return null;
+  const normStart = startDateStr
+    ? normalizeJalaliDate(toEnglishDigits(startDateStr)) || toEnglishDigits(startDateStr)
+    : '';
+
+  // تاریخ ترک کار یک روز پس از آخرین تردد است؛ برای شمارش روزهای کارکرد ماه ترک کار یک روز به عقب برمی‌گردیم
+  const effectiveWorkEndStr =
+    normStart && normEnd > normStart ? addDaysToJalali(normEnd, -1) : normEnd;
+  const effEnd = parseJalali(effectiveWorkEndStr);
+  if (!effEnd) return null;
+
+  const startParsed = normStart ? parseJalali(normStart) : null;
+  const startDayInMonth =
+    startParsed && startParsed.y === effEnd.y && startParsed.m === effEnd.m ? startParsed.d : 1;
+  const calendarDaysToDeparture = Math.max(0, effEnd.d - startDayInMonth + 1);
+  if (calendarDaysToDeparture <= 0) return null;
+
+  const list = monthlyDetails || [];
+  const monthRow =
+    list.find(m => m.year === effEnd.y && m.month === effEnd.m) || list[list.length - 1];
+  if (!monthRow || monthRow.alreadySettledInPrior) return null;
+
+  const workedDays = Number(monthRow.workedDays || 0);
+  const unpaidDays = Math.round((calendarDaysToDeparture - workedDays) * 100) / 100;
+  if (unpaidDays <= 0) return null;
+
+  return {
+    year: effEnd.y,
+    month: effEnd.m,
+    monthName:
+      monthRow.monthName || `${JALALI_MONTH_NAMES[effEnd.m - 1]} ${toPersianDigits(effEnd.y)}`,
+    calendarDaysToDeparture,
+    workedDays,
+    unpaidDays
+  };
+}
+
+function getMonthlyUsedLeaveMinutes(m: SettlementMonthlyDetail): number {
+  if (m.usedLeaveMinutes !== undefined && m.usedLeaveMinutes !== null) {
+    return Math.max(0, Math.round(Number(m.usedLeaveMinutes) || 0));
+  }
+  if (m.usedLeaveHours !== undefined && m.usedLeaveHours !== null) {
+    return Math.max(0, Math.round((Number(m.usedLeaveHours) || 0) * 60));
+  }
+  return Math.max(0, Math.round((Number(m.usedLeaveDays) || 0) * 8 * 60));
+}
+
+function getMonthlyUsedLeaveHours(m: SettlementMonthlyDetail): number {
+  return Math.round((getMonthlyUsedLeaveMinutes(m) / 60) * 100) / 100;
+}
+
+function formatMinutesToPersianHM(totalMinutes: number): string {
+  const mins = Math.max(0, Math.round(totalMinutes || 0));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${toPersianDigits(h)}:${toPersianDigits(String(m).padStart(2, '0'))}`;
+}
+
+function getSettlementUnusedLeaveHours(
+  s: Pick<PersonnelSettlement, 'unusedLeaveHours' | 'unusedLeaveDays'>
+): number {
+  if (s.unusedLeaveHours !== undefined && s.unusedLeaveHours !== null) {
+    return Math.max(0, Math.round(Number(s.unusedLeaveHours) * 100) / 100);
+  }
+  return Math.max(0, Math.round(((Number(s.unusedLeaveDays) || 0) * 8) * 100) / 100);
+}
+
+function formatPersianHoursValue(hours: number): string {
+  const rounded = Math.round((Number(hours) || 0) * 100) / 100;
+  return toPersianDigits(String(rounded).replace('.', '٫'));
+}
+
 export default function PersonnelSettlementTab({
   db,
   onUpdateDb,
-  activePeriodId
+  activePeriodId,
+  initialEmployeeCode,
+  initialContext,
+  unlockedMonthsMap,
+  provisionalSettlementPreview,
+  onSettlementTypeChange,
+  onSettlementCloseOrCancel,
+  onClearInitialEmployee
 }: PersonnelSettlementTabProps) {
   // Filters & State
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,13 +251,24 @@ export default function PersonnelSettlementTab({
   // Modal / Form state
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [forceReadOnlyView, setForceReadOnlyView] = useState(false);
+  const [lastDetectedAttendanceDate, setLastDetectedAttendanceDate] = useState<string>('');
 
   // Print modal state
   const [printingSettlement, setPrintingSettlement] = useState<PersonnelSettlement | null>(null);
 
+  const currentYear = useMemo(() => {
+    const pidMatch = toEnglishDigits(String(activePeriodId || '')).match(/^(\d{4})/);
+    if (pidMatch) return parseInt(pidMatch[1], 10);
+    const today = parseJalali(getTodayJalali());
+    if (today?.y) return today.y;
+    return 1404;
+  }, [activePeriodId]);
+
   // Form Fields
   const [formEmployeeCode, setFormEmployeeCode] = useState('');
-  const [formContractId, setFormContractId] = useState('');
+  const [formContractId, setFormContractId] = useState(CURRENT_YEAR_CONTRACT_ID);
+  const [formSettlementType, setFormSettlementType] = useState<SettlementType>('with_departure');
   const [formReason, setFormReason] = useState<SettlementReason>('contract_end');
   const [formStartDate, setFormStartDate] = useState('');
   const [formEndDate, setFormEndDate] = useState('');
@@ -87,26 +278,25 @@ export default function PersonnelSettlementTab({
   const [formMonthlyDetails, setFormMonthlyDetails] = useState<SettlementMonthlyDetail[]>([]);
   
   // Deductions & Employer Payments
-  const [formPurchasesAmount, setFormPurchasesAmount] = useState<string>('0');
-  const [formOtherDeductionsAmount, setFormOtherDeductionsAmount] = useState<string>('0');
+  const [formPurchasesAmount, setFormPurchasesAmount] = useState<string>('۰');
+  const [formOtherDeductionsAmount, setFormOtherDeductionsAmount] = useState<string>('۰');
   const [formOtherDeductionsDescription, setFormOtherDeductionsDescription] = useState<string>('');
-  const [formEmployerPaidAmount, setFormEmployerPaidAmount] = useState<string>('0');
+  const [formEmployerPaidAmount, setFormEmployerPaidAmount] = useState<string>('۰');
   
+  // Previous year receivable (طلب حساب از قبل پرسنل)
+  const [formPreviousYearReceivableAmount, setFormPreviousYearReceivableAmount] = useState<string>('۰');
+  const [formPreviousYearReceivableDescription, setFormPreviousYearReceivableDescription] = useState<string>('');
+  const [formPayrollSyncedAt, setFormPayrollSyncedAt] = useState<string>('');
+
   // Manual overrides for end-of-service calculated amounts (سنوات، عیدی، مانده مرخصی)
   const [formDailySalaryOverride, setFormDailySalaryOverride] = useState<string>('');
   const [formSeveranceAmount, setFormSeveranceAmount] = useState<string>('');
   const [formBonusAmount, setFormBonusAmount] = useState<string>('');
-  const [formUnusedLeaveDays, setFormUnusedLeaveDays] = useState<string>('');
+  const [formUnusedLeaveHours, setFormUnusedLeaveHours] = useState<string>('');
   const [formUnusedLeaveAmount, setFormUnusedLeaveAmount] = useState<string>('');
 
   const [formStatus, setFormStatus] = useState<'draft' | 'finalized' | 'paid'>('finalized');
   const [formNotes, setFormNotes] = useState('');
-
-  // Bulk input helper for fast monthly adjustments
-  const [bulkOvertime, setBulkOvertime] = useState('');
-  const [bulkFriday, setBulkFriday] = useState('');
-  const [bulkHoliday, setBulkHoliday] = useState('');
-  const [bulkLeave, setBulkLeave] = useState('');
 
   // Quick accordion expanded state
   const [expandedMonthlyDetails, setExpandedMonthlyDetails] = useState(true);
@@ -126,7 +316,9 @@ export default function PersonnelSettlementTab({
   }, [db.personnelContracts, activePeriodId]);
 
   const settlements = useMemo(() => {
-    return (db.personnelSettlements || []).filter(s => s.periodId === activePeriodId);
+    return (db.personnelSettlements || [])
+      .filter(s => s.periodId === activePeriodId)
+      .map(normalizeSettlementForDisplay);
   }, [db.personnelSettlements, activePeriodId]);
 
   // Filtered settlements list
@@ -252,9 +444,13 @@ export default function PersonnelSettlementTab({
     return 1404;
   }, [selectedContract, formStartDate, formEndDate, selectedPersonnel]);
 
-  // سال متناظر با سال تسویه حساب (بر اساس تاریخ پایان دوره تسویه حساب)
+  // سال متناظر با سال تسویه حساب (بر اساس تاریخ موثر آخرین کارکرد در تسویه حساب)
   const settlementYear = useMemo(() => {
     const endStr = formEndDate || selectedContract?.contractEndDate || selectedPersonnel?.contractEndDate || formSettlementDate || formStartDate || '';
+    if (formEndDate && formSettlementType === 'with_departure') {
+      const effYM = parseEffectiveDepartureLastWorkYM(formEndDate);
+      if (effYM?.year) return effYM.year;
+    }
     const parsedEnd = parseJalali(endStr);
     if (parsedEnd?.y) return parsedEnd.y;
     if (formMonthlyDetails && formMonthlyDetails.length > 0) {
@@ -262,7 +458,7 @@ export default function PersonnelSettlementTab({
       if (last?.year) return last.year;
     }
     return contractYear || 1404;
-  }, [formEndDate, selectedContract, selectedPersonnel, formSettlementDate, formStartDate, formMonthlyDetails, contractYear]);
+  }, [formEndDate, formSettlementType, selectedContract, selectedPersonnel, formSettlementDate, formStartDate, formMonthlyDetails, contractYear]);
 
   // نرخ قوانین و ثوابت دستمزد متناسب با سال تسویه حساب
   const settlementSalaryRate = useMemo(() => {
@@ -415,7 +611,10 @@ export default function PersonnelSettlementTab({
     // «در فرم تسویه حساب پرسنل جهت محاسبه مبلغ اضافه کاری و تعطیل کاری از مبلغ اضافه کاری ساعتی درج شده در قوانین و توابت دستمزد متناسب با سال تسویه حساب بر مبنای 8ساعت کار و نه 7.33 محاسبه شود»
     
     // ۱) استخراج سال تسویه حساب و نرخ قوانین و ثوابت دستمزد سال تسویه حساب:
-    const resolvedSettlementYear = targetSettlementYear || settlementYear || (formEndDate ? parseJalali(formEndDate)?.y : undefined) || current.year;
+    const effFormEndYear = (formEndDate && formSettlementType === 'with_departure')
+      ? parseEffectiveDepartureLastWorkYM(formEndDate)?.year
+      : (formEndDate ? parseJalali(formEndDate)?.y : undefined);
+    const resolvedSettlementYear = targetSettlementYear || settlementYear || effFormEndYear || current.year;
     const targetSettlementRate = getSalaryRateForYear(resolvedSettlementYear);
 
     // ۲) مبلغ اضافه کاری ساعتی درج شده در قوانین و ثوابت دستمزد متناسب با سال تسویه حساب:
@@ -562,268 +761,628 @@ export default function PersonnelSettlementTab({
     };
   };
 
-  // Generate months breakdown automatically based on start and end dates
-  const generateMonthsList = (startDateStr: string, endDateStr: string, emp?: Personnel, contract?: PersonnelContract) => {
-    const start = parseJalali(startDateStr);
-    const end = parseJalali(endDateStr);
+  // Check if departure month's payroll document is locked (accounting for +1 day departure offset)
+  const isSettlementEndDateLocked = (
+    endDateStr?: string,
+    settlementType: SettlementType = 'with_departure'
+  ): boolean => {
+    if (!endDateStr) return false;
+    if (settlementType === 'with_departure') {
+      const eff = parseEffectiveDepartureLastWorkYM(endDateStr);
+      if (!eff) return false;
+      return isPayrollMonthLocked(db, activePeriodId, eff.year, eff.month, unlockedMonthsMap);
+    }
+    const parsed = parseJalali(endDateStr);
+    if (!parsed) return false;
+    return isPayrollMonthLocked(db, activePeriodId, parsed.y, parsed.m, unlockedMonthsMap);
+  };
+
+  const isSettlementRecordLocked = (s: Pick<PersonnelSettlement, 'endDate' | 'settlementType'>): boolean => {
+    const sType: SettlementType = s.settlementType || 'with_departure';
+    if (sType === 'without_departure') return false;
+    return isSettlementEndDateLocked(s.endDate, sType);
+  };
+
+  const isDepartureMonthPayrollLocked = useMemo(() => {
+    if (formSettlementType === 'without_departure') return false;
+    return isSettlementEndDateLocked(formEndDate, formSettlementType);
+  }, [formEndDate, formSettlementType, db.payrollPeriods, activePeriodId, unlockedMonthsMap]);
+
+  const isModalReadOnly = Boolean(forceReadOnlyView || isDepartureMonthPayrollLocked);
+
+  const priorWithoutDepartureForForm = useMemo(() => {
+    return getPriorWithoutDepartureSettlements(
+      formEmployeeCode,
+      db.personnelSettlements,
+      activePeriodId,
+      editingId
+    );
+  }, [formEmployeeCode, db.personnelSettlements, activePeriodId, editingId]);
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    onSettlementCloseOrCancel?.();
+  };
+
+  // Helper to determine employee's effective start date in a fiscal year
+  // (advances automatically past any prior `without_departure` settlement's `endDate`)
+  const resolveStartDateForCurrentYear = (
+    emp: Personnel | undefined,
+    empContracts: PersonnelContract[],
+    yearNum: number,
+    excludeSettlementId?: string | null,
+    targetEndDate?: string
+  ): string => {
+    const yearStart = `${yearNum}/01/01`;
+    if (!emp) return yearStart;
+
+    let baseStart = yearStart;
+    const entryNorm = emp.entryDate ? normalizeJalaliDate(emp.entryDate) : '';
+    const entryParsed = parseJalali(entryNorm);
+
+    if (!(entryParsed && entryParsed.y < yearNum)) {
+      const candidates: string[] = [];
+      if (entryParsed && entryParsed.y === yearNum) {
+        candidates.push(entryNorm);
+      }
+
+      const firstAtt = findFirstAttendanceDateForCode(
+        db.attendanceRecords,
+        emp.attendanceCode || emp.employeeCode,
+        activePeriodId
+      );
+      const firstAttParsed = parseJalali(firstAtt);
+      if (firstAttParsed && firstAttParsed.y === yearNum) {
+        candidates.push(firstAtt);
+      }
+
+      empContracts.forEach(c => {
+        const cs = c.contractStartDate ? normalizeJalaliDate(c.contractStartDate) : '';
+        const csParsed = parseJalali(cs);
+        if (csParsed && csParsed.y < yearNum) {
+          candidates.push(yearStart);
+        } else if (csParsed && csParsed.y === yearNum) {
+          candidates.push(cs);
+        }
+      });
+
+      if (candidates.length > 0) {
+        candidates.sort();
+        baseStart = candidates[0];
+      }
+    }
+
+    // Advance startDate past any prior `without_departure` settlement already issued in this year
+    const priors = getPriorWithoutDepartureSettlements(
+      emp.employeeCode,
+      db.personnelSettlements,
+      activePeriodId,
+      excludeSettlementId
+    );
+    const normTargetEnd = targetEndDate ? normalizeJalaliDate(targetEndDate) : '';
+    const applicablePriors = priors.filter(ps => {
+      const psEndNorm = normalizeJalaliDate(ps.endDate);
+      const psEndY = parseJalali(psEndNorm)?.y;
+      if (psEndY !== yearNum) return false;
+      if (normTargetEnd && psEndNorm >= normTargetEnd) return false;
+      return true;
+    });
+
+    if (applicablePriors.length > 0) {
+      const latestPriorEnd = normalizeJalaliDate(applicablePriors[applicablePriors.length - 1].endDate);
+      const nextDay = addDaysToJalali(latestPriorEnd, 1);
+      const nextDayParsed = parseJalali(nextDay);
+      if (
+        nextDayParsed &&
+        nextDayParsed.y === yearNum &&
+        nextDay > baseStart &&
+        (!normTargetEnd || nextDay <= normTargetEnd)
+      ) {
+        return nextDay;
+      }
+    }
+
+    return baseStart;
+  };
+
+  // Helper to resolve default reason & dates (departure date is 1 day after last attendance so the last workday isn't deducted)
+  const resolveDepartureDefaults = (
+    emp?: Personnel,
+    contract?: PersonnelContract,
+    fallbackReason: SettlementReason = 'contract_end',
+    preferredYear?: number,
+    preferredMonth?: number,
+    isCurrentYearMode = false,
+    settlementType: SettlementType = 'with_departure',
+    excludeSettlementId?: string | null
+  ): { reason: SettlementReason; startDate: string; endDate: string; detectedLastAttendance: string } => {
+    const resolvedReason: SettlementReason =
+      settlementType === 'without_departure'
+        ? 'contract_end'
+        : emp?.departureReason
+        ? mapPersianReasonToSettlementReason(emp.departureReason)
+        : fallbackReason;
+    const empContracts = emp ? allContracts.filter(c => c.employeeCode === emp.employeeCode) : [];
+    const targetYearForStart = preferredYear || currentYear;
+    const detectedLastAttendance = findLastAttendanceDateForEmployee(
+      db,
+      emp,
+      activePeriodId,
+      preferredYear,
+      preferredMonth
+    );
+    const suggestedDepartureDate = detectedLastAttendance ? addDaysToJalali(detectedLastAttendance, 1) : '';
+    const normFallbackDep = emp?.departureDate ? normalizeJalaliDate(emp.departureDate) : '';
+    const normContractEnd = contract?.contractEndDate ? normalizeJalaliDate(contract.contractEndDate) : '';
+    const normEmpContractEnd = emp?.contractEndDate ? normalizeJalaliDate(emp.contractEndDate) : '';
+    const endDate =
+      settlementType === 'without_departure'
+        ? (normContractEnd || detectedLastAttendance || normEmpContractEnd || getTodayJalali())
+        : (suggestedDepartureDate ||
+          normFallbackDep ||
+          normContractEnd ||
+          normEmpContractEnd ||
+          getTodayJalali());
+    const startDate = isCurrentYearMode
+      ? resolveStartDateForCurrentYear(emp, empContracts, targetYearForStart, excludeSettlementId, endDate)
+      : (normalizeJalaliDate(contract?.contractStartDate || emp?.contractStartDate || emp?.entryDate) || `${targetYearForStart}/01/01`);
+    return { reason: resolvedReason, startDate, endDate, detectedLastAttendance };
+  };
+
+  // Generate months breakdown automatically strictly between [startDate .. effectiveWorkEnd] (never inserting post-departure months)
+  const generateMonthsList = (
+    startDateStr: string,
+    endDateStr: string,
+    emp?: Personnel,
+    contract?: PersonnelContract,
+    isCurrentYearMode = false,
+    _yearOverride?: number,
+    settlementTypeOverride?: SettlementType,
+    excludeSettlementIdOverride?: string | null
+  ) => {
+    const effectiveSettlementType = settlementTypeOverride ?? formSettlementType;
+    const normStart = normalizeJalaliDate(toEnglishDigits(startDateStr)) || toEnglishDigits(startDateStr);
+    const normEnd = normalizeJalaliDate(toEnglishDigits(endDateStr)) || toEnglishDigits(endDateStr);
+    const effectiveWorkEndStr =
+      effectiveSettlementType === 'with_departure' && normEnd && (!normStart || normEnd > normStart)
+        ? addDaysToJalali(normEnd, -1)
+        : normEnd;
+
+    const start = parseJalali(normStart);
+    const end = parseJalali(effectiveWorkEndStr);
     if (!start || !end) return [];
 
-    const months: SettlementMonthlyDetail[] = [];
-    let curY = start.y;
-    let curM = start.m;
-    let index = 1;
+    const effectiveExcludeId = excludeSettlementIdOverride !== undefined ? excludeSettlementIdOverride : editingId;
+    const empContractsForEmp = emp ? allContracts.filter(c => c.employeeCode === emp.employeeCode) : [];
+    const priors = emp
+      ? getPriorWithoutDepartureSettlements(emp.employeeCode, db.personnelSettlements, activePeriodId, effectiveExcludeId)
+      : [];
 
+    const ymPairs: { y: number; m: number }[] = [];
+    let curYLoop = start.y;
+    let curMLoop = start.m;
+    let safety = 0;
+    while ((curYLoop < end.y || (curYLoop === end.y && curMLoop <= end.m)) && safety < 36) {
+      ymPairs.push({ y: curYLoop, m: curMLoop });
+      curMLoop++;
+      if (curMLoop > 12) {
+        curMLoop = 1;
+        curYLoop++;
+      }
+      safety++;
+    }
+
+    const months: SettlementMonthlyDetail[] = [];
+    let index = 1;
     const targetSettlementYear = end.y;
 
-    while (curY < end.y || (curY === end.y && curM <= end.m)) {
+    for (let i = 0; i < ymPairs.length; i++) {
+      const { y: curY, m: curM } = ymPairs[i];
       const daysInMonth = getShamsiMonthDays(curY, curM);
-      let workedDays = daysInMonth;
 
-      // If start month, work starts from start.d
-      if (curY === start.y && curM === start.m) {
-        workedDays = daysInMonth - start.d + 1;
-      }
-      // If end month, work ends on end.d
-      if (curY === end.y && curM === end.m) {
+      // Check whether this full calendar month was already settled in a prior `without_departure` settlement
+      const matchingPrior = priors.find(ps => {
+        const psStart = parseJalali(ps.startDate);
+        const psEnd = parseJalali(ps.endDate);
+        if (!psStart || !psEnd) return false;
+        const afterOrEqStart = curY > psStart.y || (curY === psStart.y && curM >= psStart.m);
+        const beforeEndMonth = curY < psEnd.y || (curY === psEnd.y && curM < psEnd.m);
+        const fullEndMonth = curY === psEnd.y && curM === psEnd.m && psEnd.d >= daysInMonth;
+        return afterOrEqStart && (beforeEndMonth || fullEndMonth);
+      });
+
+      const effectiveProvisional =
+        provisionalSettlementPreview &&
+        emp &&
+        toEnglishDigits(String(emp.employeeCode)).trim() === toEnglishDigits(String(provisionalSettlementPreview.employeeCode)).trim()
+          ? { ...provisionalSettlementPreview, settlementType: effectiveSettlementType }
+          : provisionalSettlementPreview;
+
+      const payrollSnap = emp
+        ? computeMonthlyPayrollSnapshotForEmployee(
+            db,
+            activePeriodId,
+            emp,
+            isCurrentYearMode ? undefined : contract,
+            curY,
+            curM,
+            endDateStr,
+            unlockedMonthsMap,
+            {
+              treatEndAsDeparture: effectiveSettlementType === 'with_departure',
+              provisionalDeparture: effectiveProvisional
+            }
+          )
+        : null;
+
+      if (payrollSnap) {
+        months.push(normalizeMonthlyDetailForSettlement({
+          monthIndex: index++,
+          year: curY,
+          month: curM,
+          monthName: `${JALALI_MONTH_NAMES[curM - 1]} ${toPersianDigits(curY)}`,
+          totalDaysInMonth: daysInMonth,
+          workedDays: payrollSnap.workedDays,
+          overtimeHours: payrollSnap.overtimeHours,
+          holidayWorkHours: payrollSnap.holidayWorkHours,
+          fridayWorkHours: payrollSnap.fridayWorkHours,
+          usedLeaveDays: payrollSnap.usedLeaveDays,
+          usedLeaveHours: payrollSnap.usedLeaveHours,
+          usedLeaveMinutes: payrollSnap.usedLeaveMinutes,
+          dailyBaseSalary: payrollSnap.dailyBaseSalary,
+          baseSalary: payrollSnap.baseSalary,
+          foodAllowance: payrollSnap.foodAllowance,
+          housingAllowance: payrollSnap.housingAllowance,
+          childAllowance: payrollSnap.childAllowance,
+          marriageAllowance: payrollSnap.marriageAllowance,
+          seniorityBase: payrollSnap.seniorityBase,
+          monthlyEidi: payrollSnap.monthlyEidi,
+          monthlyYearsBenefit: payrollSnap.monthlyYearsBenefit,
+          jobAllowance: payrollSnap.jobAllowance,
+          overtimeHourlyRate: payrollSnap.overtimeHourlyRate,
+          overtimeAmount: payrollSnap.overtimeAmount,
+          holidayHourlyRate: payrollSnap.holidayHourlyRate,
+          holidayWorkAmount: payrollSnap.holidayWorkAmount,
+          fridayHourlyRate: payrollSnap.fridayHourlyRate,
+          fridayWorkAmount: payrollSnap.fridayWorkAmount,
+          grossSalary: payrollSnap.grossSalary,
+          insurableGross: payrollSnap.insurableGross,
+          workerInsuranceShare: payrollSnap.workerInsuranceShare,
+          payrollTax: payrollSnap.payrollTax,
+          supplementaryInsurance: payrollSnap.supplementaryInsurance,
+          deductionsAmount: payrollSnap.deductionsAmount,
+          netSalaryPayable: payrollSnap.netSalaryPayable,
+          syncedFromPayroll: true,
+          payrollSourceType: payrollSnap.sourceType,
+          payrollItemPayable: payrollSnap.payrollItemPayable,
+          payrollLeaveRemainingMinutes: payrollSnap.finalLeaveMinutes,
+          alreadySettledInPrior: Boolean(matchingPrior),
+          priorSettlementNo: matchingPrior?.settlementNo
+        }));
+      } else {
+        let workedDays = daysInMonth;
+
         if (curY === start.y && curM === start.m) {
-          workedDays = end.d - start.d + 1;
-        } else {
-          workedDays = end.d;
+          workedDays = daysInMonth - start.d + 1;
         }
-      }
+        if (curY === end.y && curM === end.m) {
+          if (curY === start.y && curM === start.m) {
+            workedDays = end.d - start.d + 1;
+          } else {
+            workedDays = end.d;
+          }
+        }
 
-      workedDays = Math.max(0, Math.min(daysInMonth, workedDays));
+        workedDays = Math.max(0, Math.min(daysInMonth, workedDays));
 
-      const rawDetail: SettlementMonthlyDetail = {
-        monthIndex: index++,
-        year: curY,
-        month: curM,
-        monthName: `${JALALI_MONTH_NAMES[curM - 1]} ${curY}`,
-        totalDaysInMonth: daysInMonth,
-        workedDays,
-        overtimeHours: 0,
-        holidayWorkHours: 0,
-        fridayWorkHours: 0,
-        usedLeaveDays: 0,
-        dailyBaseSalary: 0,
-        baseSalary: 0,
-        foodAllowance: 0,
-        housingAllowance: 0,
-        childAllowance: 0,
-        marriageAllowance: 0,
-        overtimeAmount: 0,
-        holidayWorkAmount: 0,
-        fridayWorkAmount: 0,
-        grossSalary: 0,
-        workerInsuranceShare: 0,
-        netSalaryPayable: 0
-      };
+        const monthStartStr = `${curY}/${String(curM).padStart(2, '0')}/01`;
+        const monthEndStr = `${curY}/${String(curM).padStart(2, '0')}/${String(daysInMonth).padStart(2, '0')}`;
+        const monthContract = isCurrentYearMode
+          ? (empContractsForEmp.find(c => {
+              const cs = normalizeJalaliDate(c.contractStartDate || '');
+              const ce = c.contractEndDate ? normalizeJalaliDate(c.contractEndDate) : '9999/99/99';
+              return Boolean(cs && cs <= monthEndStr && ce >= monthStartStr);
+            }) || empContractsForEmp[0])
+          : contract;
 
-      const calculated = calculateMonthDetail(rawDetail, emp, contract, targetSettlementYear);
-      months.push(calculated);
+        const rawDetail: SettlementMonthlyDetail = {
+          monthIndex: index++,
+          year: curY,
+          month: curM,
+          monthName: `${JALALI_MONTH_NAMES[curM - 1]} ${toPersianDigits(curY)}`,
+          totalDaysInMonth: daysInMonth,
+          workedDays,
+          overtimeHours: 0,
+          holidayWorkHours: 0,
+          fridayWorkHours: 0,
+          usedLeaveDays: 0,
+          usedLeaveHours: 0,
+          usedLeaveMinutes: 0,
+          dailyBaseSalary: 0,
+          baseSalary: 0,
+          foodAllowance: 0,
+          housingAllowance: 0,
+          childAllowance: 0,
+          marriageAllowance: 0,
+          seniorityBase: 0,
+          monthlyEidi: 0,
+          monthlyYearsBenefit: 0,
+          jobAllowance: 0,
+          overtimeAmount: 0,
+          holidayWorkAmount: 0,
+          fridayWorkAmount: 0,
+          grossSalary: 0,
+          workerInsuranceShare: 0,
+          payrollTax: 0,
+          supplementaryInsurance: 0,
+          deductionsAmount: 0,
+          netSalaryPayable: 0,
+          syncedFromPayroll: false,
+          payrollSourceType: 'manual_contract'
+        };
 
-      curM++;
-      if (curM > 12) {
-        curM = 1;
-        curY++;
+        const calculated = calculateMonthDetail(rawDetail, emp, monthContract, targetSettlementYear);
+        months.push({
+          ...calculated,
+          syncedFromPayroll: false,
+          payrollSourceType: 'manual_contract',
+          alreadySettledInPrior: Boolean(matchingPrior),
+          priorSettlementNo: matchingPrior?.settlementNo
+        });
       }
     }
 
     return months;
   };
 
-  // Handle employee change
+  // Handle settlement type change (with_departure vs without_departure)
+  const handleSettlementTypeChange = (nextType: SettlementType) => {
+    if (isModalReadOnly) return;
+    setFormSettlementType(nextType);
+    onSettlementTypeChange?.(nextType);
+    if (nextType === 'without_departure') {
+      setFormReason('contract_end');
+    }
+    setFormSeveranceAmount('');
+    setFormBonusAmount('');
+    setFormUnusedLeaveHours('');
+    setFormUnusedLeaveAmount('');
+
+    if (selectedPersonnel) {
+      const isCY = formContractId === CURRENT_YEAR_CONTRACT_ID;
+      let startToUse = formStartDate;
+      let endToUse = formEndDate;
+      if (nextType === 'without_departure' && !isCY && selectedContract?.contractEndDate) {
+        endToUse = selectedContract.contractEndDate;
+        setFormEndDate(endToUse);
+      } else if (nextType === 'with_departure') {
+        const resolved = resolveDepartureDefaults(
+          selectedPersonnel,
+          isCY ? undefined : selectedContract,
+          formReason,
+          initialContext?.year || currentYear,
+          initialContext?.month,
+          isCY,
+          'with_departure',
+          editingId
+        );
+        startToUse = isCY ? resolved.startDate : formStartDate;
+        endToUse = resolved.endDate;
+        setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+        if (isCY) setFormStartDate(startToUse);
+        setFormEndDate(endToUse);
+      }
+      if (startToUse && endToUse) {
+        const generated = generateMonthsList(
+          startToUse,
+          endToUse,
+          selectedPersonnel,
+          isCY ? undefined : selectedContract,
+          isCY,
+          currentYear,
+          nextType,
+          editingId
+        );
+        setFormMonthlyDetails(generated);
+        setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
+      }
+    }
+  };
+
+  // Handle employee change (defaults contract selector to کل قرارداد سال جاری)
   const handleEmployeeSelect = (empCode: string) => {
+    if (isModalReadOnly) return;
     setFormEmployeeCode(empCode);
     setFormSeveranceAmount('');
     setFormBonusAmount('');
-    setFormUnusedLeaveDays('');
+    setFormUnusedLeaveHours('');
     setFormUnusedLeaveAmount('');
 
     const emp = personnelList.find(p => p.employeeCode === empCode);
-    const contracts = allContracts.filter(c => c.employeeCode === empCode);
+    setFormContractId(CURRENT_YEAR_CONTRACT_ID);
 
-    let contract: PersonnelContract | undefined = contracts[0];
-    if (contract) {
-      setFormContractId(contract.id);
-      setFormStartDate(contract.contractStartDate || emp?.entryDate || '1404/01/01');
-      if (formReason === 'contract_end') {
-        setFormEndDate(contract.contractEndDate || '1404/12/29');
-      }
-    } else {
-      setFormContractId('');
-      const defaultStart = emp?.entryDate || '1404/01/01';
-      setFormStartDate(defaultStart);
-      if (formReason === 'contract_end') {
-        setFormEndDate(emp?.contractEndDate || '1404/12/29');
-      }
-    }
+    const resolved = resolveDepartureDefaults(
+      emp,
+      undefined,
+      'contract_end',
+      currentYear,
+      undefined,
+      true,
+      formSettlementType,
+      editingId
+    );
+    setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+    setFormReason(resolved.reason);
+    setFormStartDate(resolved.startDate);
+    setFormEndDate(resolved.endDate);
 
-    // Generate initial months
-    const startStr = contract?.contractStartDate || emp?.entryDate || '1404/01/01';
-    const endStr = (formReason === 'contract_end' && contract?.contractEndDate) ? contract.contractEndDate : (formEndDate || '1404/12/29');
-    const generated = generateMonthsList(startStr, endStr, emp, contract);
+    const generated = generateMonthsList(
+      resolved.startDate,
+      resolved.endDate,
+      emp,
+      undefined,
+      true,
+      currentYear,
+      formSettlementType,
+      editingId
+    );
     setFormMonthlyDetails(generated);
+    setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
   };
 
   // Handle contract selection change
   const handleContractSelect = (contractId: string) => {
+    if (isModalReadOnly) return;
     setFormContractId(contractId);
     setFormSeveranceAmount('');
     setFormBonusAmount('');
-    setFormUnusedLeaveDays('');
+    setFormUnusedLeaveHours('');
     setFormUnusedLeaveAmount('');
+
+    if (contractId === CURRENT_YEAR_CONTRACT_ID) {
+      const resolved = resolveDepartureDefaults(
+        selectedPersonnel,
+        undefined,
+        formReason,
+        currentYear,
+        undefined,
+        true,
+        formSettlementType,
+        editingId
+      );
+      setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+      setFormStartDate(resolved.startDate);
+      setFormEndDate(resolved.endDate);
+      const generated = generateMonthsList(
+        resolved.startDate,
+        resolved.endDate,
+        selectedPersonnel,
+        undefined,
+        true,
+        currentYear,
+        formSettlementType,
+        editingId
+      );
+      setFormMonthlyDetails(generated);
+      setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
+      return;
+    }
 
     const contract = allContracts.find(c => c.id === contractId);
     if (contract) {
       setFormStartDate(contract.contractStartDate);
-      if (formReason === 'contract_end') {
-        setFormEndDate(contract.contractEndDate);
-      }
-      const endToUse = formReason === 'contract_end' ? contract.contractEndDate : (formEndDate || contract.contractEndDate);
-      const generated = generateMonthsList(contract.contractStartDate, endToUse, selectedPersonnel, contract);
+      const detected = findLastAttendanceDateForEmployee(db, selectedPersonnel, activePeriodId);
+      setLastDetectedAttendanceDate(detected);
+      const suggestedDeparture = detected ? addDaysToJalali(detected, 1) : '';
+      const endToUse =
+        formSettlementType === 'without_departure'
+          ? (contract.contractEndDate || detected || formEndDate)
+          : (suggestedDeparture ||
+            (selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim()) ||
+            formEndDate ||
+            contract.contractEndDate);
+      setFormEndDate(endToUse);
+      const generated = generateMonthsList(
+        contract.contractStartDate,
+        endToUse,
+        selectedPersonnel,
+        contract,
+        false,
+        currentYear,
+        formSettlementType,
+        editingId
+      );
       setFormMonthlyDetails(generated);
+      setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
+      return;
     }
+
+    // Fallback: قرارداد پیش‌فرض پرونده پرسنلی
+    const fallbackStart = selectedPersonnel?.contractStartDate || selectedPersonnel?.entryDate || `${currentYear}/01/01`;
+    const detected = findLastAttendanceDateForEmployee(db, selectedPersonnel, activePeriodId);
+    setLastDetectedAttendanceDate(detected);
+    const suggestedDeparture = detected ? addDaysToJalali(detected, 1) : '';
+    const endToUse =
+      formSettlementType === 'without_departure'
+        ? (selectedPersonnel?.contractEndDate || detected || formEndDate || getTodayJalali())
+        : (suggestedDeparture ||
+          (selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim()) ||
+          formEndDate ||
+          selectedPersonnel?.contractEndDate ||
+          getTodayJalali());
+    setFormStartDate(fallbackStart);
+    setFormEndDate(endToUse);
+    const generated = generateMonthsList(
+      fallbackStart,
+      endToUse,
+      selectedPersonnel,
+      undefined,
+      false,
+      currentYear,
+      formSettlementType,
+      editingId
+    );
+    setFormMonthlyDetails(generated);
+    setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
   };
 
-  // Handle reason change
+  // Handle reason change (preserves detected last attendance date)
   const handleReasonChange = (reason: SettlementReason) => {
+    if (isModalReadOnly) return;
     setFormReason(reason);
-    setFormSeveranceAmount('');
-    setFormBonusAmount('');
-    setFormUnusedLeaveDays('');
-    setFormUnusedLeaveAmount('');
-
-    if (reason === 'contract_end') {
-      if (selectedContract) {
-        setFormStartDate(selectedContract.contractStartDate);
-        setFormEndDate(selectedContract.contractEndDate);
-        const generated = generateMonthsList(selectedContract.contractStartDate, selectedContract.contractEndDate, selectedPersonnel, selectedContract);
-        setFormMonthlyDetails(generated);
-      } else if (selectedPersonnel?.contractEndDate) {
-        setFormEndDate(selectedPersonnel.contractEndDate);
-        const generated = generateMonthsList(formStartDate, selectedPersonnel.contractEndDate, selectedPersonnel, selectedContract);
-        setFormMonthlyDetails(generated);
-      }
-    }
   };
 
   // Handle manual date changes
   const handleDateChangeAndRecalculate = (newStart: string, newEnd: string) => {
-    setFormStartDate(newStart);
-    setFormEndDate(newEnd);
+    if (isModalReadOnly) return;
+    const cleanStart = toEnglishDigits(newStart);
+    const cleanEnd = toEnglishDigits(newEnd);
+    setFormStartDate(cleanStart);
+    setFormEndDate(cleanEnd);
     setFormSeveranceAmount('');
     setFormBonusAmount('');
-    setFormUnusedLeaveDays('');
+    setFormUnusedLeaveHours('');
     setFormUnusedLeaveAmount('');
 
-    if (newStart && newEnd && newStart.length >= 8 && newEnd.length >= 8) {
-      const generated = generateMonthsList(newStart, newEnd, selectedPersonnel, selectedContract);
+    if (cleanStart && cleanEnd && cleanStart.length >= 8 && cleanEnd.length >= 8) {
+      const isCY = formContractId === CURRENT_YEAR_CONTRACT_ID;
+      const generated = generateMonthsList(
+        cleanStart,
+        cleanEnd,
+        selectedPersonnel,
+        isCY ? undefined : selectedContract,
+        isCY,
+        currentYear,
+        formSettlementType,
+        editingId
+      );
       setFormMonthlyDetails(generated);
+      setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
     }
   };
 
-  // Update a single field in a month
-  const handleMonthFieldChange = (
-    index: number, 
-    field: 'workedDays' | 'overtimeHours' | 'holidayWorkHours' | 'fridayWorkHours' | 'usedLeaveDays',
-    val: number
-  ) => {
-    setFormMonthlyDetails(prev => {
-      const updated = [...prev];
-      const target = { ...updated[index], [field]: val };
-      updated[index] = calculateMonthDetail(target, selectedPersonnel, selectedContract, settlementYear);
-      return updated;
-    });
-  };
-
-  // Direct manual override of calculated numbers for any month
-  const handleMonthAmountChange = (
-    index: number,
-    field: keyof SettlementMonthlyDetail,
-    val: number
-  ) => {
-    setFormMonthlyDetails(prev => {
-      const updated = [...prev];
-      const current = { ...updated[index], [field]: val };
-
-      // Sum component items to derive grossSalary if an item was edited
-      let gross = current.grossSalary;
-      if (['baseSalary', 'foodAllowance', 'housingAllowance', 'childAllowance', 'marriageAllowance', 'overtimeAmount', 'fridayWorkAmount', 'holidayWorkAmount'].includes(field as string)) {
-        gross = (current.baseSalary || 0) + 
-                (current.foodAllowance || 0) + 
-                (current.housingAllowance || 0) + 
-                (current.childAllowance || 0) + 
-                (current.marriageAllowance || 0) + 
-                (current.overtimeAmount || 0) + 
-                (current.fridayWorkAmount || 0) + 
-                (current.holidayWorkAmount || 0);
-      } else if (field === 'grossSalary') {
-        gross = val;
-      }
-
-      let insurable = current.insurableGross || 0;
-      let ins = current.workerInsuranceShare;
-      if (field === 'insurableGross') {
-        insurable = val;
-        ins = Math.round(val * 0.07);
-      } else if (field === 'workerInsuranceShare') {
-        ins = val;
-      }
-
-      let net = current.netSalaryPayable;
-      if (field === 'netSalaryPayable') {
-        net = val;
-      } else {
-        net = Math.max(0, gross - ins);
-      }
-
-      updated[index] = {
-        ...current,
-        grossSalary: gross,
-        insurableGross: insurable,
-        workerInsuranceShare: ins,
-        netSalaryPayable: net
-      };
-      return updated;
-    });
-  };
-
-  // Reset a specific month back to standard legal calculations
-  const handleResetMonthToFormula = (index: number) => {
-    setFormMonthlyDetails(prev => {
-      const updated = [...prev];
-      updated[index] = calculateMonthDetail(updated[index], selectedPersonnel, selectedContract, settlementYear);
-      return updated;
-    });
-  };
-
-  // Reset all months back to standard legal calculations
-  const handleResetAllMonthsToFormula = () => {
-    setFormMonthlyDetails(prev => {
-      return prev.map(m => calculateMonthDetail(m, selectedPersonnel, selectedContract, settlementYear));
-    });
-  };
-
-  // Apply bulk values to all months
-  const handleApplyBulk = () => {
-    const ot = parseNumber(bulkOvertime);
-    const fri = parseNumber(bulkFriday);
-    const hol = parseNumber(bulkHoliday);
-    const lv = parseNumber(bulkLeave);
-
-    setFormMonthlyDetails(prev => {
-      return prev.map(m => {
-        const item = {
-          ...m,
-          overtimeHours: bulkOvertime !== '' ? ot : m.overtimeHours,
-          fridayWorkHours: bulkFriday !== '' ? fri : m.fridayWorkHours,
-          holidayWorkHours: bulkHoliday !== '' ? hol : m.holidayWorkHours,
-          usedLeaveDays: bulkLeave !== '' ? lv : m.usedLeaveDays
-        };
-        return calculateMonthDetail(item, selectedPersonnel, selectedContract, settlementYear);
-      });
-    });
+  // Explicit Sync from Payroll & Attendance button handler
+  const handleSyncFromPayroll = () => {
+    if (isModalReadOnly) return;
+    if (!selectedPersonnel || !formStartDate || !formEndDate) {
+      alert('لطفاً ابتدا پرسنل و تاریخ شروع و پایان کارکرد را مشخص نمایید.');
+      return;
+    }
+    const isCY = formContractId === CURRENT_YEAR_CONTRACT_ID;
+    const generated = generateMonthsList(
+      formStartDate,
+      formEndDate,
+      selectedPersonnel,
+      isCY ? undefined : selectedContract,
+      isCY,
+      currentYear,
+      formSettlementType,
+      editingId
+    );
+    setFormMonthlyDetails(generated);
+    setFormUnusedLeaveHours('');
+    setFormUnusedLeaveAmount('');
+    setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
   };
 
   // Calculations for End of Service (عیدی، سنوات، مانده مرخصی، جمع کل و مانده قابل پرداخت)
@@ -834,6 +1393,7 @@ export default function PersonnelSettlementTab({
     let totalHousingAllowances = 0;
     let totalChildAllowances = 0;
     let totalMarriageAllowances = 0;
+    let totalOtherAllowances = 0;
     let totalOvertimeHours = 0;
     let totalHolidayWorkHours = 0;
     let totalFridayWorkHours = 0;
@@ -843,16 +1403,19 @@ export default function PersonnelSettlementTab({
     let totalGrossSalaries = 0;
     let totalInsurableGross = 0;
     let totalWorkerInsurance = 0;
+    let totalTaxAndSupp = 0;
     let totalNetSalaries = 0;
-    let totalUsedLeaveDays = 0;
+    let totalUsedLeaveMinutes = 0;
 
     formMonthlyDetails.forEach(m => {
+      if (m.alreadySettledInPrior) return;
       totalWorkedDays += m.workedDays;
       totalBaseSalaries += m.baseSalary;
       totalFoodAllowances += m.foodAllowance;
       totalHousingAllowances += m.housingAllowance;
       totalChildAllowances += m.childAllowance;
       totalMarriageAllowances += m.marriageAllowance;
+      totalOtherAllowances += (m.seniorityBase || 0) + (m.jobAllowance || 0);
       totalOvertimeHours += m.overtimeHours || 0;
       totalHolidayWorkHours += m.holidayWorkHours || 0;
       totalFridayWorkHours += m.fridayWorkHours || 0;
@@ -862,44 +1425,149 @@ export default function PersonnelSettlementTab({
       totalGrossSalaries += m.grossSalary;
       totalInsurableGross += m.insurableGross || 0;
       totalWorkerInsurance += m.workerInsuranceShare;
+      totalTaxAndSupp += (m.payrollTax || 0) + (m.supplementaryInsurance || 0);
       totalNetSalaries += m.netSalaryPayable;
-      totalUsedLeaveDays += m.usedLeaveDays;
+      totalUsedLeaveMinutes += getMonthlyUsedLeaveMinutes(m);
     });
+    const totalUsedLeaveHours = Math.round((totalUsedLeaveMinutes / 60) * 100) / 100;
+    const totalUsedLeaveDays = Math.round((totalUsedLeaveMinutes / 60 / 8) * 100) / 100;
 
-    // Last daily & monthly salary (بر اساس پایه حقوق روزانه ناشی از نرخ ثوابت دستمزد سال قرارداد):
-    const lastMonth = formMonthlyDetails[formMonthlyDetails.length - 1];
-    const contractEndYear = lastMonth?.year || parseInt((formEndDate || formStartDate || '1404').split('/')[0], 10) || 1404;
+    // Detect any prior `without_departure` settlements overlapping `[formStartDate .. formEndDate]`
+    const normStart = formStartDate ? normalizeJalaliDate(formStartDate) : '';
+    const normEnd = formEndDate ? normalizeJalaliDate(formEndDate) : '';
+    const overlappingPriors = priorWithoutDepartureForForm.filter(ps => {
+      const psS = normalizeJalaliDate(ps.startDate);
+      const psE = normalizeJalaliDate(ps.endDate);
+      if (normStart && psE && psE < normStart) return false;
+      if (normEnd && psS && psS > normEnd) return false;
+      return true;
+    });
+    const priorSettledMonthsCount = formMonthlyDetails.filter(m => m.alreadySettledInPrior).length;
+
+    // Last daily & monthly salary (مبتنی بر ماه موثر تسویه حساب):
+    const normStartForEnd = formStartDate ? normalizeJalaliDate(toEnglishDigits(formStartDate)) : '';
+    const normEndForEnd = formEndDate ? normalizeJalaliDate(toEnglishDigits(formEndDate)) : '';
+    const effectiveSummaryEndDate =
+      formSettlementType === 'with_departure' && normEndForEnd && (!normStartForEnd || normEndForEnd > normStartForEnd)
+        ? addDaysToJalali(normEndForEnd, -1)
+        : normEndForEnd;
+    const endParsed = parseJalali(effectiveSummaryEndDate || '');
+    const unsettledDetails = formMonthlyDetails.filter(m => !m.alreadySettledInPrior);
+    const lookupPool = unsettledDetails.length > 0 ? unsettledDetails : formMonthlyDetails;
+    const activeMonths = lookupPool.filter(
+      m => m.syncedFromPayroll || m.workedDays > 0 || m.dailyBaseSalary > 0
+    );
+    const exactEndMonthRow = endParsed
+      ? lookupPool.find(
+          m =>
+            m.year === endParsed.y &&
+            m.month === endParsed.m &&
+            (m.syncedFromPayroll || m.workedDays > 0 || m.dailyBaseSalary > 0)
+        )
+      : undefined;
+    const lastActiveOnOrBeforeEnd = endParsed
+      ? [...activeMonths]
+          .reverse()
+          .find(m => m.year < endParsed.y || (m.year === endParsed.y && m.month <= endParsed.m))
+      : undefined;
+    const refLastMonth =
+      exactEndMonthRow ||
+      lastActiveOnOrBeforeEnd ||
+      activeMonths[activeMonths.length - 1] ||
+      lookupPool[lookupPool.length - 1];
+
+    const contractEndYear =
+      endParsed?.y ||
+      refLastMonth?.year ||
+      parseInt((effectiveSummaryEndDate || formStartDate || String(currentYear)).split('/')[0], 10) ||
+      currentYear;
     const endYearRate = getSalaryRateForYear(contractEndYear);
     const fallbackRateDaily = (endYearRate.hourlyBaseSalary && endYearRate.hourlyBaseSalary > 0)
       ? Math.round(endYearRate.hourlyBaseSalary * 7.333333)
       : (endYearRate.dailyBaseSalary > 0 ? endYearRate.dailyBaseSalary : 2388728);
-    const defaultLastDailySalary = lastMonth?.dailyBaseSalary || fallbackRateDaily;
+    const defaultLastDailySalary = refLastMonth?.dailyBaseSalary || fallbackRateDaily;
     const lastDailySalary = formDailySalaryOverride !== '' ? parseNumber(formDailySalaryOverride) : defaultLastDailySalary;
     const lastMonthlyBaseSalary = lastDailySalary * 30;
 
     // 1. سنوات پایان خدمت (ماده ۲۴ قانون کار):
-    // به نسبت روزهای کارکرد کل قرارداد: (حقوق پایه ماهانه * کل کارکرد قرارداد) / ۳۶۵
+    // به نسبت روزهای کارکرد تسویه‌نشده قرارداد: (حقوق پایه ماهانه * کل کارکرد تسویه‌نشده) / ۳۶۵
     const severanceDays = totalWorkedDays;
     const defaultSeveranceAmount = Math.round((lastMonthlyBaseSalary * totalWorkedDays) / 365);
     const severanceAmount = formSeveranceAmount !== '' ? parseNumber(formSeveranceAmount) : defaultSeveranceAmount;
 
     // 2. عیدی و پاداش سالانه (قانون تعیین عیدی):
-    // به نسبت روزهای کارکرد کل قرارداد: (حقوق پایه ماهانه * ۲ * کل کارکرد قرارداد) / ۳۶۵
+    // به نسبت روزهای کارکرد تسویه‌نشده قرارداد: (حقوق پایه ماهانه * ۲ * کل کارکرد تسویه‌نشده) / ۳۶۵
     const bonusDays = totalWorkedDays;
     const defaultBonusAmount = Math.round((lastMonthlyBaseSalary * 2 * totalWorkedDays) / 365);
     const bonusAmount = formBonusAmount !== '' ? parseNumber(formBonusAmount) : defaultBonusAmount;
 
-    // 3. مرخصی استحقاقی (ماده ۶۴ و ۷۱ قانون کار):
-    // سالانه ۳۰ روز با جمعه‌ها (۲.۵ روز در ماه)
-    // سهم مرخصی دوره: (کل کارکرد / ۳۶۵) * ۳۰
-    const totalEntitledLeaveDays = Math.round(((totalWorkedDays / 365) * 30) * 10) / 10;
-    const defaultUnusedLeaveDays = Math.max(0, Math.round((totalEntitledLeaveDays - totalUsedLeaveDays) * 10) / 10);
-    const unusedLeaveDays = formUnusedLeaveDays !== '' ? (parseFloat(toEnglishDigits(formUnusedLeaveDays)) || 0) : defaultUnusedLeaveDays;
-    const defaultUnusedLeaveAmount = Math.round(unusedLeaveDays * lastDailySalary);
+    // 3. مرخصی استحقاقی و بازخرید آن بر اساس ساعت (ماده ۶۴ و ۷۱ قانون کار - مبنای هر روز ۸ ساعت، هر ماه ۲۰ ساعت):
+    const leaveHourlyRate = lastDailySalary / 8;
+    let payrollRemainingLeaveMinutes: number | undefined = undefined;
+    if (
+      exactEndMonthRow &&
+      exactEndMonthRow.payrollLeaveRemainingMinutes !== undefined &&
+      exactEndMonthRow.payrollLeaveRemainingMinutes !== null
+    ) {
+      payrollRemainingLeaveMinutes = Number(exactEndMonthRow.payrollLeaveRemainingMinutes);
+    } else {
+      for (let i = lookupPool.length - 1; i >= 0; i--) {
+        const m = lookupPool[i];
+        if (endParsed && (m.year > endParsed.y || (m.year === endParsed.y && m.month > endParsed.m))) {
+          continue;
+        }
+        const mins = m?.payrollLeaveRemainingMinutes;
+        if (mins !== undefined && mins !== null) {
+          payrollRemainingLeaveMinutes = Number(mins);
+          break;
+        }
+      }
+    }
+    const hasPayrollLeaveBalance = payrollRemainingLeaveMinutes !== undefined;
+    const payrollUnusedLeaveHours = hasPayrollLeaveBalance
+      ? Math.max(0, Math.round((payrollRemainingLeaveMinutes! / 60) * 100) / 100)
+      : 0;
+    const payrollUnusedLeaveDays = Math.round((payrollUnusedLeaveHours / 8) * 100) / 100;
+
+    // If a prior `without_departure` settlement ended inside the SAME month as `formEndDate`, deduct its already-paid unused leave (in hours)
+    const sameMonthPriorSettledLeaveHours = endParsed
+      ? Math.round(
+          overlappingPriors
+            .filter(ps => {
+              const psE = parseJalali(ps.endDate);
+              return psE && psE.y === endParsed.y && psE.m === endParsed.m;
+            })
+            .reduce((s, ps) => s + getSettlementUnusedLeaveHours(ps), 0) * 100
+        ) / 100
+      : 0;
+
+    // سهم مرخصی دوره طبق فرمول استاندارد: (کارکرد تسویه‌نشده / ۳۶۵) * ۲۴۰ ساعت (معادل ۳۰ روز ۸ ساعته)
+    const totalEntitledLeaveHours = Math.round(((totalWorkedDays / 365) * 240) * 100) / 100;
+    const totalEntitledLeaveDays = Math.round((totalEntitledLeaveHours / 8) * 100) / 100;
+    const formulaUnusedLeaveHours = Math.max(
+      0,
+      Math.round((totalEntitledLeaveHours - totalUsedLeaveHours) * 100) / 100
+    );
+    const formulaUnusedLeaveDays = Math.round((formulaUnusedLeaveHours / 8) * 100) / 100;
+    const rawDefaultUnusedLeaveHours = hasPayrollLeaveBalance ? payrollUnusedLeaveHours : formulaUnusedLeaveHours;
+    const defaultUnusedLeaveHours = Math.max(
+      0,
+      Math.round((rawDefaultUnusedLeaveHours - sameMonthPriorSettledLeaveHours) * 100) / 100
+    );
+    const defaultUnusedLeaveDays = Math.round((defaultUnusedLeaveHours / 8) * 100) / 100;
+    const unusedLeaveHours =
+      formUnusedLeaveHours !== ''
+        ? Math.max(0, parseFloat(toEnglishDigits(formUnusedLeaveHours).replace(/٫/g, '.')) || 0)
+        : defaultUnusedLeaveHours;
+    const unusedLeaveDays = Math.round((unusedLeaveHours / 8) * 100) / 100;
+    const defaultUnusedLeaveAmount = Math.round(unusedLeaveHours * leaveHourlyRate);
     const unusedLeaveAmount = formUnusedLeaveAmount !== '' ? parseNumber(formUnusedLeaveAmount) : defaultUnusedLeaveAmount;
 
-    // جمع کل مطالبات ناخالص (خالص حقوق ماه‌ها + سنوات + عیدی + مانده مرخصی)
-    const totalGrossPayable = totalNetSalaries + severanceAmount + bonusAmount + unusedLeaveAmount;
+    // 4. طلب حساب از قبل (مانده بستانکاری پرسنل از سال یا دوره قبل)
+    const previousYearReceivable = parseNumber(formPreviousYearReceivableAmount);
+
+    // جمع کل مطالبات ناخالص (خالص حقوق ماه‌های تسویه‌نشده + سنوات + عیدی + مانده مرخصی + طلب از قبل)
+    const totalGrossPayable = totalNetSalaries + severanceAmount + bonusAmount + unusedLeaveAmount + previousYearReceivable;
 
     // کسورات
     const purchasesAmount = parseNumber(formPurchasesAmount);
@@ -919,6 +1587,7 @@ export default function PersonnelSettlementTab({
       totalHousingAllowances,
       totalChildAllowances,
       totalMarriageAllowances,
+      totalOtherAllowances,
       totalOvertimeHours,
       totalHolidayWorkHours,
       totalFridayWorkHours,
@@ -928,10 +1597,14 @@ export default function PersonnelSettlementTab({
       totalGrossSalaries,
       totalInsurableGross,
       totalWorkerInsurance,
+      totalTaxAndSupp,
       totalNetSalaries,
+      totalUsedLeaveMinutes,
+      totalUsedLeaveHours,
       totalUsedLeaveDays,
       defaultLastDailySalary,
       lastDailySalary,
+      leaveHourlyRate,
       lastMonthlyBaseSalary,
       severanceDays,
       defaultSeveranceAmount,
@@ -940,101 +1613,284 @@ export default function PersonnelSettlementTab({
       defaultBonusAmount,
       bonusAmount,
       totalEntitledLeaveDays,
+      totalEntitledLeaveHours,
+      hasPayrollLeaveBalance,
+      payrollRemainingLeaveMinutes,
+      payrollUnusedLeaveHours,
+      payrollUnusedLeaveDays,
+      formulaUnusedLeaveHours,
+      formulaUnusedLeaveDays,
+      defaultUnusedLeaveHours,
       defaultUnusedLeaveDays,
+      unusedLeaveHours,
       unusedLeaveDays,
       defaultUnusedLeaveAmount,
       unusedLeaveAmount,
+      previousYearReceivable,
       totalGrossPayable,
       purchasesAmount,
       otherDeductions,
       totalDeductions,
       employerPaid,
-      finalNetPayable
+      finalNetPayable,
+      overlappingPriors,
+      priorSettledMonthsCount,
+      sameMonthPriorSettledLeaveHours
     };
   }, [
-    formMonthlyDetails, 
-    selectedContract, 
-    formPurchasesAmount, 
-    formOtherDeductionsAmount, 
+    formMonthlyDetails,
+    formStartDate,
+    formEndDate,
+    formSettlementType,
+    priorWithoutDepartureForForm,
+    selectedContract,
+    formPurchasesAmount,
+    formOtherDeductionsAmount,
     formEmployerPaidAmount,
+    formPreviousYearReceivableAmount,
     formDailySalaryOverride,
     formSeveranceAmount,
     formBonusAmount,
-    formUnusedLeaveDays,
+    formUnusedLeaveHours,
     formUnusedLeaveAmount
   ]);
 
+  const departureUnpaidLeaveInfo = useMemo(
+    () =>
+      getDepartureMonthUnpaidLeaveInfo(
+        formSettlementType,
+        formStartDate,
+        formEndDate,
+        formMonthlyDetails
+      ),
+    [formSettlementType, formStartDate, formEndDate, formMonthlyDetails]
+  );
+
+  // Payroll, Treasury & Sync summary insights for the currently selected personnel & date range
+  const payrollIntegrationInsights = useMemo(() => {
+    const syncedMonthsCount = formMonthlyDetails.filter(m => m.syncedFromPayroll).length;
+    const lockedMonthsCount = formMonthlyDetails.filter(m => m.payrollSourceType === 'locked_payroll').length;
+    const liveMonthsCount = formMonthlyDetails.filter(m => m.payrollSourceType === 'live_attendance').length;
+    const treasurySummary = getEmployeeTreasuryPaidInPeriod(db, selectedPersonnel, formStartDate, formEndDate);
+    const normStartForReg = formStartDate ? normalizeJalaliDate(toEnglishDigits(formStartDate)) : '';
+    const normEndForReg = formEndDate ? normalizeJalaliDate(toEnglishDigits(formEndDate)) : '';
+    const effectiveEndForReg =
+      formSettlementType === 'with_departure' && normEndForReg && (!normStartForReg || normEndForReg > normStartForReg)
+        ? addDaysToJalali(normEndForReg, -1)
+        : formEndDate;
+    const registeredPayrollsSummary = getEmployeeRegisteredPayrollsSummary(db, selectedPersonnel, formStartDate, effectiveEndForReg, activePeriodId);
+
+    return {
+      syncedMonthsCount,
+      lockedMonthsCount,
+      liveMonthsCount,
+      treasurySummary,
+      registeredPayrollsSummary
+    };
+  }, [formMonthlyDetails, db, selectedPersonnel, formStartDate, formEndDate, formSettlementType, activePeriodId]);
+
   // Open Add Modal
-  const handleOpenAdd = () => {
+  const handleOpenAdd = (
+    preselectEmpCode?: string,
+    ctx?: { year: number; month: number; readOnly?: boolean }
+  ) => {
     setEditingId(null);
-    const firstEmp = personnelList[0];
-    const empCode = firstEmp?.employeeCode || '';
+    setForceReadOnlyView(Boolean(ctx?.readOnly));
+    const initialType: SettlementType = 'with_departure';
+    setFormSettlementType(initialType);
+    const targetEmp = preselectEmpCode
+      ? (personnelList.find(p => p.employeeCode === preselectEmpCode) || personnelList[0])
+      : personnelList[0];
+    const empCode = targetEmp?.employeeCode || preselectEmpCode || '';
     setFormEmployeeCode(empCode);
-    setFormReason('contract_end');
     setFormSettlementDate(getTodayJalali());
-    setFormPurchasesAmount('0');
-    setFormOtherDeductionsAmount('0');
+    setFormPurchasesAmount('۰');
+    setFormOtherDeductionsAmount('۰');
     setFormOtherDeductionsDescription('');
-    setFormEmployerPaidAmount('0');
+    setFormEmployerPaidAmount('۰');
+    setFormPreviousYearReceivableAmount('۰');
+    setFormPreviousYearReceivableDescription('');
     setFormDailySalaryOverride('');
     setFormSeveranceAmount('');
     setFormBonusAmount('');
-    setFormUnusedLeaveDays('');
+    setFormUnusedLeaveHours('');
     setFormUnusedLeaveAmount('');
     setFormStatus('finalized');
     setFormNotes('');
-    setBulkOvertime('');
-    setBulkFriday('');
-    setBulkHoliday('');
-    setBulkLeave('');
 
-    const contracts = allContracts.filter(c => c.employeeCode === empCode);
-    const contract = contracts[0];
-    if (contract) {
-      setFormContractId(contract.id);
-      setFormStartDate(contract.contractStartDate);
-      setFormEndDate(contract.contractEndDate);
-      const generated = generateMonthsList(contract.contractStartDate, contract.contractEndDate, firstEmp, contract);
-      setFormMonthlyDetails(generated);
-    } else {
-      setFormContractId('');
-      const st = firstEmp?.entryDate || '1404/01/01';
-      const en = '1404/12/29';
-      setFormStartDate(st);
-      setFormEndDate(en);
-      const generated = generateMonthsList(st, en, firstEmp, undefined);
-      setFormMonthlyDetails(generated);
-    }
+    setFormContractId(CURRENT_YEAR_CONTRACT_ID);
+
+    const resolved = resolveDepartureDefaults(
+      targetEmp,
+      undefined,
+      'contract_end',
+      ctx?.year || currentYear,
+      ctx?.month,
+      true,
+      initialType,
+      null
+    );
+    setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+    setFormReason(resolved.reason);
+    setFormStartDate(resolved.startDate);
+    setFormEndDate(resolved.endDate);
+
+    const generated = generateMonthsList(
+      resolved.startDate,
+      resolved.endDate,
+      targetEmp,
+      undefined,
+      true,
+      ctx?.year || currentYear,
+      initialType,
+      null
+    );
+    setFormMonthlyDetails(generated);
+    setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
 
     setShowModal(true);
   };
 
-  // Open Edit Modal
-  const handleOpenEdit = (settlement: PersonnelSettlement) => {
+  // Open Edit / View Modal
+  const handleOpenEdit = (
+    settlement: PersonnelSettlement,
+    explicitReadOnly?: boolean,
+    ctx?: { year: number; month: number; readOnly?: boolean }
+  ) => {
+    const resolvedType: SettlementType = settlement.settlementType || 'with_departure';
+    const locked = Boolean(explicitReadOnly) || isSettlementRecordLocked({ endDate: settlement.endDate, settlementType: resolvedType });
+    setForceReadOnlyView(locked);
     setEditingId(settlement.id);
+    setFormSettlementType(resolvedType);
+    onSettlementTypeChange?.(resolvedType);
     setFormEmployeeCode(settlement.employeeCode);
-    setFormContractId(settlement.contractId || '');
+    const effectiveContractId = settlement.contractId || CURRENT_YEAR_CONTRACT_ID;
+    setFormContractId(effectiveContractId);
     setFormReason(settlement.reason);
-    setFormStartDate(settlement.startDate);
-    setFormEndDate(settlement.endDate);
+    const normStoredStart = normalizeJalaliDate(settlement.startDate) || settlement.startDate;
+    const normStoredEnd = normalizeJalaliDate(settlement.endDate) || settlement.endDate;
+    setFormStartDate(normStoredStart);
     setFormSettlementDate(settlement.settlementDate);
     setFormPurchasesAmount(formatWithCommas(settlement.personnelPurchasesAmount));
     setFormOtherDeductionsAmount(formatWithCommas(settlement.otherDeductionsAmount));
     setFormOtherDeductionsDescription(settlement.otherDeductionsDescription || '');
     setFormEmployerPaidAmount(formatWithCommas(settlement.employerPaidAmount));
+    setFormPreviousYearReceivableAmount(formatWithCommas(settlement.previousYearReceivableAmount || 0));
+    setFormPreviousYearReceivableDescription(settlement.previousYearReceivableDescription || '');
+    setFormPayrollSyncedAt(settlement.payrollSyncedAt || '');
     setFormDailySalaryOverride(settlement.dailySalaryForCalculation ? formatWithCommas(settlement.dailySalaryForCalculation) : '');
     setFormSeveranceAmount(settlement.severanceAmount !== undefined ? formatWithCommas(settlement.severanceAmount) : '');
     setFormBonusAmount(settlement.bonusAmount !== undefined ? formatWithCommas(settlement.bonusAmount) : '');
-    setFormUnusedLeaveDays(settlement.unusedLeaveDays !== undefined ? String(settlement.unusedLeaveDays) : '');
+    const resolvedUnusedHours =
+      settlement.unusedLeaveHours !== undefined && settlement.unusedLeaveHours !== null
+        ? settlement.unusedLeaveHours
+        : settlement.unusedLeaveDays !== undefined
+        ? Math.round(settlement.unusedLeaveDays * 8 * 100) / 100
+        : undefined;
+    setFormUnusedLeaveHours(resolvedUnusedHours !== undefined ? String(resolvedUnusedHours) : '');
     setFormUnusedLeaveAmount(settlement.unusedLeaveAmount !== undefined ? formatWithCommas(settlement.unusedLeaveAmount) : '');
     setFormStatus(settlement.status);
     setFormNotes(settlement.notes || '');
-    setFormMonthlyDetails(settlement.monthlyDetails || []);
+
+    const emp = personnelList.find(p => p.employeeCode === settlement.employeeCode);
+    const isCYMode = effectiveContractId === CURRENT_YEAR_CONTRACT_ID;
+    const contract = isCYMode
+      ? undefined
+      : (allContracts.find(c => c.id === settlement.contractId) || allContracts.find(c => c.employeeCode === settlement.employeeCode));
+    const detected = findLastAttendanceDateForEmployee(
+      db,
+      emp,
+      activePeriodId,
+      ctx?.year,
+      ctx?.month
+    );
+    setLastDetectedAttendanceDate(detected);
+
+    const effectiveEndDate =
+      !locked &&
+      resolvedType === 'with_departure' &&
+      detected &&
+      (!normStoredEnd || normStoredEnd === detected)
+        ? addDaysToJalali(detected, 1)
+        : normStoredEnd;
+    setFormEndDate(effectiveEndDate);
+
+    // Sync Step 2 months strictly to Payroll Lists unless locked with existing snapshot
+    if (!locked || !settlement.monthlyDetails || settlement.monthlyDetails.length === 0) {
+      const cyTargetYear =
+        ctx?.year ||
+        (resolvedType === 'with_departure'
+          ? parseEffectiveDepartureLastWorkYM(effectiveEndDate)?.year
+          : parseJalali(effectiveEndDate)?.y) ||
+        parseJalali(normStoredStart)?.y ||
+        currentYear;
+      const synced = generateMonthsList(
+        normStoredStart,
+        effectiveEndDate,
+        emp,
+        contract,
+        isCYMode,
+        cyTargetYear,
+        resolvedType,
+        settlement.id
+      );
+      setFormMonthlyDetails(
+        synced.length > 0
+          ? synced
+          : (settlement.monthlyDetails || []).map(normalizeMonthlyDetailForSettlement)
+      );
+      if (ctx && !locked && synced.some(m => m.syncedFromPayroll)) {
+        setFormUnusedLeaveHours('');
+        setFormUnusedLeaveAmount('');
+        setFormSeveranceAmount('');
+        setFormBonusAmount('');
+        setFormDailySalaryOverride('');
+      }
+    } else {
+      setFormMonthlyDetails(
+        (settlement.monthlyDetails || []).map(normalizeMonthlyDetailForSettlement)
+      );
+    }
+
     setShowModal(true);
   };
 
+  // Deep link from Payroll Management ("تسویه حساب" / "مشاهده تسویه حساب")
+  useEffect(() => {
+    if (!initialEmployeeCode) return;
+    const ctxReadOnly = Boolean(initialContext?.readOnly);
+    const empSettlements = settlements.filter(s => s.employeeCode === initialEmployeeCode);
+
+    const existingWithDeparture = empSettlements.find(
+      s => (s.settlementType || 'with_departure') === 'with_departure'
+    );
+    const existingMatchingMonthWithoutDeparture =
+      !ctxReadOnly && initialContext
+        ? empSettlements.find(s => {
+            if ((s.settlementType || 'with_departure') !== 'without_departure') return false;
+            const endP = parseJalali(s.endDate);
+            return Boolean(endP && endP.y === initialContext.year && endP.m === initialContext.month);
+          })
+        : undefined;
+
+    const existing = ctxReadOnly
+      ? (existingWithDeparture || empSettlements[0])
+      : (existingWithDeparture || existingMatchingMonthWithoutDeparture);
+
+    if (existing) {
+      handleOpenEdit(existing, ctxReadOnly, initialContext || undefined);
+    } else {
+      handleOpenAdd(initialEmployeeCode, initialContext || undefined);
+    }
+    onClearInitialEmployee?.();
+  }, [initialEmployeeCode, initialContext]);
+
   // Save Settlement
   const handleSaveSettlement = () => {
+    if (isModalReadOnly) {
+      alert('سند حقوق و دستمزد ماه ترک کار قفل است و امکان ویرایش یا ثبت برگه تسویه حساب وجود ندارد.');
+      return;
+    }
     if (!formEmployeeCode) {
       alert('لطفا پرسنل را انتخاب نمایید.');
       return;
@@ -1049,11 +1905,12 @@ export default function PersonnelSettlementTab({
     }
 
     const currentList = db.personnelSettlements || [];
-    const emp = personnelList.find(p => p.employeeCode === formEmployeeCode);
-
-    // Auto settlement number
-    const yearPrefix = formSettlementDate.split('/')[0] || activePeriodId.split('-')[0] || '1405';
+    const cleanSettlementDate = normalizeJalaliDate(toEnglishDigits(formSettlementDate)) || toEnglishDigits(formSettlementDate) || getTodayJalali();
+    const yearPrefix = cleanSettlementDate.split('/')[0] || activePeriodId.split('-')[0] || '1405';
     const autoNumber = `SET-${yearPrefix}-${String(currentList.length + 1).padStart(3, '0')}`;
+    const normalizedStartDate = normalizeJalaliDate(toEnglishDigits(formStartDate)) || toEnglishDigits(formStartDate);
+    const normalizedEndDate = normalizeJalaliDate(toEnglishDigits(formEndDate)) || toEnglishDigits(formEndDate);
+    const effectiveReason: SettlementReason = formSettlementType === 'without_departure' ? 'contract_end' : formReason;
 
     const newRecord: PersonnelSettlement = {
       id: editingId || `settle-${Date.now()}`,
@@ -1061,11 +1918,12 @@ export default function PersonnelSettlementTab({
       settlementNo: editingId ? (currentList.find(s => s.id === editingId)?.settlementNo || autoNumber) : autoNumber,
       employeeCode: formEmployeeCode,
       contractId: formContractId || undefined,
-      reason: formReason,
-      startDate: formStartDate,
-      endDate: formEndDate,
-      settlementDate: formSettlementDate,
-      totalPeriodDays: formMonthlyDetails.reduce((sum, m) => sum + m.totalDaysInMonth, 0),
+      settlementType: formSettlementType,
+      reason: effectiveReason,
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      settlementDate: cleanSettlementDate,
+      totalPeriodDays: formMonthlyDetails.filter(m => !m.alreadySettledInPrior).reduce((sum, m) => sum + m.totalDaysInMonth, 0),
       totalWorkedDays: settlementSummary.totalWorkedDays,
       monthlyDetails: formMonthlyDetails,
       totalBaseSalaries: settlementSummary.totalBaseSalaries,
@@ -1087,9 +1945,14 @@ export default function PersonnelSettlementTab({
       bonusDays: settlementSummary.bonusDays,
       bonusAmount: settlementSummary.bonusAmount,
       totalEntitledLeaveDays: settlementSummary.totalEntitledLeaveDays,
+      totalEntitledLeaveHours: settlementSummary.totalEntitledLeaveHours,
       totalUsedLeaveDays: settlementSummary.totalUsedLeaveDays,
+      totalUsedLeaveHours: settlementSummary.totalUsedLeaveHours,
       unusedLeaveDays: settlementSummary.unusedLeaveDays,
+      unusedLeaveHours: settlementSummary.unusedLeaveHours,
       unusedLeaveAmount: settlementSummary.unusedLeaveAmount,
+      previousYearReceivableAmount: settlementSummary.previousYearReceivable,
+      previousYearReceivableDescription: formPreviousYearReceivableDescription.trim() || undefined,
       totalGrossPayable: settlementSummary.totalGrossPayable,
       personnelPurchasesAmount: settlementSummary.purchasesAmount,
       otherDeductionsAmount: settlementSummary.otherDeductions,
@@ -1099,6 +1962,7 @@ export default function PersonnelSettlementTab({
       finalNetPayable: settlementSummary.finalNetPayable,
       status: formStatus,
       notes: formNotes.trim(),
+      payrollSyncedAt: formPayrollSyncedAt || undefined,
       registeredBy: db.currentUser?.fullName || 'مدیر سیستم',
       createdAt: editingId ? (currentList.find(s => s.id === editingId)?.createdAt || getTodayJalali()) : getTodayJalali(),
       updatedAt: getTodayJalali()
@@ -1111,19 +1975,48 @@ export default function PersonnelSettlementTab({
       updatedList = [newRecord, ...currentList];
     }
 
+    let updatedPersonnel = db.personnel || [];
+    if (formSettlementType === 'with_departure') {
+      const departureReasonLabel = getSettlementReasonLabel(effectiveReason);
+      updatedPersonnel = updatedPersonnel.map(p => {
+        if (
+          p.employeeCode === formEmployeeCode &&
+          (!p.periodId || p.periodId === activePeriodId)
+        ) {
+          return {
+            ...p,
+            departureDate: normalizedEndDate,
+            departureReason: departureReasonLabel,
+            isActive: false
+          };
+        }
+        return p;
+      });
+    }
+
     onUpdateDb({
       ...db,
-      personnelSettlements: updatedList
+      personnelSettlements: updatedList,
+      personnel: updatedPersonnel
     });
 
     setShowModal(false);
-    alert('سند تسویه حساب پرسنل با موفقیت ثبت و ذخیره گردید.');
+    onSettlementCloseOrCancel?.();
+    alert(
+      formSettlementType === 'with_departure'
+        ? 'سند تسویه حساب پرسنل با موفقیت ثبت گردید و تاریخ و علت ترک کار در پرونده پرسنل درج شد.'
+        : 'سند تسویه حساب قرارداد (بدون ترک کار) با موفقیت ثبت شد و پرسنل همچنان در وضعیت فعال باقی ماند.'
+    );
   };
 
   // Delete Settlement
-  const handleDelete = (id: string, settleNo: string) => {
-    if (confirm(`آیا از حذف سند تسویه حساب شماره ${settleNo} اطمینان دارید؟`)) {
-      const updatedList = (db.personnelSettlements || []).filter(s => s.id !== id);
+  const handleDelete = (s: PersonnelSettlement) => {
+    if (isSettlementRecordLocked(s)) {
+      alert('سند حقوق و دستمزد ماه ترک کار قفل است و امکان حذف این برگه تسویه حساب وجود ندارد.');
+      return;
+    }
+    if (confirm(`آیا از حذف سند تسویه حساب شماره ${s.settlementNo} اطمینان دارید؟`)) {
+      const updatedList = (db.personnelSettlements || []).filter(item => item.id !== s.id);
       onUpdateDb({
         ...db,
         personnelSettlements: updatedList
@@ -1141,7 +2034,9 @@ export default function PersonnelSettlementTab({
     const excelData = filteredSettlements.map((s, idx) => {
       const emp = personnelList.find(p => p.employeeCode === s.employeeCode);
       const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : s.employeeCode;
-      const reasonLabel = s.reason === 'contract_end' ? 'اتمام قرارداد' : s.reason === 'dismissal' ? 'اخراج' : 'استعفا';
+      const reasonLabel = (s.settlementType || 'with_departure') === 'without_departure'
+        ? 'تسویه قرارداد (بدون ترک کار)'
+        : getSettlementReasonLabel(s.reason);
       const statusLabel = s.status === 'paid' ? 'پرداخت شده' : s.status === 'finalized' ? 'قطعی' : 'پیش‌نویس';
 
       return {
@@ -1149,15 +2044,16 @@ export default function PersonnelSettlementTab({
         'شماره تسویه': s.settlementNo,
         'کد پرسنلی': s.employeeCode,
         'نام و نام خانوادگی': empName,
-        'علت تسویه': reasonLabel,
+        'نوع و علت تسویه': reasonLabel,
         'تاریخ شروع خدمت': s.startDate,
         'تاریخ پایان خدمت': s.endDate,
         'کل روزهای کارکرد': s.totalWorkedDays || 0,
         'حقوق و مزایای خالص': s.totalNetSalaries || 0,
         'حق سنوات خدمت': s.severanceAmount || 0,
         'عیدی و پاداش': s.bonusAmount || 0,
-        'مانده مرخصی (روز)': s.unusedLeaveDays || 0,
+        'مانده مرخصی (ساعت)': getSettlementUnusedLeaveHours(s),
         'مبلغ مانده مرخصی': s.unusedLeaveAmount || 0,
+        'طلب حساب از قبل': s.previousYearReceivableAmount || 0,
         'خرید پرسنل': s.personnelPurchasesAmount || 0,
         'سایر کسورات': s.otherDeductionsAmount || 0,
         'پرداختی کارفرما': s.employerPaidAmount || 0,
@@ -1193,8 +2089,9 @@ export default function PersonnelSettlementTab({
       'حقوق و مزایای خالص',
       'حق سنوات',
       'عیدی و پاداش',
-      'مانده مرخصی (روز)',
+      'مانده مرخصی (ساعت)',
       'مبلغ مانده مرخصی',
+      'طلب حساب از قبل',
       'خرید پرسنل',
       'سایر کسورات',
       'پرداختی کارفرما',
@@ -1205,7 +2102,7 @@ export default function PersonnelSettlementTab({
     const rows = filteredSettlements.map(s => {
       const emp = personnelList.find(p => p.employeeCode === s.employeeCode);
       const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : s.employeeCode;
-      const reasonLabel = s.reason === 'contract_end' ? 'اتمام قرارداد' : s.reason === 'dismissal' ? 'اخراج' : 'استعفا';
+      const reasonLabel = getSettlementReasonLabel(s.reason);
       const statusLabel = s.status === 'paid' ? 'پرداخت شده' : s.status === 'finalized' ? 'قطعی' : 'پیش‌نویس';
 
       return [
@@ -1219,8 +2116,9 @@ export default function PersonnelSettlementTab({
         s.totalNetSalaries,
         s.severanceAmount,
         s.bonusAmount,
-        s.unusedLeaveDays,
+        getSettlementUnusedLeaveHours(s),
         s.unusedLeaveAmount,
+        s.previousYearReceivableAmount || 0,
         s.personnelPurchasesAmount,
         s.otherDeductionsAmount,
         s.employerPaidAmount,
@@ -1248,11 +2146,12 @@ export default function PersonnelSettlementTab({
       settlementNo: editingId ? (currentList.find(s => s.id === editingId)?.settlementNo || autoNumber) : autoNumber,
       employeeCode: formEmployeeCode,
       contractId: formContractId || undefined,
-      reason: formReason,
+      settlementType: formSettlementType,
+      reason: formSettlementType === 'without_departure' ? 'contract_end' : formReason,
       startDate: formStartDate,
       endDate: formEndDate,
       settlementDate: formSettlementDate,
-      totalPeriodDays: formMonthlyDetails.reduce((sum, m) => sum + m.totalDaysInMonth, 0),
+      totalPeriodDays: formMonthlyDetails.filter(m => !m.alreadySettledInPrior).reduce((sum, m) => sum + m.totalDaysInMonth, 0),
       totalWorkedDays: settlementSummary.totalWorkedDays,
       monthlyDetails: formMonthlyDetails,
       totalBaseSalaries: settlementSummary.totalBaseSalaries,
@@ -1274,9 +2173,14 @@ export default function PersonnelSettlementTab({
       bonusDays: settlementSummary.bonusDays,
       bonusAmount: settlementSummary.bonusAmount,
       totalEntitledLeaveDays: settlementSummary.totalEntitledLeaveDays,
+      totalEntitledLeaveHours: settlementSummary.totalEntitledLeaveHours,
       totalUsedLeaveDays: settlementSummary.totalUsedLeaveDays,
+      totalUsedLeaveHours: settlementSummary.totalUsedLeaveHours,
       unusedLeaveDays: settlementSummary.unusedLeaveDays,
+      unusedLeaveHours: settlementSummary.unusedLeaveHours,
       unusedLeaveAmount: settlementSummary.unusedLeaveAmount,
+      previousYearReceivableAmount: settlementSummary.previousYearReceivable,
+      previousYearReceivableDescription: formPreviousYearReceivableDescription.trim() || undefined,
       totalGrossPayable: settlementSummary.totalGrossPayable,
       personnelPurchasesAmount: settlementSummary.purchasesAmount,
       otherDeductionsAmount: settlementSummary.otherDeductions,
@@ -1286,6 +2190,7 @@ export default function PersonnelSettlementTab({
       finalNetPayable: settlementSummary.finalNetPayable,
       status: formStatus,
       notes: formNotes.trim(),
+      payrollSyncedAt: formPayrollSyncedAt || undefined,
       registeredBy: db.currentUser?.fullName || 'مدیر سیستم',
       createdAt: getTodayJalali(),
       updatedAt: getTodayJalali()
@@ -1295,18 +2200,19 @@ export default function PersonnelSettlementTab({
 
   // Open Full Screen Preview and Print Form
   const handlePrint = (settlement: PersonnelSettlement) => {
-    setPrintingSettlement(settlement);
+    setPrintingSettlement(normalizeSettlementForDisplay(settlement));
   };
 
   // Copy summary to clipboard
   const handleCopySummary = (s: PersonnelSettlement, empName: string) => {
     const text = `برگه تسویه حساب رسمی پرسنل: ${empName}
-شماره سند: ${s.settlementNo}
-دوره کارکرد: ${s.startDate} تا ${s.endDate} (${s.totalWorkedDays} روز)
+شماره سند: ${toPersianDigits(s.settlementNo)}
+دوره کارکرد: ${toPersianDigits(s.startDate)} تا ${toPersianDigits(s.endDate)} (${toPersianDigits(s.totalWorkedDays)} روز)
 خالص حقوق و دستمزد ماه‌ها: ${formatWithCommas(s.totalNetSalaries)} ریال
 حق سنوات پایان خدمت: ${formatWithCommas(s.severanceAmount)} ریال
 عیدی و پاداش سالانه: ${formatWithCommas(s.bonusAmount)} ریال
-بازخرید مانده مرخصی: ${formatWithCommas(s.unusedLeaveAmount)} ریال (${s.unusedLeaveDays} روز)
+بازخرید مانده مرخصی: ${formatWithCommas(s.unusedLeaveAmount)} ریال (${formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت)
+طلب حساب از قبل (مانده سال قبل): ${formatWithCommas(s.previousYearReceivableAmount || 0)} ریال${s.previousYearReceivableDescription ? ` (${s.previousYearReceivableDescription})` : ''}
 جمع کل مطالبات: ${formatWithCommas(s.totalGrossPayable)} ریال
 کسورات و پرداختی قبلی: ${formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))} ریال
 مبلغ خالص قابل پرداخت نهایی: ${formatWithCommas(s.finalNetPayable)} ریال
@@ -1370,7 +2276,7 @@ export default function PersonnelSettlementTab({
           
           <button
             type="button"
-            onClick={handleOpenAdd}
+            onClick={() => handleOpenAdd()}
             className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-rose-600/25 border border-rose-500/40"
           >
             <Plus className="h-4 w-4" />
@@ -1443,6 +2349,7 @@ export default function PersonnelSettlementTab({
               <option value="contract_end">اتمام قرارداد</option>
               <option value="dismissal">اخراج</option>
               <option value="resignation">استعفا</option>
+              <option value="abandonment">ترک کار بدون استعفا</option>
             </select>
           </div>
 
@@ -1477,6 +2384,7 @@ export default function PersonnelSettlementTab({
                 <th className="p-3.5 text-left">سنوات خدمت</th>
                 <th className="p-3.5 text-left">عیدی و پاداش</th>
                 <th className="p-3.5 text-left">مانده مرخصی</th>
+                <th className="p-3.5 text-left">طلب از قبل</th>
                 <th className="p-3.5 text-left">کسورات و پرداختی</th>
                 <th className="p-3.5 text-left font-black text-rose-400">مبلغ قابل پرداخت</th>
                 <th className="p-3.5 text-center">وضعیت</th>
@@ -1486,7 +2394,7 @@ export default function PersonnelSettlementTab({
             <tbody className="divide-y divide-slate-850/60">
               {filteredSettlements.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="p-12 text-center text-slate-400">
+                  <td colSpan={14} className="p-12 text-center text-slate-400">
                     <Receipt className="h-10 w-10 text-slate-400 mx-auto mb-2 opacity-50" />
                     هیچ سند تسویه حسابی با شرایط انتخابی یافت نشد.
                   </td>
@@ -1509,15 +2417,23 @@ export default function PersonnelSettlementTab({
                       </td>
 
                       <td className="p-3.5">
-                        <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold border ${
-                          s.reason === 'contract_end' 
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                            : s.reason === 'dismissal' 
-                            ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                        }`}>
-                          {s.reason === 'contract_end' ? 'اتمام قرارداد' : s.reason === 'dismissal' ? 'اخراج' : 'استعفا'}
-                        </span>
+                        {(s.settlementType || 'with_departure') === 'without_departure' ? (
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[11px] font-bold border bg-sky-500/15 text-sky-300 border-sky-500/30">
+                            قرارداد (بدون ترک کار)
+                          </span>
+                        ) : (
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                            s.reason === 'contract_end' 
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                              : s.reason === 'dismissal' 
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                              : s.reason === 'abandonment'
+                              ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                          }`}>
+                            {getSettlementReasonLabel(s.reason)}
+                          </span>
+                        )}
                       </td>
 
                       <td className="p-3.5 text-[11px] text-slate-300 font-mono">
@@ -1543,8 +2459,17 @@ export default function PersonnelSettlementTab({
                       <td className="p-3.5 text-left font-mono text-indigo-400 font-medium">
                         {formatWithCommas(s.unusedLeaveAmount)}
                         <span className="block text-[10px] text-slate-400 font-sans">
-                          {toPersianDigits(s.unusedLeaveDays)} روز مانده
+                          {formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت مانده
                         </span>
+                      </td>
+
+                      <td className="p-3.5 text-left font-mono text-teal-400 font-medium">
+                        {formatWithCommas(s.previousYearReceivableAmount || 0)}
+                        {s.previousYearReceivableDescription && (
+                          <span className="block text-[9.5px] text-slate-400 font-sans truncate max-w-[110px]" title={s.previousYearReceivableDescription}>
+                            {s.previousYearReceivableDescription}
+                          </span>
+                        )}
                       </td>
 
                       <td className="p-3.5 text-left font-mono text-amber-400 text-[11px]">
@@ -1578,19 +2503,39 @@ export default function PersonnelSettlementTab({
                           >
                             <Printer className="h-4 w-4 text-sky-400" />
                           </button>
+                          {isSettlementRecordLocked(s) ? (
+                            <button
+                              type="button"
+                              title="مشاهده تسویه حساب (سند حقوق ماه ترک کار قفل است)"
+                              onClick={() => handleOpenEdit(s, true)}
+                              className="p-1.5 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Eye className="h-4 w-4 text-emerald-400" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              title="ویرایش تسویه حساب"
+                              onClick={() => handleOpenEdit(s, false)}
+                              className="p-1.5 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Edit3 className="h-4 w-4 text-amber-400" />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            title="ویرایش تسویه حساب"
-                            onClick={() => handleOpenEdit(s)}
-                            className="p-1.5 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
-                          >
-                            <Edit3 className="h-4 w-4 text-amber-400" />
-                          </button>
-                          <button
-                            type="button"
-                            title="حذف تسویه حساب"
-                            onClick={() => handleDelete(s.id, s.settlementNo)}
-                            className="p-1.5 text-slate-300 hover:text-rose-400 bg-slate-800 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
+                            disabled={isSettlementRecordLocked(s)}
+                            title={
+                              isSettlementRecordLocked(s)
+                                ? 'سند حقوق ماه ترک کار قفل است و امکان حذف وجود ندارد'
+                                : 'حذف تسویه حساب'
+                            }
+                            onClick={() => handleDelete(s)}
+                            className={`p-1.5 rounded-lg transition-colors ${
+                              isSettlementRecordLocked(s)
+                                ? 'text-slate-600 bg-slate-900/50 cursor-not-allowed opacity-50'
+                                : 'text-slate-300 hover:text-rose-400 bg-slate-800 hover:bg-rose-950/40 cursor-pointer'
+                            }`}
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1618,17 +2563,30 @@ export default function PersonnelSettlementTab({
                   <Calculator className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-white">
-                    {editingId ? 'ویرایش و بازبینی تسویه حساب پرسنل' : 'محاسبه و صدور سند تسویه حساب پرسنل'}
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>
+                      {isModalReadOnly
+                        ? 'مشاهده سند تسویه حساب پرسنل (فقط خواندنی)'
+                        : editingId
+                        ? 'ویرایش و بازبینی تسویه حساب پرسنل'
+                        : 'محاسبه و صدور سند تسویه حساب پرسنل'}
+                    </span>
+                    {isModalReadOnly && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        سند حقوق ماه ترک کار قفل است
+                      </span>
+                    )}
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    تنظیم بر اساس مشخصات قرارداد، قوانین کار ایران، ماه‌های ۳۱ روزه، سنوات، عیدی و مرخصی
+                    {formSettlementType === 'without_departure'
+                      ? 'تسویه کامل یک قرارداد بدون قطع همکاری (پرسنل فعال باقی می‌ماند و مانده مرخصی و سنوات تا پایان این قرارداد تسویه می‌شود).'
+                      : 'اطلاعات حقوق و دستمزد ماه‌ها مستقیماً مطابق لیست‌های حقوق محاسبه می‌شود؛ در ماه ترک کار مانده مرخصی و اضافه‌کار صرفاً در تسویه حساب اعمال می‌گردد.'}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setShowModal(false)}
+                onClick={handleCloseModal}
                 className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="h-5 w-5" />
@@ -1637,20 +2595,108 @@ export default function PersonnelSettlementTab({
 
             {/* Modal Body */}
             <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+              {isModalReadOnly && (
+                <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl p-3 flex items-center gap-2.5 text-amber-200 text-xs font-bold">
+                  <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+                  <span>
+                    سند حقوق و دستمزد ماه ترک کار قفل شده است؛ این برگه تسویه حساب در حالت «فقط مشاهده» باز شده و امکان ویرایش یا تغییر اطلاعات آن وجود ندارد.
+                  </span>
+                </div>
+              )}
+
               {/* SECTION 1: PERSONNEL & CONTRACT SELECTION */}
               <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-850 space-y-4">
                 <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
                   <Users className="h-4 w-4 text-rose-400" />
-                  مرحله ۱: انتخاب پرسنل، قرارداد و علت تسویه حساب
+                  مرحله ۱: انتخاب نوع تسویه، پرسنل، قرارداد و بازه زمانی
                 </h4>
+
+                {/* Settlement Type Selector */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    disabled={isModalReadOnly}
+                    onClick={() => handleSettlementTypeChange('with_departure')}
+                    className={`p-3 rounded-xl border text-right transition-all ${
+                      isModalReadOnly ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                    } ${
+                      formSettlementType === 'with_departure'
+                        ? 'bg-rose-600/20 border-rose-500 text-white shadow-md shadow-rose-950/30'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-xs">تسویه حساب کامل به همراه ترک کار</span>
+                      {formSettlementType === 'with_departure' && (
+                        <CheckCircle2 className="h-4 w-4 text-rose-400 shrink-0" />
+                      )}
+                    </div>
+                    <span className="block text-[10.5px] text-slate-400 mt-1">
+                      ثبت تاریخ و علت ترک کار در پرونده پرسنل، اعمال قوانین ماه ترک کار بر لیست حقوق و مختومه شدن همکاری
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isModalReadOnly}
+                    onClick={() => handleSettlementTypeChange('without_departure')}
+                    className={`p-3 rounded-xl border text-right transition-all ${
+                      isModalReadOnly ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                    } ${
+                      formSettlementType === 'without_departure'
+                        ? 'bg-sky-600/20 border-sky-500 text-white shadow-md shadow-sky-950/30'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-xs">تسویه حساب قرارداد بدون ترک کار</span>
+                      {formSettlementType === 'without_departure' && (
+                        <CheckCircle2 className="h-4 w-4 text-sky-400 shrink-0" />
+                      )}
+                    </div>
+                    <span className="block text-[10.5px] text-slate-400 mt-1">
+                      تسویه کامل یک قرارداد در پایان دوره همراه با بازخرید مرخصی (پرسنل فعال می‌ماند و در تسویه نهایی کسر می‌شود)
+                    </span>
+                  </button>
+                </div>
+
+                {/* Prior without_departure settlements notice */}
+                {priorWithoutDepartureForForm.length > 0 && (
+                  <div className="bg-sky-950/30 border border-sky-500/35 rounded-xl p-3 space-y-1.5 text-[11px]">
+                    <div className="flex items-center gap-2 font-extrabold text-sky-300">
+                      <AlertCircle className="h-4 w-4 text-sky-400 shrink-0" />
+                      <span>
+                        سوابق تسویه حساب قرارداد (بدون ترک کار) برای این پرسنل ({toPersianDigits(priorWithoutDepartureForForm.length)} سند):
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {priorWithoutDepartureForForm.map(ps => (
+                        <span
+                          key={ps.id}
+                          className="inline-flex items-center gap-1.5 bg-slate-950/80 border border-sky-500/30 rounded-lg px-2.5 py-1 text-[10.5px] text-slate-200"
+                        >
+                          <strong className="font-mono text-sky-300">{toPersianDigits(ps.settlementNo)}</strong>
+                          <span>|</span>
+                          <span className="font-mono">{toPersianDigits(ps.startDate)} تا {toPersianDigits(ps.endDate)}</span>
+                          <span>|</span>
+                          <span>مرخصی تسویه‌شده: <strong className="font-mono text-emerald-300">{formatPersianHoursValue(getSettlementUnusedLeaveHours(ps))}</strong> ساعت</span>
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-sky-200/80 leading-relaxed">
+                      مانده مرخصی، کارکرد، عیدی و سنوات بازه‌های قبلی بدون ترک کار یک‌بار تسویه شده‌اند و در محاسبه تسویه جدید و انتقال مرخصی ماه‌های بعد به‌صورت خودکار لحاظ و کسر می‌شوند.
+                    </p>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-slate-300 font-bold mb-1.5">انتخاب پرسنل *</label>
                     <select
                       value={formEmployeeCode}
+                      disabled={isModalReadOnly}
                       onChange={e => handleEmployeeSelect(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-hidden focus:border-rose-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-hidden focus:border-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <option value="">-- انتخاب پرسنل --</option>
                       {personnelList.map(p => (
@@ -1665,55 +2711,92 @@ export default function PersonnelSettlementTab({
                     <label className="block text-slate-300 font-bold mb-1.5">قرارداد کاری مرتبط</label>
                     <select
                       value={formContractId}
+                      disabled={isModalReadOnly}
                       onChange={e => handleContractSelect(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-hidden focus:border-rose-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-hidden focus:border-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      <option value="">-- قرارداد پیش‌فرض پرونده پرسنلی --</option>
+                      <option value={CURRENT_YEAR_CONTRACT_ID}>
+                        کل قرارداد سال جاری ({toPersianDigits(currentYear)})
+                      </option>
                       {employeeContracts.map(c => (
                         <option key={c.id} value={c.id}>
                           {c.role || 'قرارداد کاری'} ({toPersianDigits(c.contractStartDate)} الی {toPersianDigits(c.contractEndDate)})
                         </option>
                       ))}
+                      <option value="">-- قرارداد پیش‌فرض پرونده پرسنلی --</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-slate-300 font-bold mb-1.5">علت قطع همکاری و تسویه *</label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleReasonChange('contract_end')}
-                        className={`py-2 px-1 text-[11px] font-bold rounded-lg border text-center transition-all cursor-pointer ${
-                          formReason === 'contract_end' 
-                            ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500' 
-                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                        }`}
-                      >
-                        اتمام قرارداد
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleReasonChange('dismissal')}
-                        className={`py-2 px-1 text-[11px] font-bold rounded-lg border text-center transition-all cursor-pointer ${
-                          formReason === 'dismissal' 
-                            ? 'bg-rose-600/30 text-rose-300 border-rose-500' 
-                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                        }`}
-                      >
-                        اخراج
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleReasonChange('resignation')}
-                        className={`py-2 px-1 text-[11px] font-bold rounded-lg border text-center transition-all cursor-pointer ${
-                          formReason === 'resignation' 
-                            ? 'bg-amber-600/30 text-amber-300 border-amber-500' 
-                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                        }`}
-                      >
-                        استعفا
-                      </button>
-                    </div>
+                    <label className="block text-slate-300 font-bold mb-1.5">
+                      {formSettlementType === 'without_departure'
+                        ? 'وضعیت همکاری'
+                        : 'علت تسویه حساب و ترک کار *'}
+                    </label>
+                    {formSettlementType === 'without_departure' ? (
+                      <div className="bg-sky-950/30 border border-sky-500/40 rounded-lg p-2.5 text-[11px] font-bold text-sky-300 text-center">
+                        اتمام قرارداد (ادامه همکاری بدون ترک کار)
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                        <button
+                          type="button"
+                          disabled={isModalReadOnly}
+                          onClick={() => handleReasonChange('contract_end')}
+                          className={`py-2 px-1 text-[10.5px] font-bold rounded-lg border text-center transition-all ${
+                            isModalReadOnly ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+                          } ${
+                            formReason === 'contract_end' 
+                              ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500' 
+                              : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          اتمام قرارداد
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isModalReadOnly}
+                          onClick={() => handleReasonChange('dismissal')}
+                          className={`py-2 px-1 text-[10.5px] font-bold rounded-lg border text-center transition-all ${
+                            isModalReadOnly ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+                          } ${
+                            formReason === 'dismissal' 
+                              ? 'bg-rose-600/30 text-rose-300 border-rose-500' 
+                              : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          اخراج
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isModalReadOnly}
+                          onClick={() => handleReasonChange('resignation')}
+                          className={`py-2 px-1 text-[10.5px] font-bold rounded-lg border text-center transition-all ${
+                            isModalReadOnly ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+                          } ${
+                            formReason === 'resignation' 
+                              ? 'bg-amber-600/30 text-amber-300 border-amber-500' 
+                              : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          استعفا
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isModalReadOnly}
+                          onClick={() => handleReasonChange('abandonment')}
+                          className={`py-2 px-1 text-[10.5px] font-bold rounded-lg border text-center transition-all ${
+                            isModalReadOnly ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+                          } ${
+                            formReason === 'abandonment' 
+                              ? 'bg-purple-600/30 text-purple-300 border-purple-500' 
+                              : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          ترک کار بدون استعفا
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1726,32 +2809,55 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formStartDate}
-                      onChange={e => handleDateChangeAndRecalculate(e.target.value, formEndDate)}
-                      placeholder="1404/01/01"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono"
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formStartDate)}
+                      onChange={e => handleDateChangeAndRecalculate(toEnglishDigits(e.target.value), formEndDate)}
+                      placeholder="۱۴۰۴/۰۱/۰۱"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60"
                     />
                   </div>
 
                   <div>
                     <label className="block text-slate-300 font-medium mb-1">
-                      {formReason === 'contract_end' 
-                        ? 'تاریخ پایان قرارداد (اتمام قرارداد)' 
-                        : 'تاریخ اتمام کار و قطع همکاری *'}
+                      {formSettlementType === 'without_departure'
+                        ? 'تاریخ پایان قرارداد مورد تسویه *'
+                        : 'تاریخ ترک کار (یک روز پس از آخرین تردد پرسنل) *'}
                     </label>
                     <input
                       type="text"
                       dir="ltr"
-                      value={formEndDate}
-                      onChange={e => handleDateChangeAndRecalculate(formStartDate, e.target.value)}
-                      placeholder="1404/12/29"
-                      className={`w-full bg-slate-950 border rounded-lg p-2.5 text-xs text-center text-white font-mono ${
-                        formReason !== 'contract_end' ? 'border-amber-500/60 bg-amber-950/20' : 'border-slate-800'
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formEndDate)}
+                      onChange={e => handleDateChangeAndRecalculate(formStartDate, toEnglishDigits(e.target.value))}
+                      placeholder="۱۴۰۴/۱۲/۲۹"
+                      className={`w-full bg-slate-950 border rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60 ${
+                        lastDetectedAttendanceDate ? 'border-emerald-500/50 bg-emerald-950/15' : 'border-amber-500/60 bg-amber-950/20'
                       }`}
                     />
-                    {formReason !== 'contract_end' && (
+                    {lastDetectedAttendanceDate ? (() => {
+                      const expectedEndDate =
+                        formSettlementType === 'with_departure'
+                          ? addDaysToJalali(lastDetectedAttendanceDate, 1)
+                          : lastDetectedAttendanceDate;
+                      return (
+                        <div className="flex flex-wrap items-center justify-between gap-2 mt-1">
+                          <span className="text-[10px] text-emerald-400">
+                            آخرین روز تردد ثبت‌شده:{' '}
+                            <strong className="font-mono">{toPersianDigits(lastDetectedAttendanceDate)}</strong>
+                            {formSettlementType === 'with_departure' && (
+                              <>
+                                {' '}| ترک کار:{' '}
+                                <strong className="font-mono text-sky-300">{toPersianDigits(expectedEndDate)}</strong>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })() : (
                       <span className="text-[10px] text-amber-400 mt-1 block">
-                        در علت اخراج یا استعفا، تاریخ دقیق آخرین روز حضور و کارکرد را وارد کنید.
+                        {formSettlementType === 'without_departure'
+                          ? 'تاریخ دقیق پایان قرارداد مورد تسویه را وارد کنید.'
+                          : 'تردد ثبت‌شده‌ای یافت نشد؛ تاریخ ترک کار (یک روز پس از آخرین روز حضور) را وارد کنید.'}
                       </span>
                     )}
                   </div>
@@ -1761,10 +2867,11 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formSettlementDate}
-                      onChange={e => setFormSettlementDate(e.target.value)}
-                      placeholder={getTodayJalali()}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono"
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formSettlementDate)}
+                      onChange={e => setFormSettlementDate(toEnglishDigits(e.target.value))}
+                      placeholder={toPersianDigits(getTodayJalali())}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60"
                     />
                   </div>
                 </div>
@@ -1784,17 +2891,64 @@ export default function PersonnelSettlementTab({
                         <span>|</span>
                         <span>تعداد فرزندان: <strong className="font-mono text-slate-200">{toPersianDigits(selectedPersonnel.childrenCount || (selectedPersonnel.childrenList?.length || 0))}</strong></span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const generated = generateMonthsList(formStartDate, formEndDate, selectedPersonnel, selectedContract);
-                          setFormMonthlyDetails(generated);
-                        }}
-                        className="px-2.5 py-1 bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 rounded-md border border-rose-500/30 text-[11px] font-bold cursor-pointer transition-colors"
-                      >
-                        بازسازی ماه‌های کارکرد بر اساس تاریخ‌ها
-                      </button>
+                      {!isModalReadOnly && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const isCY = formContractId === CURRENT_YEAR_CONTRACT_ID;
+                            const generated = generateMonthsList(
+                              formStartDate,
+                              formEndDate,
+                              selectedPersonnel,
+                              isCY ? undefined : selectedContract,
+                              isCY,
+                              currentYear,
+                              formSettlementType,
+                              editingId
+                            );
+                            setFormMonthlyDetails(generated);
+                            setFormPayrollSyncedAt(generated.some(m => m.syncedFromPayroll) ? getTodayJalali() : '');
+                          }}
+                          className="px-2.5 py-1 bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 rounded-md border border-rose-500/30 text-[11px] font-bold cursor-pointer transition-colors"
+                        >
+                          بازسازی ماه‌های کارکرد بر اساس تاریخ‌ها
+                        </button>
+                      )}
                     </div>
+
+                    {/* Last Attendance Announcement Banner */}
+                    {lastDetectedAttendanceDate ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 bg-emerald-950/30 border border-emerald-500/35 rounded-lg px-3 py-2 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-2 text-emerald-200">
+                          <Calendar className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                          <span>
+                            آخرین روز تردد ثبت‌شده پرسنل:{' '}
+                            <strong className="font-mono text-white text-xs">{toPersianDigits(lastDetectedAttendanceDate)}</strong>
+                          </span>
+                          {formSettlementType === 'with_departure' && (
+                            <>
+                              <span className="text-emerald-500">|</span>
+                              <span>
+                                تاریخ ترک کار در سیستم (یک روز پس از آخرین تردد):{' '}
+                                <strong className="font-mono text-sky-300 text-xs">
+                                  {toPersianDigits(formEndDate || addDaysToJalali(lastDetectedAttendanceDate, 1))}
+                                </strong>
+                              </span>
+                            </>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-emerald-300/85">
+                          ثبت ترک کار با یک روز فاصله باعث می‌شود کارکرد روز آخر در محاسبات کسر نشود.
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-1.5 text-[10.5px] text-amber-200">
+                        <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                        <span>
+                          برای این پرسنل در دوره جاری تردد ثبت‌شده‌ای یافت نشد؛ در صورت وجود تاریخ ترک کار، آن را یک روز پس از آخرین روز کاری وارد فرمایید.
+                        </span>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-850/80 text-[11px]">
                       <div className="flex items-center gap-1.5 bg-amber-950/40 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-lg">
@@ -1818,79 +2972,39 @@ export default function PersonnelSettlementTab({
                 )}
               </div>
 
-              {/* SECTION 2: MONTHLY BREAKDOWN TABLE */}
+              {/* SECTION 2: MONTHLY BREAKDOWN TABLE (READ-ONLY SYNCED WITH PAYROLL LISTS) */}
               <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-850 space-y-3">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                   <div>
-                    <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
+                    <h4 className="font-extrabold text-white text-sm flex items-center gap-2 flex-wrap">
                       <Calendar className="h-4 w-4 text-emerald-400" />
-                      مرحله ۲: کارکرد ماه به ماه دوره تسویه و اقلام حقوق و دستمزد (امکان ویرایش مستقیم کلیه اعداد)
+                      <span>مرحله ۲: اقلام حقوق و دستمزد ماه به ماه (مطابق با لیست‌های حقوق)</span>
+                      {payrollIntegrationInsights.syncedMonthsCount > 0 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          {toPersianDigits(payrollIntegrationInsights.syncedMonthsCount)} ماه همگام‌سازی‌شده
+                          {payrollIntegrationInsights.lockedMonthsCount > 0 && ` (${toPersianDigits(payrollIntegrationInsights.lockedMonthsCount)} ثبت‌شده)`}
+                          {payrollIntegrationInsights.liveMonthsCount > 0 && ` (${toPersianDigits(payrollIntegrationInsights.liveMonthsCount)} تردد زنده)`}
+                        </span>
+                      )}
                     </h4>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      محاسبه اضافه کار و تعطیل‌کاری بر مبنای نرخ اضافه کاری ساعتی درج شده در قوانین و ثوابت دستمزد متناسب با سال تسویه حساب ({toPersianDigits(settlementYear)} - {toPersianDigits(formatWithCommas(settlementOvertimeHourlyRate))} ریال بر مبنای ۸ ساعت کار و نه ۷.۳۳) و حق بن و مسکن متناسب با کارکرد در ماه‌های کمتر از یک ماه اعمال می‌گردد.
+                      اطلاعات حقوق و دستمزد ماه‌های مختلف مطابق با لیست‌های حقوق و تردد نمایش داده می‌شود؛ مبالغ عیدی و حق سنوات پایان خدمت از ناخالص و خالص ماهانه کسر شده و به صورت تفکیکی در بخش مزایای پایان خدمت محاسبه می‌گردد.
                     </p>
                   </div>
 
-                  {/* Bulk Input Toolbar & Recalculate All */}
-                  <div className="flex flex-wrap items-center gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-                    <button
-                      type="button"
-                      onClick={handleResetAllMonthsToFormula}
-                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1 border border-slate-700"
-                      title="محاسبه مجدد تمام ماه‌ها طبق فرمول‌های قانونی و آیتم‌های مشمول بیمه"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5 text-emerald-400" />
-                      محاسبه مجدد همه
-                    </button>
-                    <span className="text-[11px] text-slate-300 font-bold mr-1">ورود سریع:</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      placeholder="ساعت اضافه"
-                      value={bulkOvertime}
-                      onChange={e => setBulkOvertime(e.target.value)}
-                      className="w-24 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 rounded px-2 py-1 text-xs text-center text-amber-300 font-mono font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      title="ساعت اضافه‌کاری برای همه ماه‌ها"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      placeholder="ساعت جمعه"
-                      value={bulkFriday}
-                      onChange={e => setBulkFriday(e.target.value)}
-                      className="w-24 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 rounded px-2 py-1 text-xs text-center text-amber-300 font-mono font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      title="ساعت جمعه‌کاری برای همه ماه‌ها"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      placeholder="ساعت تعطیل"
-                      value={bulkHoliday}
-                      onChange={e => setBulkHoliday(e.target.value)}
-                      className="w-24 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 rounded px-2 py-1 text-xs text-center text-amber-300 font-mono font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      title="ساعت تعطیل‌کاری برای همه ماه‌ها"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.5"
-                      placeholder="روز مرخصی"
-                      value={bulkLeave}
-                      onChange={e => setBulkLeave(e.target.value)}
-                      className="w-22 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-sky-400 rounded px-2 py-1 text-xs text-center text-sky-300 font-mono font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      title="مرخصی استفاده شده ماه برای همه ماه‌ها"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleApplyBulk}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-bold cursor-pointer transition-colors"
-                    >
-                      اعمال به همه
-                    </button>
-                  </div>
+                  {!isModalReadOnly && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSyncFromPayroll}
+                        className="px-3 py-1.5 bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1.5 border border-emerald-500/40"
+                        title="به‌روزرسانی کارکرد، حقوق، کسورات و مانده مرخصی از لیست‌های حقوق و تردد"
+                      >
+                        <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+                        همگام‌سازی از حقوق و دستمزد
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto border border-slate-800 rounded-xl">
@@ -1898,354 +3012,228 @@ export default function PersonnelSettlementTab({
                     <thead className="bg-slate-950 text-slate-300 border-b border-slate-800 font-bold whitespace-nowrap">
                       <tr>
                         <th className="p-2">ماه</th>
-                        <th className="p-2 w-16 text-center">کارکرد</th>
-                        <th className="p-2 w-16 text-center">مرخصی</th>
+                        <th className="p-2 text-center">کارکرد</th>
+                        <th className="p-2 text-center">مرخصی استفاده شده (ساعت)</th>
                         <th className="p-2 text-left">حقوق پایه</th>
                         <th className="p-2 text-left">بن خواربار</th>
                         <th className="p-2 text-left">حق مسکن</th>
                         <th className="p-2 text-left">حق اولاد</th>
                         <th className="p-2 text-left">حق تاهل</th>
-                        <th className="p-2 text-center min-w-[210px]">
-                          <div className="font-bold text-slate-200 flex items-center justify-center gap-1">
-                            <span>اضافه‌کار</span>
-                            {settlementOvertimeHourlyRate ? (
-                              <span className="text-[9px] text-amber-400 font-mono font-normal">
-                                ({toPersianDigits(formatWithCommas(settlementOvertimeHourlyRate))})
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="text-[9.5px] text-slate-400 font-normal flex items-center justify-center gap-2 mt-0.5">
-                            <span className="text-amber-300 font-semibold">ساعت کار</span>
-                            <span>|</span>
-                            <span className="text-slate-300">مبلغ (ریال)</span>
-                          </div>
-                        </th>
-                        <th className="p-2 text-center min-w-[210px]">
-                          <div className="font-bold text-slate-200">جمعه‌کاری (۴۰٪)</div>
-                          <div className="text-[9.5px] text-slate-400 font-normal flex items-center justify-center gap-2 mt-0.5">
-                            <span className="text-amber-300 font-semibold">ساعت کار</span>
-                            <span>|</span>
-                            <span className="text-slate-300">مبلغ (ریال)</span>
-                          </div>
-                        </th>
-                        <th className="p-2 text-center min-w-[210px]">
-                          <div className="font-bold text-slate-200 flex items-center justify-center gap-1">
-                            <span>تعطیل‌کاری</span>
-                            {settlementOvertimeHourlyRate ? (
-                              <span className="text-[9px] text-amber-400 font-mono font-normal">
-                                ({toPersianDigits(formatWithCommas(settlementOvertimeHourlyRate))})
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="text-[9.5px] text-slate-400 font-normal flex items-center justify-center gap-2 mt-0.5">
-                            <span className="text-amber-300 font-semibold">ساعت کار</span>
-                            <span>|</span>
-                            <span className="text-slate-300">مبلغ (ریال)</span>
-                          </div>
-                        </th>
+                        <th className="p-2 text-left">سایر مزایا</th>
+                        <th className="p-2 text-center">اضافه‌کار (ساعت / مبلغ)</th>
+                        <th className="p-2 text-center">جمعه‌کاری (ساعت / مبلغ)</th>
+                        <th className="p-2 text-center">تعطیل‌کاری (ساعت / مبلغ)</th>
                         <th className="p-2 text-left text-amber-300">ناخالص ماه</th>
                         <th className="p-2 text-left text-sky-400">مشمول بیمه</th>
                         <th className="p-2 text-left text-rose-400">بیمه ۷٪</th>
+                        <th className="p-2 text-left text-rose-300">مالیات و تکمیلی</th>
                         <th className="p-2 text-left text-emerald-400">خالص ماه</th>
-                        <th className="p-2 text-center">بازنشانی</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-850 bg-slate-950/40">
-                      {formMonthlyDetails.map((m, idx) => (
-                        <tr key={idx} className="hover:bg-slate-900/30">
-                          <td className="p-2 font-bold text-white whitespace-nowrap">
-                            {m.monthName}
-                            <span className="block text-[9px] text-slate-400 font-normal">
-                              طول: {toPersianDigits(m.totalDaysInMonth)} روز
-                            </span>
-                          </td>
+                      {formMonthlyDetails.map((m, idx) => {
+                        const otherBenefits =
+                          (m.seniorityBase || 0) +
+                          (m.jobAllowance || 0);
+                        const taxAndSupp = (m.payrollTax || 0) + (m.supplementaryInsurance || 0);
+                        return (
+                          <tr
+                            key={idx}
+                            className={m.alreadySettledInPrior ? 'bg-slate-900/60 opacity-60' : 'hover:bg-slate-900/30'}
+                          >
+                            <td className="p-2 font-bold text-white whitespace-nowrap">
+                              {toPersianDigits(m.monthName)}
+                              <span className="block text-[9px] text-slate-400 font-normal">
+                                طول: {toPersianDigits(m.totalDaysInMonth)} روز
+                              </span>
+                              {m.alreadySettledInPrior ? (
+                                <span
+                                  className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[8.5px] font-bold border bg-amber-500/15 text-amber-300 border-amber-500/30"
+                                  title="این ماه قبلاً در سند تسویه بدون ترک کار تسویه شده و در جمع کل محاسبه نمی‌شود"
+                                >
+                                  تسویه‌شده قبلی ({toPersianDigits(m.priorSettlementNo || '')})
+                                </span>
+                              ) : (
+                                <span
+                                  className={`inline-block mt-0.5 px-1.5 py-0.2 rounded text-[8.5px] font-bold border ${
+                                    m.payrollSourceType === 'locked_payroll'
+                                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                      : m.payrollSourceType === 'live_attendance'
+                                      ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                                      : m.workedDays === 0
+                                      ? 'bg-slate-900 text-slate-500 border-slate-800'
+                                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                                  }`}
+                                >
+                                  {m.payrollSourceType === 'locked_payroll'
+                                    ? 'حقوق ثبت‌شده'
+                                    : m.payrollSourceType === 'live_attendance'
+                                    ? 'کارکرد تردد'
+                                    : m.workedDays === 0
+                                    ? 'بدون کارکرد'
+                                    : 'قرارداد'}
+                                </span>
+                              )}
+                            </td>
 
-                          {/* کارکرد */}
-                          <td className="p-1 text-center">
-                            <input
-                              type="number"
-                              min={0}
-                              max={m.totalDaysInMonth}
-                              dir="ltr"
-                              value={m.workedDays}
-                              onChange={e => handleMonthFieldChange(idx, 'workedDays', parseNumber(e.target.value))}
-                              className="w-16 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-rose-500 rounded p-1 text-center font-mono font-bold text-xs text-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              title="روزهای کارکرد ماه"
-                            />
-                          </td>
+                            <td className="p-2 text-center font-mono font-bold text-white">
+                              {toPersianDigits(m.workedDays)}
+                            </td>
 
-                          {/* مرخصی */}
-                          <td className="p-1 text-center">
-                            <input
-                              type="number"
-                              min={0}
-                              step="0.5"
-                              dir="ltr"
-                              value={m.usedLeaveDays}
-                              onChange={e => handleMonthFieldChange(idx, 'usedLeaveDays', parseNumber(e.target.value))}
-                              className="w-16 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-rose-500 rounded p-1 text-center font-mono text-xs text-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              title="مرخصی استفاده شده ماه"
-                            />
-                          </td>
-
-                          {/* حقوق پایه */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.baseSalary)}
-                              onChange={e => handleMonthAmountChange(idx, 'baseSalary', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-slate-750 rounded p-1 text-left font-mono text-[11px] text-white focus:border-sky-500"
-                              title="حقوق پایه ماه"
-                            />
-                          </td>
-
-                          {/* بن خواربار */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.foodAllowance)}
-                              onChange={e => handleMonthAmountChange(idx, 'foodAllowance', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-slate-750 rounded p-1 text-left font-mono text-[11px] text-white focus:border-sky-500"
-                              title="بن خواربار ماه"
-                            />
-                          </td>
-
-                          {/* حق مسکن */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.housingAllowance)}
-                              onChange={e => handleMonthAmountChange(idx, 'housingAllowance', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-slate-750 rounded p-1 text-left font-mono text-[11px] text-white focus:border-sky-500"
-                              title="حق مسکن ماه"
-                            />
-                          </td>
-
-                          {/* حق اولاد */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.childAllowance)}
-                              onChange={e => handleMonthAmountChange(idx, 'childAllowance', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-slate-750 rounded p-1 text-left font-mono text-[11px] text-white focus:border-sky-500"
-                              title="حق اولاد ماه"
-                            />
-                          </td>
-
-                          {/* حق تاهل */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.marriageAllowance)}
-                              onChange={e => handleMonthAmountChange(idx, 'marriageAllowance', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-slate-750 rounded p-1 text-left font-mono text-[11px] text-white focus:border-sky-500"
-                              title="حق تاهل ماه"
-                            />
-                          </td>
-
-                          {/* اضافه‌کاری: ساعت + مبلغ */}
-                          <td className="p-1 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5 justify-center">
-                              <div className="relative flex items-center" title={`ساعت اضافه‌کاری (محاسبه بر اساس نرخ مصوب سال تسویه حساب ${toPersianDigits(settlementYear)} بر مبنای ۸ ساعت کار: ${toPersianDigits(formatWithCommas(m.overtimeHourlyRate || settlementOvertimeHourlyRate))} ریال)`}>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  dir="ltr"
-                                  value={m.overtimeHours}
-                                  onChange={e => handleMonthFieldChange(idx, 'overtimeHours', parseNumber(e.target.value))}
-                                  className="w-20 sm:w-22 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 focus:ring-1 focus:ring-amber-400/30 rounded-md px-2 py-1 text-center font-mono font-bold text-xs text-amber-300 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
-                                  placeholder="۰"
-                                />
-                                <span className="text-[9px] text-slate-500 absolute left-1.5 pointer-events-none select-none font-sans">س</span>
-                              </div>
-                              <div className="relative flex items-center" title="مبلغ اضافه‌کاری (ریال)">
-                                <input
-                                  type="text"
-                                  dir="ltr"
-                                  value={formatWithCommas(m.overtimeAmount)}
-                                  onChange={e => handleMonthAmountChange(idx, 'overtimeAmount', parseNumber(e.target.value))}
-                                  className="w-26 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 rounded-md px-2 py-1 text-left font-mono text-xs text-white transition-colors"
-                                  placeholder="۰"
-                                />
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* جمعه‌کاری: ساعت + مبلغ */}
-                          <td className="p-1 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5 justify-center">
-                              <div className="relative flex items-center" title="ساعت جمعه‌کاری">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  dir="ltr"
-                                  value={m.fridayWorkHours}
-                                  onChange={e => handleMonthFieldChange(idx, 'fridayWorkHours', parseNumber(e.target.value))}
-                                  className="w-20 sm:w-22 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 focus:ring-1 focus:ring-amber-400/30 rounded-md px-2 py-1 text-center font-mono font-bold text-xs text-amber-300 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
-                                  placeholder="۰"
-                                />
-                                <span className="text-[9px] text-slate-500 absolute left-1.5 pointer-events-none select-none font-sans">س</span>
-                              </div>
-                              <div className="relative flex items-center" title="مبلغ جمعه‌کاری (بر اساس نرخ ساعتی جمعه‌کاری)">
-                                <input
-                                  type="text"
-                                  dir="ltr"
-                                  value={formatWithCommas(m.fridayWorkAmount)}
-                                  onChange={e => handleMonthAmountChange(idx, 'fridayWorkAmount', parseNumber(e.target.value))}
-                                  className="w-26 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 rounded-md px-2 py-1 text-left font-mono text-xs text-white transition-colors"
-                                  placeholder="۰"
-                                />
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* تعطیل‌کاری: ساعت + مبلغ */}
-                          <td className="p-1 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5 justify-center">
-                              <div className="relative flex items-center" title={`ساعت تعطیل‌کاری (محاسبه بر اساس نرخ مصوب سال تسویه حساب ${toPersianDigits(settlementYear)} بر مبنای ۸ ساعت کار: ${toPersianDigits(formatWithCommas(m.holidayHourlyRate || settlementOvertimeHourlyRate))} ریال)`}>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  dir="ltr"
-                                  value={m.holidayWorkHours}
-                                  onChange={e => handleMonthFieldChange(idx, 'holidayWorkHours', parseNumber(e.target.value))}
-                                  className="w-20 sm:w-22 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-amber-400 focus:ring-1 focus:ring-amber-400/30 rounded-md px-2 py-1 text-center font-mono font-bold text-xs text-amber-300 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors"
-                                  placeholder="۰"
-                                />
-                                <span className="text-[9px] text-slate-500 absolute left-1.5 pointer-events-none select-none font-sans">س</span>
-                              </div>
-                              <div className="relative flex items-center" title="مبلغ تعطیل‌کاری (ریال)">
-                                <input
-                                  type="text"
-                                  dir="ltr"
-                                  value={formatWithCommas(m.holidayWorkAmount)}
-                                  onChange={e => handleMonthAmountChange(idx, 'holidayWorkAmount', parseNumber(e.target.value))}
-                                  className="w-26 bg-slate-900 border border-slate-750 hover:border-slate-600 focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 rounded-md px-2 py-1 text-left font-mono text-xs text-white transition-colors"
-                                  placeholder="۰"
-                                />
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* ناخالص ماه */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.grossSalary)}
-                              onChange={e => handleMonthAmountChange(idx, 'grossSalary', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-amber-500/40 rounded p-1 text-left font-mono font-bold text-[11px] text-amber-300"
-                              title="جمع ناخالص حقوق و مزایای ماه"
-                            />
-                          </td>
-
-                          {/* مشمول بیمه */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.insurableGross || 0)}
-                              onChange={e => handleMonthAmountChange(idx, 'insurableGross', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-sky-500/40 rounded p-1 text-left font-mono text-[11px] text-sky-300 font-bold"
-                              title="مبلغ مشمول کسر بیمه بر اساس آیتم‌های مشمول بیمه"
-                            />
-                          </td>
-
-                          {/* بیمه ۷٪ */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.workerInsuranceShare)}
-                              onChange={e => handleMonthAmountChange(idx, 'workerInsuranceShare', parseNumber(e.target.value))}
-                              className="w-20 bg-slate-900 border border-rose-500/40 rounded p-1 text-left font-mono text-[11px] text-rose-400 font-bold"
-                              title="حق بیمه سهم کارگر (۷ درصد)"
-                            />
-                          </td>
-
-                          {/* خالص ماه */}
-                          <td className="p-1">
-                            <input
-                              type="text"
-                              dir="ltr"
-                              value={formatWithCommas(m.netSalaryPayable)}
-                              onChange={e => handleMonthAmountChange(idx, 'netSalaryPayable', parseNumber(e.target.value))}
-                              className="w-24 bg-slate-900 border border-emerald-500/40 rounded p-1 text-left font-mono font-bold text-[11px] text-emerald-400"
-                              title="خالص حقوق پرداختی ماه"
-                            />
-                          </td>
-
-                          {/* دکمه بازنشانی ردیف */}
-                          <td className="p-1 text-center">
-                            <button
-                              type="button"
-                              onClick={() => handleResetMonthToFormula(idx)}
-                              className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors cursor-pointer"
-                              title="محاسبه مجدد این ماه با فرمول قانونی خودکار"
+                            <td
+                              className="p-2 text-center font-mono text-sky-300 whitespace-nowrap"
+                              title={`${formatPersianHoursValue(getMonthlyUsedLeaveHours(m))} ساعت`}
                             >
-                              <RotateCcw className="h-3.5 w-3.5" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                              {formatMinutesToPersianHM(getMonthlyUsedLeaveMinutes(m))}
+                            </td>
+
+                            <td className="p-2 text-left font-mono text-slate-200 whitespace-nowrap">
+                              {formatWithCommas(m.baseSalary)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono text-slate-200 whitespace-nowrap">
+                              {formatWithCommas(m.foodAllowance)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono text-slate-200 whitespace-nowrap">
+                              {formatWithCommas(m.housingAllowance)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono text-slate-200 whitespace-nowrap">
+                              {formatWithCommas(m.childAllowance)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono text-slate-200 whitespace-nowrap">
+                              {formatWithCommas(m.marriageAllowance)}
+                            </td>
+
+                            <td
+                              className="p-2 text-left font-mono text-slate-300 whitespace-nowrap"
+                              title={`پایه سنوات: ${formatWithCommas(m.seniorityBase || 0)} | حق شغل: ${formatWithCommas(m.jobAllowance || 0)}`}
+                            >
+                              {formatWithCommas(otherBenefits)}
+                            </td>
+
+                            <td className="p-2 text-center font-mono whitespace-nowrap">
+                              <div className="flex flex-col items-center">
+                                <span className="text-[10px] text-amber-300 font-bold">
+                                  {toPersianDigits(m.overtimeHours || 0)} س
+                                </span>
+                                <span className="text-slate-200">{formatWithCommas(m.overtimeAmount)}</span>
+                              </div>
+                            </td>
+
+                            <td className="p-2 text-center font-mono whitespace-nowrap">
+                              <div className="flex flex-col items-center">
+                                <span className="text-[10px] text-amber-300 font-bold">
+                                  {toPersianDigits(m.fridayWorkHours || 0)} س
+                                </span>
+                                <span className="text-slate-200">{formatWithCommas(m.fridayWorkAmount)}</span>
+                              </div>
+                            </td>
+
+                            <td className="p-2 text-center font-mono whitespace-nowrap">
+                              <div className="flex flex-col items-center">
+                                <span className="text-[10px] text-amber-300 font-bold">
+                                  {toPersianDigits(m.holidayWorkHours || 0)} س
+                                </span>
+                                <span className="text-slate-200">{formatWithCommas(m.holidayWorkAmount)}</span>
+                              </div>
+                            </td>
+
+                            <td className="p-2 text-left font-mono font-bold text-amber-300 whitespace-nowrap">
+                              {formatWithCommas(m.grossSalary)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono font-bold text-sky-300 whitespace-nowrap">
+                              {formatWithCommas(m.insurableGross || 0)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono font-bold text-rose-400 whitespace-nowrap">
+                              {formatWithCommas(m.workerInsuranceShare)}
+                            </td>
+
+                            <td
+                              className="p-2 text-left font-mono text-rose-300 whitespace-nowrap"
+                              title={`مالیات: ${formatWithCommas(m.payrollTax || 0)} | بیمه تکمیلی: ${formatWithCommas(m.supplementaryInsurance || 0)}`}
+                            >
+                              {formatWithCommas(taxAndSupp)}
+                            </td>
+
+                            <td className="p-2 text-left font-mono font-black text-emerald-400 whitespace-nowrap">
+                              {formatWithCommas(m.netSalaryPayable)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                     <tfoot className="bg-slate-950 font-bold border-t border-slate-800 text-slate-300">
                       <tr>
                         <td className="p-2 whitespace-nowrap">مجموع ({toPersianDigits(formMonthlyDetails.length)} ماه)</td>
                         <td className="p-2 text-center text-white font-mono">{toPersianDigits(settlementSummary.totalWorkedDays)}</td>
-                        <td className="p-2 text-center text-white font-mono">{toPersianDigits(settlementSummary.totalUsedLeaveDays)}</td>
+                        <td
+                          className="p-2 text-center text-white font-mono whitespace-nowrap"
+                          title={`${formatPersianHoursValue(settlementSummary.totalUsedLeaveHours)} ساعت`}
+                        >
+                          {formatMinutesToPersianHM(settlementSummary.totalUsedLeaveMinutes)}
+                        </td>
                         <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalBaseSalaries)}</td>
                         <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalFoodAllowances)}</td>
                         <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalHousingAllowances)}</td>
                         <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalChildAllowances)}</td>
                         <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalMarriageAllowances)}</td>
+                        <td className="p-2 text-left font-mono text-white">{formatWithCommas(settlementSummary.totalOtherAllowances)}</td>
                         <td className="p-2 text-center font-mono">
-                          <div className="flex items-center justify-between gap-1 text-[11px]">
-                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10" title="مجموع ساعات اضافه‌کاری">
+                          <div className="flex flex-col items-center text-[11px]">
+                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10">
                               {toPersianDigits(settlementSummary.totalOvertimeHours)} س
                             </span>
-                            <span className="text-white" title="مجموع مبلغ اضافه‌کاری">
-                              {formatWithCommas(settlementSummary.totalOvertimeAmounts)}
-                            </span>
+                            <span className="text-white">{formatWithCommas(settlementSummary.totalOvertimeAmounts)}</span>
                           </div>
                         </td>
                         <td className="p-2 text-center font-mono">
-                          <div className="flex items-center justify-between gap-1 text-[11px]">
-                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10" title="مجموع ساعات جمعه‌کاری">
+                          <div className="flex flex-col items-center text-[11px]">
+                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10">
                               {toPersianDigits(settlementSummary.totalFridayWorkHours)} س
                             </span>
-                            <span className="text-white" title="مجموع مبلغ جمعه‌کاری">
-                              {formatWithCommas(settlementSummary.totalFridayWorkAmounts)}
-                            </span>
+                            <span className="text-white">{formatWithCommas(settlementSummary.totalFridayWorkAmounts)}</span>
                           </div>
                         </td>
                         <td className="p-2 text-center font-mono">
-                          <div className="flex items-center justify-between gap-1 text-[11px]">
-                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10" title="مجموع ساعات تعطیل‌کاری">
+                          <div className="flex flex-col items-center text-[11px]">
+                            <span className="text-amber-300 font-bold px-1 rounded bg-amber-400/10">
                               {toPersianDigits(settlementSummary.totalHolidayWorkHours)} س
                             </span>
-                            <span className="text-white" title="مجموع مبلغ تعطیل‌کاری">
-                              {formatWithCommas(settlementSummary.totalHolidayWorkAmounts)}
-                            </span>
+                            <span className="text-white">{formatWithCommas(settlementSummary.totalHolidayWorkAmounts)}</span>
                           </div>
                         </td>
                         <td className="p-2 text-left font-mono text-amber-300 font-black">{formatWithCommas(settlementSummary.totalGrossSalaries)}</td>
                         <td className="p-2 text-left font-mono text-sky-400 font-bold">{formatWithCommas(settlementSummary.totalInsurableGross)}</td>
                         <td className="p-2 text-left font-mono text-rose-400 font-bold">{formatWithCommas(settlementSummary.totalWorkerInsurance)}</td>
+                        <td className="p-2 text-left font-mono text-rose-300 font-bold">{formatWithCommas(settlementSummary.totalTaxAndSupp)}</td>
                         <td className="p-2 text-left font-mono text-emerald-400 font-black">{formatWithCommas(settlementSummary.totalNetSalaries)}</td>
-                        <td className="p-2"></td>
                       </tr>
                     </tfoot>
                   </table>
                 </div>
+
+                {departureUnpaidLeaveInfo && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-950/35 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-xs text-amber-200">
+                    <div className="flex items-center gap-2 font-bold">
+                      <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                      <span>
+                        پرسنل در ماه ترک کار تعداد{' '}
+                        <strong className="text-white font-mono text-sm">
+                          {toPersianDigits(String(departureUnpaidLeaveInfo.unpaidDays).replace('.', '٫'))}
+                        </strong>{' '}
+                        روز مرخصی بدون حقوق داشته است.
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-amber-300/90 font-mono">
+                      (روزهای ماه تا تاریخ ترک کار: {toPersianDigits(departureUnpaidLeaveInfo.calendarDaysToDeparture)} روز | روز کارکرد ثبت‌شده: {toPersianDigits(departureUnpaidLeaveInfo.workedDays)} روز)
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* SECTION 3: END OF SERVICE BENEFITS (عیدی، سنوات، مانده مرخصی) */}
@@ -2264,14 +3252,15 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formDailySalaryOverride !== '' ? formDailySalaryOverride : formatWithCommas(settlementSummary.defaultLastDailySalary)}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formDailySalaryOverride !== '' ? formDailySalaryOverride : formatWithCommas(settlementSummary.defaultLastDailySalary))}
                       onChange={e => setFormDailySalaryOverride(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-28 bg-transparent text-xs text-white font-mono font-bold text-left focus:outline-hidden"
+                      className="w-28 bg-transparent text-xs text-white font-mono font-bold text-left focus:outline-hidden disabled:opacity-70"
                       title="مزد روزانه مبنا برای سنوات، عیدی و بازخرید مرخصی"
                     />
                     <span className="text-[11px] text-slate-400">ریال</span>
                   </div>
-                  {formDailySalaryOverride !== '' && (
+                  {!isModalReadOnly && formDailySalaryOverride !== '' && (
                     <button
                       type="button"
                       onClick={() => setFormDailySalaryOverride('')}
@@ -2303,7 +3292,7 @@ export default function PersonnelSettlementTab({
                   <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400 text-[11px]">مبلغ حق سنوات (ریال):</span>
-                      {formSeveranceAmount !== '' && (
+                      {!isModalReadOnly && formSeveranceAmount !== '' && (
                         <button
                           type="button"
                           onClick={() => setFormSeveranceAmount('')}
@@ -2318,9 +3307,10 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formSeveranceAmount !== '' ? formSeveranceAmount : formatWithCommas(settlementSummary.defaultSeveranceAmount)}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formSeveranceAmount !== '' ? formSeveranceAmount : formatWithCommas(settlementSummary.defaultSeveranceAmount))}
                       onChange={e => setFormSeveranceAmount(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-full bg-slate-950 border border-slate-750 focus:border-sky-500 rounded px-2.5 py-1.5 text-xs text-sky-300 font-mono font-black text-left"
+                      className="w-full bg-slate-950 border border-slate-750 focus:border-sky-500 rounded px-2.5 py-1.5 text-xs text-sky-300 font-mono font-black text-left disabled:opacity-70"
                     />
                   </div>
                 </div>
@@ -2342,7 +3332,7 @@ export default function PersonnelSettlementTab({
                   <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400 text-[11px]">مبلغ عیدی و پاداش (ریال):</span>
-                      {formBonusAmount !== '' && (
+                      {!isModalReadOnly && formBonusAmount !== '' && (
                         <button
                           type="button"
                           onClick={() => setFormBonusAmount('')}
@@ -2357,81 +3347,169 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formBonusAmount !== '' ? formBonusAmount : formatWithCommas(settlementSummary.defaultBonusAmount)}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formBonusAmount !== '' ? formBonusAmount : formatWithCommas(settlementSummary.defaultBonusAmount))}
                       onChange={e => setFormBonusAmount(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-full bg-slate-950 border border-slate-750 focus:border-emerald-500 rounded px-2.5 py-1.5 text-xs text-emerald-300 font-mono font-black text-left"
+                      className="w-full bg-slate-950 border border-slate-750 focus:border-emerald-500 rounded px-2.5 py-1.5 text-xs text-emerald-300 font-mono font-black text-left disabled:opacity-70"
                     />
                   </div>
                 </div>
 
                 {/* مانده مرخصی */}
                 <div className="bg-slate-900/70 p-4 rounded-xl border border-indigo-500/30 space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-1">
                     <h5 className="font-bold text-indigo-400 text-xs flex items-center gap-1.5">
                       <Clock className="h-4 w-4" />
                       بازخرید مانده مرخصی (ماده ۶۴ و ۷۱)
                     </h5>
-                    <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">
-                      ۲.۵ روز در ماه
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                        settlementSummary.hasPayrollLeaveBalance
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 font-bold'
+                          : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                      }`}
+                    >
+                      {settlementSummary.hasPayrollLeaveBalance ? 'متصل به تردد حقوق (ساعتی)' : '۲۰ ساعت در ماه'}
                     </span>
                   </div>
-                  <div className="text-[10px] text-slate-400 flex justify-between">
-                    <span>کل استحقاقی: <strong className="text-white font-mono">{toPersianDigits(settlementSummary.totalEntitledLeaveDays)}</strong> روز</span>
-                    <span>استفاده شده: <strong className="text-white font-mono">{toPersianDigits(settlementSummary.totalUsedLeaveDays)}</strong> روز</span>
-                    <span>مانده: <strong className="text-indigo-300 font-mono font-bold">{toPersianDigits(settlementSummary.unusedLeaveDays)}</strong> روز</span>
+                  <div className="text-[10px] text-slate-400 flex flex-wrap justify-between gap-1">
+                    {settlementSummary.hasPayrollLeaveBalance ? (
+                      <>
+                        <span>
+                          مانده مرخصی حقوق:{' '}
+                          <strong className="text-emerald-300 font-mono">
+                            {formatMinutesToPersianHM(settlementSummary.payrollRemainingLeaveMinutes || 0)}
+                          </strong>{' '}
+                          ساعت ({formatPersianHoursValue(settlementSummary.payrollUnusedLeaveHours)} ساعت)
+                        </span>
+                        <span className="text-slate-500">
+                          فرمول: {formatPersianHoursValue(settlementSummary.formulaUnusedLeaveHours)} ساعت
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span>کل استحقاقی: <strong className="text-white font-mono">{formatPersianHoursValue(settlementSummary.totalEntitledLeaveHours)}</strong> ساعت</span>
+                        <span>استفاده شده: <strong className="text-white font-mono">{formatMinutesToPersianHM(settlementSummary.totalUsedLeaveMinutes)}</strong> ساعت</span>
+                        <span>مانده: <strong className="text-indigo-300 font-mono font-bold">{formatPersianHoursValue(settlementSummary.unusedLeaveHours)}</strong> ساعت</span>
+                      </>
+                    )}
+                    <span className="text-indigo-300/90 w-full">
+                      نرخ هر ساعت مرخصی (مزد روزانه ÷ ۸): <strong className="font-mono text-white">{formatWithCommas(Math.round(settlementSummary.leaveHourlyRate))}</strong> ریال
+                    </span>
+                    {settlementSummary.sameMonthPriorSettledLeaveHours > 0 && (
+                      <span className="text-amber-300 w-full">
+                        کسر مرخصی تسویه‌شده قبلی در این ماه: <strong className="font-mono">{formatPersianHoursValue(settlementSummary.sameMonthPriorSettledLeaveHours)}</strong> ساعت
+                      </span>
+                    )}
                   </div>
                   <div className="pt-2 border-t border-slate-800/80 space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <span className="text-slate-400 text-[10px] block mb-1">مانده روز:</span>
+                        <span className="text-slate-400 text-[10px] block mb-1">مانده مرخصی (ساعت):</span>
                         <input
-                          type="number"
-                          step="0.5"
+                          type="text"
+                          inputMode="decimal"
                           dir="ltr"
-                          value={formUnusedLeaveDays !== '' ? formUnusedLeaveDays : String(settlementSummary.defaultUnusedLeaveDays)}
+                          disabled={isModalReadOnly}
+                          value={toPersianDigits(
+                            formUnusedLeaveHours !== ''
+                              ? formUnusedLeaveHours
+                              : String(settlementSummary.defaultUnusedLeaveHours)
+                          ).replace('.', '٫')}
                           onChange={e => {
-                            const days = e.target.value;
-                            setFormUnusedLeaveDays(days);
-                            const numDays = parseFloat(toEnglishDigits(days)) || 0;
-                            setFormUnusedLeaveAmount(formatWithCommas(Math.round(numDays * settlementSummary.lastDailySalary)));
+                            const rawEng = toEnglishDigits(e.target.value).replace(/٫/g, '.').replace(/[^0-9.]/g, '');
+                            const firstDot = rawEng.indexOf('.');
+                            const hours =
+                              firstDot === -1
+                                ? rawEng
+                                : rawEng.slice(0, firstDot + 1) + rawEng.slice(firstDot + 1).replace(/\./g, '');
+                            setFormUnusedLeaveHours(hours);
+                            const numHours = parseFloat(hours) || 0;
+                            setFormUnusedLeaveAmount(formatWithCommas(Math.round(numHours * settlementSummary.leaveHourlyRate)));
                           }}
-                          className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-bold text-center"
+                          className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-bold text-center disabled:opacity-70"
                         />
+                        <span className="text-[9.5px] text-slate-400 block text-center mt-0.5 font-mono">
+                          معادل {formatMinutesToPersianHM(Math.round(settlementSummary.unusedLeaveHours * 60))} ساعت
+                        </span>
                       </div>
                       <div>
                         <span className="text-slate-400 text-[10px] block mb-1">مبلغ بازخرید (ریال):</span>
                         <input
                           type="text"
                           dir="ltr"
-                          value={formUnusedLeaveAmount !== '' ? formUnusedLeaveAmount : formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)}
+                          disabled={isModalReadOnly}
+                          value={toPersianDigits(formUnusedLeaveAmount !== '' ? formUnusedLeaveAmount : formatWithCommas(settlementSummary.defaultUnusedLeaveAmount))}
                           onChange={e => setFormUnusedLeaveAmount(formatWithCommas(parseNumber(e.target.value)))}
-                          className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-black text-left"
+                          className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-black text-left disabled:opacity-70"
                         />
                       </div>
                     </div>
-                    {(formUnusedLeaveDays !== '' || formUnusedLeaveAmount !== '') && (
+                    {!isModalReadOnly && (formUnusedLeaveHours !== '' || formUnusedLeaveAmount !== '') && (
                       <button
                         type="button"
                         onClick={() => {
-                          setFormUnusedLeaveDays('');
+                          setFormUnusedLeaveHours('');
                           setFormUnusedLeaveAmount('');
                         }}
                         className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
                       >
                         <RotateCcw className="h-3 w-3" />
-                        بازنشانی به فرمول ({toPersianDigits(settlementSummary.defaultUnusedLeaveDays)} روز - {formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)} ریال)
+                        بازنشانی به مقدار محاسبه‌شده ({formatPersianHoursValue(settlementSummary.defaultUnusedLeaveHours)} ساعت - {formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)} ریال)
                       </button>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* SECTION 4: DEDUCTIONS & EMPLOYER PAYMENTS */}
+              {/* SECTION 4: PREVIOUS YEAR RECEIVABLE, DEDUCTIONS & EMPLOYER PAYMENTS */}
               <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-850 space-y-4">
                 <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
                   <Receipt className="h-4 w-4 text-amber-400" />
-                  مرحله ۳: کسورات تسویه حساب، خرید دوره و پرداختی‌های کارفرما
+                  مرحله ۳: طلب حساب از قبل (مانده سال قبل)، کسورات و پرداختی‌های کارفرما
                 </h4>
+
+                {/* طلب حساب از قبل (مانده بستانکاری سال قبل) */}
+                <div className="bg-teal-950/25 border border-teal-500/30 rounded-xl p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-teal-300 flex items-center gap-1.5">
+                      <DollarSign className="h-4 w-4 text-teal-400" />
+                      طلب حساب از قبل پرسنل (مانده بستانکاری منتقل‌شده از سال / دوره قبل)
+                    </span>
+                    <span className="text-[10px] text-teal-200/80 bg-teal-500/15 px-2 py-0.5 rounded-full border border-teal-500/25">
+                      افزوده می‌شود به جمع مطالبات تسویه (+)
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1 text-[11px]">
+                        مبلغ طلب از قبل (ریال)
+                      </label>
+                      <input
+                        type="text"
+                        dir="ltr"
+                        disabled={isModalReadOnly}
+                        value={toPersianDigits(formPreviousYearReceivableAmount)}
+                        onChange={e => setFormPreviousYearReceivableAmount(formatWithCommas(parseNumber(e.target.value)))}
+                        className="w-full bg-slate-950 border border-teal-500/40 focus:border-teal-400 rounded-lg p-2.5 text-xs text-teal-300 font-mono font-bold disabled:opacity-70"
+                        placeholder="۰"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-slate-300 font-bold mb-1 text-[11px]">
+                        شرح و بابت طلب سال قبل
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isModalReadOnly}
+                        value={formPreviousYearReceivableDescription}
+                        onChange={e => setFormPreviousYearReceivableDescription(e.target.value)}
+                        placeholder="مثال: مانده طلب حقوق معوقه سال ۱۴۰۴ / مانده تسویه حساب دوره قبل پرسنل..."
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-teal-400 rounded-lg p-2.5 text-xs text-white disabled:opacity-70"
+                      />
+                    </div>
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
@@ -2441,10 +3519,11 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formPurchasesAmount}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formPurchasesAmount)}
                       onChange={e => setFormPurchasesAmount(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono"
-                      placeholder="0"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono disabled:opacity-70"
+                      placeholder="۰"
                     />
                     <span className="text-[10px] text-slate-400 mt-1 block">
                       خرید شیرینی، نان یا اقلام کارگاه در طول دوره
@@ -2458,10 +3537,11 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formOtherDeductionsAmount}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formOtherDeductionsAmount)}
                       onChange={e => setFormOtherDeductionsAmount(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono"
-                      placeholder="0"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono disabled:opacity-70"
+                      placeholder="۰"
                     />
                     <span className="text-[10px] text-slate-400 mt-1 block">
                       وام، خسارت، جریمه یا سایر بدهی‌ها
@@ -2475,14 +3555,46 @@ export default function PersonnelSettlementTab({
                     <input
                       type="text"
                       dir="ltr"
-                      value={formEmployerPaidAmount}
+                      disabled={isModalReadOnly}
+                      value={toPersianDigits(formEmployerPaidAmount)}
                       onChange={e => setFormEmployerPaidAmount(formatWithCommas(parseNumber(e.target.value)))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono"
-                      placeholder="0"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white font-mono disabled:opacity-70"
+                      placeholder="۰"
                     />
                     <span className="text-[10px] text-slate-400 mt-1 block">
                       مساعده‌ها، پیش‌پرداخت تسویه یا حقوق‌های پرداخت شده
                     </span>
+                    {!isModalReadOnly && (payrollIntegrationInsights.treasurySummary.totalPaid > 0 ||
+                      payrollIntegrationInsights.registeredPayrollsSummary.totalAllMonthsNet > 0) && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                        {payrollIntegrationInsights.treasurySummary.totalPaid > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFormEmployerPaidAmount(formatWithCommas(payrollIntegrationInsights.treasurySummary.totalPaid))
+                            }
+                            className="px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[10px] font-bold cursor-pointer transition-colors"
+                            title={`مساعده: ${formatWithCommas(payrollIntegrationInsights.treasurySummary.advancesTotal)} | حقوق: ${formatWithCommas(payrollIntegrationInsights.treasurySummary.salaryPaidTotal)}`}
+                          >
+                            درج از خزانه‌داری: {formatWithCommas(payrollIntegrationInsights.treasurySummary.totalPaid)} ریال
+                          </button>
+                        )}
+                        {payrollIntegrationInsights.registeredPayrollsSummary.totalPriorMonthsNet > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFormEmployerPaidAmount(
+                                formatWithCommas(payrollIntegrationInsights.registeredPayrollsSummary.totalPriorMonthsNet)
+                              )
+                            }
+                            className="px-2 py-0.5 bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 rounded text-[10px] font-bold cursor-pointer transition-colors"
+                            title="جمع خالص فیش‌های ثبت‌شده ماه‌های قبل (به‌جز ماه آخر تسویه)"
+                          >
+                            حقوق ماه‌های قبل: {formatWithCommas(payrollIntegrationInsights.registeredPayrollsSummary.totalPriorMonthsNet)} ریال
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2492,10 +3604,11 @@ export default function PersonnelSettlementTab({
                   </label>
                   <input
                     type="text"
+                    disabled={isModalReadOnly}
                     value={formOtherDeductionsDescription}
                     onChange={e => setFormOtherDeductionsDescription(e.target.value)}
                     placeholder="مثال: کسر بابت قسط وام قرض‌الحسنه و مانده فاکتور خرید فروردین و اردیبهشت..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-rose-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-rose-500 disabled:opacity-70"
                   />
                 </div>
 
@@ -2503,9 +3616,10 @@ export default function PersonnelSettlementTab({
                   <div>
                     <label className="block text-slate-300 font-bold mb-1">وضعیت سند تسویه</label>
                     <select
+                      disabled={isModalReadOnly}
                       value={formStatus}
                       onChange={e => setFormStatus(e.target.value as any)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white disabled:opacity-70"
                     >
                       <option value="finalized">قطعی شده (آماده پرداخت و امضا)</option>
                       <option value="paid">پرداخت شده و تسویه کامل</option>
@@ -2517,10 +3631,11 @@ export default function PersonnelSettlementTab({
                     <label className="block text-slate-300 font-bold mb-1">یادداشت‌های داخلی</label>
                     <input
                       type="text"
+                      disabled={isModalReadOnly}
                       value={formNotes}
                       onChange={e => setFormNotes(e.target.value)}
                       placeholder="توضیحات تکمیلی پرونده تسویه حساب..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white disabled:opacity-70"
                     />
                   </div>
                 </div>
@@ -2533,6 +3648,9 @@ export default function PersonnelSettlementTab({
                     <span className="text-xs text-rose-300 font-extrabold block">خلاصه حساب تسویه نهایی:</span>
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300 mt-1">
                       <span>کل مطالبات: <strong>{formatWithCommas(settlementSummary.totalGrossPayable)}</strong></span>
+                      {settlementSummary.previousYearReceivable > 0 && (
+                        <span className="text-teal-300">(شامل {formatWithCommas(settlementSummary.previousYearReceivable)} طلب از قبل)</span>
+                      )}
                       <span>-</span>
                       <span>کل کسورات: <strong className="text-rose-400">{formatWithCommas(settlementSummary.totalDeductions)}</strong></span>
                       <span>-</span>
@@ -2559,10 +3677,10 @@ export default function PersonnelSettlementTab({
             <div className="p-4 border-t border-slate-850 bg-slate-900/80 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setShowModal(false)}
+                onClick={handleCloseModal}
                 className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-slate-300 rounded-xl transition-colors cursor-pointer"
               >
-                انصراف
+                {isModalReadOnly ? 'بستن' : 'انصراف'}
               </button>
 
               <div className="flex items-center gap-2">
@@ -2576,14 +3694,16 @@ export default function PersonnelSettlementTab({
                   پیش‌نمایش فرم چاپی
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleSaveSettlement}
-                  className="px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer border border-rose-500/40"
-                >
-                  <Check className="h-4 w-4" />
-                  ثبت و ذخیره سند تسویه حساب
-                </button>
+                {!isModalReadOnly && (
+                  <button
+                    type="button"
+                    onClick={handleSaveSettlement}
+                    className="px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer border border-rose-500/40"
+                  >
+                    <Check className="h-4 w-4" />
+                    ثبت و ذخیره سند تسویه حساب
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -2595,14 +3715,22 @@ export default function PersonnelSettlementTab({
       {/* HIGH-FIDELITY OFFICIAL SETTLEMENT DOCUMENT (A4 FORM & PREVIEW) */}
       {/* ======================================================== */}
       {printingSettlement && typeof document !== 'undefined' && createPortal((() => {
-        const s = printingSettlement;
+        const s = normalizeSettlementForDisplay(printingSettlement);
         const emp = personnelList.find(p => p.employeeCode === s.employeeCode);
         const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : s.employeeCode;
         const reasonText = s.reason === 'contract_end' 
           ? 'اتمام مدت قرارداد کار' 
           : s.reason === 'dismissal' 
-            ? 'فسخ قرارداد (پایان همکاری)' 
-            : 'استعفای کتبی کارگر';
+            ? 'اخراج / فسخ قرارداد' 
+            : s.reason === 'abandonment'
+              ? 'ترک کار بدون استعفا'
+              : 'استعفای کتبی کارگر';
+        const printUnpaidLeaveInfo = getDepartureMonthUnpaidLeaveInfo(
+          s.settlementType,
+          s.startDate,
+          s.endDate,
+          s.monthlyDetails
+        );
 
         return (
           <div 
@@ -2645,9 +3773,9 @@ export default function PersonnelSettlementTab({
                           ? 'bg-rose-600 text-white shadow-sm'
                           : 'text-slate-400 hover:text-slate-200'
                       }`}
-                      title="نمایش فرم رسمی همراه با جدول تفکیکی تمام ماه‌ها"
+                      title="نمایش فرم رسمی همراه با جدول تفکیکی تمام ماه‌های دوره"
                     >
-                      ریز اقلام ۱۲ ماهه
+                      ریز اقلام ماه‌های کارکرد
                     </button>
                     <button
                       type="button"
@@ -2747,28 +3875,28 @@ export default function PersonnelSettlementTab({
                 transformOrigin: 'top center',
                 transition: 'transform 0.15s ease-out' 
               }}
-              className="w-full max-w-[210mm] transition-all print:transform-none"
+              className="w-full max-w-[210mm] transition-all print:transform-none print:max-w-none print:w-full"
             >
               <div 
                 id="printable-settlement-form" 
-                className="official-print-sheet w-full bg-white text-black p-6 sm:p-8 border-2 border-black print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full mx-auto mb-10 relative text-right leading-normal" 
+                className="official-print-sheet w-full bg-white text-black p-4 sm:p-5 border-2 border-black print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full mx-auto mb-10 relative text-right leading-normal" 
                 dir="rtl"
               >
                 {/* -------------------------------------------------------- */}
                 {/* 1. EMPLOYER & STORE HEADER (INDIVIDUAL BUSINESS IDENTITY) */}
                 {/* -------------------------------------------------------- */}
-                <div className="border-b-2 border-black pb-3 mb-3.5 flex items-start justify-between gap-3">
+                <div className="border-b-2 border-black pb-2.5 mb-3 grid grid-cols-3 items-stretch gap-2.5 print-avoid-break">
                   {/* Right: Store Name & Individual Identity */}
-                  <div className="text-right w-1/3">
-                    <div className="flex items-center gap-2 mb-0.5">
+                  <div className="text-right flex items-center">
+                    <div className="flex items-center gap-2">
                       <div className="w-8 h-8 border-2 border-black bg-white text-black flex items-center justify-center font-black text-sm shrink-0">
                         گ
                       </div>
                       <div>
-                        <h1 className="text-sm font-black text-black tracking-tight leading-tight">
+                        <h1 className="text-[13px] font-black text-black tracking-tight leading-tight">
                           فروشگاه نان و شیرینی گاتان
                         </h1>
-                        <span className="text-[10px] text-black font-bold block mt-0.5">
+                        <span className="text-[9.5px] text-black font-bold block mt-0.5">
                           کارفرما: شخصیت حقیقی (واحد صنفی)
                         </span>
                       </div>
@@ -2776,35 +3904,37 @@ export default function PersonnelSettlementTab({
                   </div>
 
                   {/* Center: Formal Title Box */}
-                  <div className="text-center w-1/3 pt-0.5">
-                    <div className="border-2 border-black bg-white px-2.5 py-1">
-                      <h2 className="text-xs font-black text-black tracking-tight">
-                        برگه تسویه حساب قطعی و مفاصاحساب پرسنل
+                  <div className="text-center flex items-center justify-center">
+                    <div className="w-full border-2 border-black bg-white px-2 py-1.5">
+                      <h2 className="text-[11px] font-black text-black tracking-tight leading-snug">
+                        {(s.settlementType || 'with_departure') === 'without_departure'
+                          ? 'برگه تسویه حساب قرارداد پرسنل (بدون ترک کار)'
+                          : 'برگه تسویه حساب قطعی و مفاصاحساب پرسنل'}
                       </h2>
-                      <p className="text-[9px] text-black font-bold mt-0.5">
+                      <p className="text-[8.5px] text-black font-bold mt-0.5">
                         منطبق با مواد ۲۴، ۳۱، ۳۴، ۶۴ و ۷۱ قانون کار جمهوری اسلامی ایران
                       </p>
                     </div>
                   </div>
 
                   {/* Left: Document Ledger Box */}
-                  <div className="text-left w-1/3">
-                    <div className="border-2 border-black bg-white p-1.5 font-sans text-[10px] space-y-0.5 text-black">
-                      <div className="flex justify-between border-b border-black pb-0.5">
-                        <span className="text-black font-sans font-bold">شماره سند:</span>
-                        <strong className="text-black font-black">{toPersianDigits(s.settlementNo)}</strong>
+                  <div className="text-left">
+                    <div className="border-2 border-black bg-white p-1.5 font-sans text-[9.5px] space-y-0.5 text-black h-full flex flex-col justify-between">
+                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
+                        <span className="text-black font-bold whitespace-nowrap">شماره سند:</span>
+                        <strong className="text-black font-black whitespace-nowrap" dir="ltr">{toPersianDigits(s.settlementNo)}</strong>
                       </div>
-                      <div className="flex justify-between border-b border-black pb-0.5">
-                        <span className="text-black font-sans font-bold">تاریخ صدور:</span>
-                        <strong className="text-black font-bold">{toPersianDigits(s.settlementDate)}</strong>
+                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
+                        <span className="text-black font-bold whitespace-nowrap">تاریخ صدور:</span>
+                        <strong className="text-black font-bold whitespace-nowrap" dir="ltr">{toPersianDigits(s.settlementDate)}</strong>
                       </div>
-                      <div className="flex justify-between border-b border-black pb-0.5">
-                        <span className="text-black font-sans font-bold">دوره حقوقی:</span>
-                        <strong className="text-black font-bold">{toPersianDigits(s.periodId)}</strong>
+                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
+                        <span className="text-black font-bold whitespace-nowrap">دوره حقوقی:</span>
+                        <strong className="text-black font-bold whitespace-nowrap" dir="ltr">{toPersianDigits(s.periodId)}</strong>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-black font-sans font-bold">وضعیت مالی:</span>
-                        <strong className="text-black font-sans font-black">قطعی و تسویه‌شده</strong>
+                      <div className="flex justify-between gap-2">
+                        <span className="text-black font-bold whitespace-nowrap">وضعیت مالی:</span>
+                        <strong className="text-black font-black whitespace-nowrap">قطعی و تسویه‌شده</strong>
                       </div>
                     </div>
                   </div>
@@ -2813,20 +3943,26 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 {/* 2. SECTION 1: PERSONNEL PROFILE & CONTRACT SPECS */}
                 {/* -------------------------------------------------------- */}
-                <div className="mb-3.5">
-                  <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[11px] font-black flex items-center justify-between border-b-0">
+                <div className="mb-3 print-avoid-break">
+                  <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
                     <span>۱. مشخصات هویتی، استخدامی و سوابق قراردادی کارگر</span>
-                    <span className="text-[10px] font-black text-black font-sans">
+                    <span className="text-[9.5px] font-black text-black font-sans whitespace-nowrap">
                       کد پرسنلی: {toPersianDigits(s.employeeCode)}
                     </span>
                   </div>
-                  <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
+                  <table className="w-full table-fixed border-collapse border-2 border-black text-[9.5px] text-black">
+                    <colgroup>
+                      <col style={{ width: '19%' }} />
+                      <col style={{ width: '31%' }} />
+                      <col style={{ width: '21%' }} />
+                      <col style={{ width: '29%' }} />
+                    </colgroup>
                     <tbody>
                       <tr>
-                        <td className="p-1.5 border border-black bg-white font-bold w-1/6 text-black">نام و نام خانوادگی:</td>
-                        <td className="p-1.5 border border-black bg-white w-2/6 font-black text-black text-[11px]">{empName}</td>
-                        <td className="p-1.5 border border-black bg-white font-bold w-1/6 text-black">کد پرسنلی:</td>
-                        <td className="p-1.5 border border-black bg-white w-2/6 font-sans font-black text-black">{toPersianDigits(s.employeeCode)}</td>
+                        <td className="p-1.5 border border-black bg-white font-bold text-black">نام و نام خانوادگی:</td>
+                        <td className="p-1.5 border border-black bg-white font-black text-black text-[10.5px]">{empName}</td>
+                        <td className="p-1.5 border border-black bg-white font-bold text-black">کد پرسنلی:</td>
+                        <td className="p-1.5 border border-black bg-white font-sans font-black text-black">{toPersianDigits(s.employeeCode)}</td>
                       </tr>
                       <tr>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">کد ملی / شناسنامه:</td>
@@ -2837,13 +3973,21 @@ export default function PersonnelSettlementTab({
                       <tr>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">شغل و سمت سازمانی:</td>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">{emp?.role || 'کارگر نانوایی و قنادی'}</td>
-                        <td className="p-1.5 border border-black bg-white font-bold text-black">علت قطع رابطه همکاری:</td>
-                        <td className="p-1.5 border border-black bg-white font-black text-black">{reasonText}</td>
+                        <td className="p-1.5 border border-black bg-white font-bold text-black">
+                          {(s.settlementType || 'with_departure') === 'without_departure' ? 'نوع تسویه حساب:' : 'علت قطع رابطه همکاری:'}
+                        </td>
+                        <td className="p-1.5 border border-black bg-white font-black text-black">
+                          {(s.settlementType || 'with_departure') === 'without_departure'
+                            ? 'تسویه کامل قرارداد (ادامه همکاری بدون ترک کار)'
+                            : reasonText}
+                        </td>
                       </tr>
                       <tr>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">تاریخ شروع کارکرد در دوره:</td>
                         <td className="p-1.5 border border-black bg-white font-sans font-black text-black">{toPersianDigits(s.startDate)}</td>
-                        <td className="p-1.5 border border-black bg-white font-bold text-black">تاریخ خاتمه و قطع همکاری:</td>
+                        <td className="p-1.5 border border-black bg-white font-bold text-black">
+                          {(s.settlementType || 'with_departure') === 'without_departure' ? 'تاریخ پایان دوره قرارداد:' : 'تاریخ خاتمه و قطع همکاری:'}
+                        </td>
                         <td className="p-1.5 border border-black bg-white font-sans font-black text-black">{toPersianDigits(s.endDate)}</td>
                       </tr>
                       <tr>
@@ -2853,7 +3997,7 @@ export default function PersonnelSettlementTab({
                         </td>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">آخرین مزد روزانه مبنا:</td>
                         <td className="p-1.5 border border-black bg-white font-sans font-black text-black">
-                          {formatWithCommas(s.dailySalaryForCalculation)} ریال
+                          <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.dailySalaryForCalculation)}</span> ریال
                         </td>
                       </tr>
                     </tbody>
@@ -2864,118 +4008,179 @@ export default function PersonnelSettlementTab({
                 {/* 3. SECTION 2: MONTHLY SALARY & WAGE BREAKDOWN */}
                 {/* -------------------------------------------------------- */}
                 {previewMode === 'full' ? (
-                  <div className="mb-3.5">
-                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[11px] font-black flex items-center justify-between border-b-0">
-                      <span>۲. صورت‌وضعیت کارکرد و ریز اقلام حقوق و دستمزد ماه‌های دوره همکاری (تفکیک دقیق اقلام)</span>
-                      <span className="text-[9.5px] font-black text-black font-sans">
+                  <div className="mb-3">
+                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
+                      <span>۲. صورت‌وضعیت کارکرد و ریز اقلام حقوق و دستمزد ماه‌های دوره همکاری</span>
+                      <span className="text-[9px] font-black text-black font-sans whitespace-nowrap">
                         ارقام به ریال
                       </span>
                     </div>
                     {(() => {
-                      const totalPreviewOtHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.overtimeHours || 0), 0) || 0;
-                      const totalPreviewFriHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.fridayWorkHours || 0), 0) || 0;
-                      const totalPreviewHolHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.holidayWorkHours || 0), 0) || 0;
+                      const activePrintDetails = (s.monthlyDetails || []).filter(m => !m.alreadySettledInPrior);
+                      const totalPreviewOtHours = activePrintDetails.reduce((sum, m) => sum + (m.overtimeHours || 0), 0);
+                      const totalPreviewFriHours = activePrintDetails.reduce((sum, m) => sum + (m.fridayWorkHours || 0), 0);
+                      const totalPreviewHolHours = activePrintDetails.reduce((sum, m) => sum + (m.holidayWorkHours || 0), 0);
+                      const totalPreviewFamilyAllowances = (s.totalChildAllowances || 0) + (s.totalMarriageAllowances || 0);
+                      const totalPreviewOtherAllowances = activePrintDetails.reduce(
+                        (sum, m) => sum + (m.seniorityBase || 0) + (m.jobAllowance || 0),
+                        0
+                      );
+                      const totalPreviewFriAndHolAmount = (s.totalFridayWorkAmounts || 0) + (s.totalHolidayWorkAmounts || 0);
+                      const totalPreviewTaxAndSupp = activePrintDetails.reduce(
+                        (sum, m) => sum + (m.payrollTax || 0) + (m.supplementaryInsurance || 0),
+                        0
+                      );
+                      const totalPreviewUsedLeaveMinutes =
+                        s.monthlyDetails && s.monthlyDetails.length > 0
+                          ? activePrintDetails.reduce((sum, m) => sum + getMonthlyUsedLeaveMinutes(m), 0)
+                          : Math.round((s.totalUsedLeaveHours ?? (s.totalUsedLeaveDays || 0) * 8) * 60);
                       return (
-                        <table className="w-full border-collapse border-2 border-black text-[8.5px] text-black">
+                        <table className="w-full table-fixed border-collapse border-2 border-black text-[7.5px] leading-tight text-black">
+                          <colgroup>
+                            <col style={{ width: '9.5%' }} />
+                            <col style={{ width: '4%' }} />
+                            <col style={{ width: '6.5%' }} />
+                            <col style={{ width: '8.5%' }} />
+                            <col style={{ width: '7%' }} />
+                            <col style={{ width: '6.5%' }} />
+                            <col style={{ width: '6.5%' }} />
+                            <col style={{ width: '6.5%' }} />
+                            <col style={{ width: '7.5%' }} />
+                            <col style={{ width: '7.5%' }} />
+                            <col style={{ width: '8.5%' }} />
+                            <col style={{ width: '7%' }} />
+                            <col style={{ width: '6.5%' }} />
+                            <col style={{ width: '9%' }} />
+                          </colgroup>
                           <thead className="bg-white text-black font-black text-center border-b-2 border-black">
                             <tr>
-                              <th className="border border-black p-1">ماه</th>
-                              <th className="border border-black p-1 w-6">کارکرد</th>
-                              <th className="border border-black p-1 w-6">مرخصی</th>
-                              <th className="border border-black p-1">حقوق پایه</th>
-                              <th className="border border-black p-1">بن خواربار</th>
-                              <th className="border border-black p-1">حق مسکن</th>
-                              <th className="border border-black p-1">حق اولاد</th>
-                              <th className="border border-black p-1">حق تاهل</th>
-                              <th className="border border-black p-1">اضافه‌کاری (ساعت/ریال)</th>
-                              <th className="border border-black p-1">جمعه‌کاری (۴۰٪)</th>
-                              <th className="border border-black p-1">تعطیل‌کاری (ساعت/ریال)</th>
-                              <th className="border border-black p-1 font-black">ناخالص</th>
-                              <th className="border border-black p-1">مشمول بیمه</th>
-                              <th className="border border-black p-1">بیمه ۷٪</th>
-                              <th className="border border-black p-1 font-black">خالص ماه (ریال)</th>
+                              <th className="border border-black px-0.5 py-1">ماه</th>
+                              <th className="border border-black px-0.5 py-1">کارکرد (روز)</th>
+                              <th className="border border-black px-0.5 py-1">مرخصی استفاده‌شده (ساعت)</th>
+                              <th className="border border-black px-0.5 py-1">حقوق پایه</th>
+                              <th className="border border-black px-0.5 py-1">بن خواربار</th>
+                              <th className="border border-black px-0.5 py-1">حق مسکن</th>
+                              <th className="border border-black px-0.5 py-1">اولاد و تاهل</th>
+                              <th className="border border-black px-0.5 py-1">سایر مزایا</th>
+                              <th className="border border-black px-0.5 py-1">اضافه‌کار</th>
+                              <th className="border border-black px-0.5 py-1">جمعه و تعطیل</th>
+                              <th className="border border-black px-0.5 py-1 font-black">ناخالص ماه</th>
+                              <th className="border border-black px-0.5 py-1">بیمه ۷٪</th>
+                              <th className="border border-black px-0.5 py-1">مالیات / تکمیلی</th>
+                              <th className="border border-black px-0.5 py-1 font-black">خالص ماه</th>
                             </tr>
                           </thead>
                           <tbody className="text-center font-sans text-black font-bold">
-                            {s.monthlyDetails?.map((m, idx) => (
-                              <tr key={idx} className="bg-white">
-                                <td className="border border-black p-1 font-sans font-black text-black">{m.monthName}</td>
-                                <td className="border border-black p-1 font-black text-black">{toPersianDigits(m.workedDays)}</td>
-                                <td className="border border-black p-1 text-black">{toPersianDigits(m.usedLeaveDays || 0)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.baseSalary)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.foodAllowance)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.housingAllowance)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.childAllowance)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.marriageAllowance)}</td>
-                                <td className="border border-black p-1 text-center text-black">
-                                  {m.overtimeHours > 0 ? (
-                                    <div className="leading-tight">
-                                      <span className="font-bold text-[8px] block">{toPersianDigits(m.overtimeHours)} ساعت</span>
-                                      <span className="text-[8px] block text-left">{formatWithCommas(m.overtimeAmount)}</span>
-                                    </div>
-                                  ) : (
-                                    <span className="text-left block">{formatWithCommas(m.overtimeAmount)}</span>
-                                  )}
-                                </td>
-                                <td className="border border-black p-1 text-center text-black">
-                                  {m.fridayWorkHours > 0 ? (
-                                    <div className="leading-tight">
-                                      <span className="font-bold text-[8px] block">{toPersianDigits(m.fridayWorkHours)} ساعت</span>
-                                      <span className="text-[8px] block text-left">{formatWithCommas(m.fridayWorkAmount)}</span>
-                                    </div>
-                                  ) : (
-                                    <span className="text-left block">{formatWithCommas(m.fridayWorkAmount)}</span>
-                                  )}
-                                </td>
-                                <td className="border border-black p-1 text-center text-black">
-                                  {m.holidayWorkHours > 0 ? (
-                                    <div className="leading-tight">
-                                      <span className="font-bold text-[8px] block">{toPersianDigits(m.holidayWorkHours)} ساعت</span>
-                                      <span className="text-[8px] block text-left">{formatWithCommas(m.holidayWorkAmount)}</span>
-                                    </div>
-                                  ) : (
-                                    <span className="text-left block">{formatWithCommas(m.holidayWorkAmount)}</span>
-                                  )}
-                                </td>
-                                <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.grossSalary)}</td>
-                                <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.insurableGross || 0)}</td>
-                                <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.workerInsuranceShare)}</td>
-                                <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.netSalaryPayable)}</td>
-                              </tr>
-                            ))}
+                            {s.monthlyDetails?.map((m, idx) => {
+                              const rowFamilyAllowances = (m.childAllowance || 0) + (m.marriageAllowance || 0);
+                              const rowOtherAllowances = (m.seniorityBase || 0) + (m.jobAllowance || 0);
+                              const rowFriAndHolAmount = (m.fridayWorkAmount || 0) + (m.holidayWorkAmount || 0);
+                              const rowTaxAndSupp = (m.payrollTax || 0) + (m.supplementaryInsurance || 0);
+                              return (
+                                <tr key={idx} className="bg-white">
+                                  <td className="border border-black px-0.5 py-1 font-sans font-black text-black text-right">
+                                    <span>{toPersianDigits(m.monthName)}</span>
+                                    {m.alreadySettledInPrior && (
+                                      <span className="block text-[6.5px] font-bold">
+                                        (تسویه‌شده قبلی)
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 font-black text-black tabular-nums">{toPersianDigits(m.workedDays)}</td>
+                                  <td className="border border-black px-0.5 py-1 text-black tabular-nums whitespace-nowrap" dir="ltr">
+                                    {formatMinutesToPersianHM(getMonthlyUsedLeaveMinutes(m))}
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.baseSalary)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.foodAllowance)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.housingAllowance)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowFamilyAllowances)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowOtherAllowances)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    {m.overtimeHours > 0 && (
+                                      <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(m.overtimeHours)} س</span>
+                                    )}
+                                    <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(m.overtimeAmount)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    {((m.fridayWorkHours || 0) > 0 || (m.holidayWorkHours || 0) > 0) && (
+                                      <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">
+                                        {toPersianDigits((m.fridayWorkHours || 0) + (m.holidayWorkHours || 0))} س
+                                      </span>
+                                    )}
+                                    <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(rowFriAndHolAmount)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.grossSalary)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.workerInsuranceShare)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowTaxAndSupp)}</span>
+                                  </td>
+                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.netSalaryPayable)}</span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                           <tfoot className="total-row font-black font-sans">
                             <tr className="bg-white text-black border-t-2 border-black">
-                              <td className="border border-black p-1 font-sans font-black text-black">جمع کل</td>
-                              <td className="border border-black p-1 font-black text-black">{toPersianDigits(s.totalWorkedDays)}</td>
-                              <td className="border border-black p-1 text-black">{toPersianDigits(s.totalUsedLeaveDays || 0)}</td>
-                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalBaseSalaries)}</td>
-                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalFoodAllowances)}</td>
-                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalHousingAllowances)}</td>
-                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalChildAllowances)}</td>
-                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalMarriageAllowances)}</td>
-                              <td className="border border-black p-1 text-center text-black">
+                              <td className="border border-black px-0.5 py-1 font-sans font-black text-black text-right">جمع کل</td>
+                              <td className="border border-black px-0.5 py-1 font-black text-black text-center tabular-nums">{toPersianDigits(s.totalWorkedDays)}</td>
+                              <td className="border border-black px-0.5 py-1 text-black text-center tabular-nums whitespace-nowrap" dir="ltr">
+                                {formatMinutesToPersianHM(totalPreviewUsedLeaveMinutes)}
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalBaseSalaries)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalFoodAllowances)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalHousingAllowances)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewFamilyAllowances)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewOtherAllowances)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
                                 {totalPreviewOtHours > 0 && (
-                                  <span className="font-bold text-[8px] block">{toPersianDigits(totalPreviewOtHours)} ساعت</span>
+                                  <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(totalPreviewOtHours)} س</span>
                                 )}
-                                <span className="text-[8px] block text-left">{formatWithCommas(s.totalOvertimeAmounts)}</span>
+                                <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalOvertimeAmounts)}</span>
                               </td>
-                              <td className="border border-black p-1 text-center text-black">
-                                {totalPreviewFriHours > 0 && (
-                                  <span className="font-bold text-[8px] block">{toPersianDigits(totalPreviewFriHours)} ساعت</span>
+                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                                {(totalPreviewFriHours + totalPreviewHolHours) > 0 && (
+                                  <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(totalPreviewFriHours + totalPreviewHolHours)} س</span>
                                 )}
-                                <span className="text-[8px] block text-left">{formatWithCommas(s.totalFridayWorkAmounts)}</span>
+                                <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewFriAndHolAmount)}</span>
                               </td>
-                              <td className="border border-black p-1 text-center text-black">
-                                {totalPreviewHolHours > 0 && (
-                                  <span className="font-bold text-[8px] block">{toPersianDigits(totalPreviewHolHours)} ساعت</span>
-                                )}
-                                <span className="text-[8px] block text-left">{formatWithCommas(s.totalHolidayWorkAmounts)}</span>
+                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalGrossSalaries)}</span>
                               </td>
-                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalGrossSalaries)}</td>
-                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalInsurableGross || 0)}</td>
-                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalWorkerInsurance)}</td>
-                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalNetSalaries)}</td>
+                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalWorkerInsurance)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewTaxAndSupp)}</span>
+                              </td>
+                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
+                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalNetSalaries)}</span>
+                              </td>
                             </tr>
                           </tfoot>
                         </table>
@@ -2983,84 +4188,135 @@ export default function PersonnelSettlementTab({
                     })()}
                   </div>
                 ) : (
-                  <div className="mb-3.5 p-2 bg-white border-2 border-black text-center text-[10.5px] font-bold text-black">
+                  <div className="mb-3 p-2 bg-white border-2 border-black text-center text-[10px] font-bold text-black print-avoid-break">
                     <span>ریز اقلام کارکرد ماهانه در دفاتر حقوق و دستمزد فروشگاه ثبت و ضبط بوده و نسخه خلاصه مدیریتی نمایش داده شده است.</span>
+                  </div>
+                )}
+
+                {printUnpaidLeaveInfo && (
+                  <div className="mb-3 px-2.5 py-1.5 bg-white border-2 border-black text-black text-[9.5px] font-bold flex flex-wrap items-center justify-between gap-2 print-avoid-break">
+                    <span>
+                      توضیح کارکرد ماه ترک کار: پرسنل در ماه ترک کار تعداد{' '}
+                      <strong className="font-black">
+                        {toPersianDigits(String(printUnpaidLeaveInfo.unpaidDays).replace('.', '٫'))}
+                      </strong>{' '}
+                      روز مرخصی بدون حقوق داشته است.
+                    </span>
+                    <span className="text-[8.5px] font-sans whitespace-nowrap">
+                      (روزهای ماه تا تاریخ ترک کار: {toPersianDigits(printUnpaidLeaveInfo.calendarDaysToDeparture)} روز - کارکرد: {toPersianDigits(printUnpaidLeaveInfo.workedDays)} روز)
+                    </span>
                   </div>
                 )}
 
                 {/* -------------------------------------------------------- */}
                 {/* 4. SECTION 3: LEGAL BENEFITS & DEDUCTIONS BREAKDOWN */}
                 {/* -------------------------------------------------------- */}
-                <div className="grid grid-cols-2 gap-3 mb-3.5">
+                <div className="grid grid-cols-2 gap-3 mb-3 items-stretch print-avoid-break">
                   {/* مطالبات و مزایای پایان خدمت */}
-                  <div>
-                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
+                  <div className="flex flex-col border-2 border-black bg-white">
+                    <div className="bg-white border-b-2 border-black text-black px-2 py-1 text-[10px] font-black flex items-center justify-between">
                       <span>۳. مطالبات و مزایای قانونی پایان خدمت (بستانکاری)</span>
-                      <span className="text-[9.5px] font-black text-black">مقررات قانون کار</span>
+                      <span className="text-[8.5px] font-black text-black whitespace-nowrap">مقررات قانون کار</span>
                     </div>
-                    <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
+                    <table className="w-full table-fixed border-collapse text-[9px] text-black flex-1">
+                      <colgroup>
+                        <col style={{ width: '63%' }} />
+                        <col style={{ width: '37%' }} />
+                      </colgroup>
                       <tbody>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">جمع خالص حقوق و دستمزد ماه‌های کارکرد:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.totalNetSalaries)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.totalNetSalaries)}</span> ریال
+                          </td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
                             حق سنوات پایان خدمت (ماده ۲۴ - کارکرد {toPersianDigits(s.totalWorkedDays)} روز):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.severanceAmount)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.severanceAmount)}</span> ریال
+                          </td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
                             عیدی و پاداش سالانه قانونی (به نسبت کارکرد {toPersianDigits(s.totalWorkedDays)} روز):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.bonusAmount)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.bonusAmount)}</span> ریال
+                          </td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
-                            بازخرید مانده مرخصی استحقاقی ({toPersianDigits(s.unusedLeaveDays)} روز):
+                            بازخرید مانده مرخصی استحقاقی ({formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.unusedLeaveAmount)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.unusedLeaveAmount)}</span> ریال
+                          </td>
                         </tr>
-                        <tr className="bg-white font-black text-black border-t-2 border-black">
-                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل مطالبات ناخالص پایان خدمت:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-xs text-black">{formatWithCommas(s.totalGrossPayable)} ریال</td>
+                        <tr>
+                          <td className="p-1.5 border border-black bg-white font-bold text-black">
+                            طلب حساب از قبل (مانده بستانکاری دوره قبل{s.previousYearReceivableDescription ? ` — ${s.previousYearReceivableDescription}` : ''}):
+                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.previousYearReceivableAmount || 0)}</span> ریال
+                          </td>
                         </tr>
                       </tbody>
+                      <tfoot className="total-row">
+                        <tr className="bg-white font-black text-black border-t-2 border-black">
+                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل مطالبات ناخالص پایان خدمت:</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-[10px] text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.totalGrossPayable)}</span> ریال
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
 
                   {/* کسورات و پرداختی‌های کارفرما */}
-                  <div>
-                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
+                  <div className="flex flex-col border-2 border-black bg-white">
+                    <div className="bg-white border-b-2 border-black text-black px-2 py-1 text-[10px] font-black flex items-center justify-between">
                       <span>۴. کسورات قانونی و پرداختی‌های قبلی کارفرما (بدهکاری)</span>
-                      <span className="text-[9.5px] font-black text-black">اسناد مالی</span>
+                      <span className="text-[8.5px] font-black text-black whitespace-nowrap">اسناد مالی</span>
                     </div>
-                    <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
+                    <table className="w-full table-fixed border-collapse text-[9px] text-black flex-1">
+                      <colgroup>
+                        <col style={{ width: '63%' }} />
+                        <col style={{ width: '37%' }} />
+                      </colgroup>
                       <tbody>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">مانده خرید طی دوره پرسنل از فروشگاه:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.personnelPurchasesAmount)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.personnelPurchasesAmount)}</span> ریال
+                          </td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">سایر کسورات قانونی، خسارت و تعهدات:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.otherDeductionsAmount)} ریال</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.otherDeductionsAmount)}</span> ریال
+                          </td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">شرح و علت سایر کسورات:</td>
-                          <td className="p-1.5 border border-black bg-white text-black font-medium text-[9.5px]">{s.otherDeductionsDescription || 'فاقد کسورات متفرقه'}</td>
+                          <td className="p-1.5 border border-black bg-white text-black font-medium text-[8.5px] leading-snug">{s.otherDeductionsDescription || 'فاقد کسورات متفرقه'}</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">مبالغ پرداخت شده قبلی کارفرما (مساعده/حقوق):</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.employerPaidAmount)} ریال</td>
-                        </tr>
-                        <tr className="bg-white font-black text-black border-t-2 border-black">
-                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل کسورات و پرداختی‌های قبلی:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-xs text-black">
-                            {formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))} ریال
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.employerPaidAmount)}</span> ریال
                           </td>
                         </tr>
                       </tbody>
+                      <tfoot className="total-row">
+                        <tr className="bg-white font-black text-black border-t-2 border-black">
+                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل کسورات و پرداختی‌های قبلی:</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-[10px] text-black whitespace-nowrap">
+                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))}</span> ریال
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 </div>
@@ -3070,26 +4326,26 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black p-3 bg-white mb-3.5 flex flex-col sm:flex-row items-center justify-between gap-3"
+                  className="border-2 border-black p-2.5 bg-white mb-3 flex items-center justify-between gap-3 print-avoid-break"
                 >
                   <div className="space-y-0.5 text-right">
-                    <span className="text-xs font-black text-black block">
+                    <span className="text-[11px] font-black text-black block">
                       مبلغ خالص قابل پرداخت نهایی تسویه حساب (وجه تسویه):
                     </span>
-                    <div className="text-[11.5px] text-black font-bold">
-                      مبلغ به حروف: <strong className="text-black font-black text-xs">« {numberToWordsPersian(s.finalNetPayable)} ریال »</strong>
+                    <div className="text-[10.5px] text-black font-bold">
+                      مبلغ به حروف: <strong className="text-black font-black text-[11px]">« {numberToWordsPersian(s.finalNetPayable)} ریال »</strong>
                     </div>
-                    <span className="text-[9.5px] text-black font-bold block">
+                    <span className="text-[9px] text-black font-bold block">
                       روش تسویه: حواله بانکی ساتنا / پایا یا چک بانکی تضمین‌شده به شماره حساب و شماره شبا کارگر
                     </span>
                   </div>
                   <div 
                     style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                    className="text-left bg-white text-black px-5 py-2 border-2 border-black"
+                    className="text-left bg-white text-black px-4 py-1.5 border-2 border-black shrink-0"
                   >
-                    <span className="text-[9.5px] text-black block text-right font-black">مبلغ خالص قطعی:</span>
-                    <span className="text-xl font-black font-sans tracking-tight text-black block">
-                      {formatWithCommas(s.finalNetPayable)} <span className="text-xs font-sans font-bold text-black">ریال</span>
+                    <span className="text-[9px] text-black block text-right font-black">مبلغ خالص قطعی:</span>
+                    <span className="text-lg font-black font-sans tracking-tight text-black block whitespace-nowrap">
+                      <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.finalNetPayable)}</span> <span className="text-xs font-sans font-bold text-black">ریال</span>
                     </span>
                   </div>
                 </div>
@@ -3099,14 +4355,14 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black p-3 text-[10px] leading-relaxed mb-3.5 bg-white text-justify text-black font-normal"
+                  className="border-2 border-black p-2.5 text-[9.5px] leading-relaxed mb-3 bg-white text-justify text-black font-normal print-avoid-break"
                 >
                   <div className="flex items-center gap-1.5 font-black text-black mb-1 border-b border-black pb-1">
-                    <FileCheck className="h-4 w-4 text-black" />
+                    <FileCheck className="h-3.5 w-3.5 text-black shrink-0" />
                     <span>اقرارنامه رسمی دریافت مطالبات، اسقاط کافه دعاوی و مفاصاحساب قطعی کارگری:</span>
                   </div>
-                  <p className="mt-1 leading-5">
-                    اینجانب <strong>{empName}</strong> با شماره ملی <strong>{toPersianDigits(emp?.nationalId || '-')}</strong> و شماره بیمه <strong>{toPersianDigits(emp?.insuranceCode || '-')}</strong>، بدین‌وسیله با اراده کامل و سلامت عقل اقرار و اعلام می‌دارم که کلیه حقوق، دستمزد پایه، مزایای قانونی، بن خواربار، حق مسکن، حق اولاد، حق تاهل، اضافه کاری، جمعه کاری، تعطیل کاری، عیدی و پاداش سالانه، حق سنوات پایان خدمت و مانده مرخصی استحقاقی ذخیره‌شده خود در طول دوران اشتغال تا تاریخ خاتمه همکاری (<span className="font-sans font-bold">{toPersianDigits(s.endDate)}</span>) را طبق ارقام فوق‌الذکر به طور کامل و صحیح دریافت نموده‌ام و هیچ‌گونه ادعا، طلب، حق یا شکایتی تحت هیچ عنوان حقوقی، کیفری یا استخدامی در گذشته، حال و آینده علیه <strong>فروشگاه نان و شیرینی گاتان</strong> و کارفرما نداشته و اسقاط کافه خیارات و برائت ذمه قطعی و همه‌جانبه کارفرما را اعلام می‌دارم.
+                  <p className="mt-1 leading-4.5">
+                    اینجانب <strong>{empName}</strong> با شماره ملی <strong>{toPersianDigits(emp?.nationalId || '-')}</strong> و شماره بیمه <strong>{toPersianDigits(emp?.insuranceCode || '-')}</strong>، بدین‌وسیله با اراده کامل و سلامت عقل اقرار و اعلام می‌دارم که کلیه حقوق، دستمزد پایه، مزایای قانونی، بن خواربار، حق مسکن، حق اولاد، حق تاهل، اضافه کاری، جمعه کاری، تعطیل کاری، عیدی و پاداش سالانه، حق سنوات پایان دوره، مانده مرخصی استحقاقی ذخیره‌شده و مانده طلب حساب از قبل خود در بازه زمانی مورد تسویه تا تاریخ (<span className="font-sans font-bold" dir="ltr">{toPersianDigits(s.endDate)}</span>) را طبق ارقام فوق‌الذکر به طور کامل و صحیح دریافت نموده‌ام و نسبت به دوره تسویه‌شده مذکور هیچ‌گونه ادعا، طلب، حق یا شکایتی تحت هیچ عنوان حقوقی، کیفری یا استخدامی علیه <strong>فروشگاه نان و شیرینی گاتان</strong> و کارفرما نداشته و {(s.settlementType || 'with_departure') === 'without_departure' ? 'این تسویه حساب مربوط به مختومه‌شدن کامل دوره قرارداد فوق بدون قطع ادامه همکاری می‌باشد.' : 'اسقاط کافه خیارات و برائت ذمه قطعی و همه‌جانبه کارفرما را اعلام می‌دارم.'}
                   </p>
                 </div>
 
@@ -3115,71 +4371,73 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black bg-white mb-2"
+                  className="border-2 border-black bg-white mb-2 print-avoid-break"
                 >
-                  <div className="grid grid-cols-4 divide-x divide-x-reverse divide-black text-center text-[10px]">
+                  <div className="grid grid-cols-4 divide-x divide-x-reverse divide-black text-center text-[9.5px]">
                     {/* کارگر با اثر انگشت */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
+                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10.5px]">کارگر / گیرنده وجه</span>
-                        <span className="text-[9.5px] text-black font-bold block mt-0.5">{empName}</span>
+                        <span className="font-black text-black block text-[10px]">کارگر / گیرنده وجه</span>
+                        <span className="text-[9px] text-black font-bold block mt-0.5">{empName}</span>
                       </div>
                       <div 
                         style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
                         className="my-1 border border-dashed border-black bg-white p-1 flex flex-col items-center justify-center"
                       >
-                        <span className="text-[8.5px] text-black font-bold">محل اثر انگشت و امضا</span>
-                        <div className="w-10 h-10 border border-dashed border-black rounded-full my-0.5"></div>
+                        <span className="text-[8px] text-black font-bold">محل اثر انگشت و امضا</span>
+                        <div className="w-9 h-9 border border-dashed border-black rounded-full my-0.5"></div>
                       </div>
-                      <span className="text-[8.5px] text-black font-bold block">تاریخ: ____ / ____ / ۱۴۰۴</span>
+                      <span className="text-[8px] text-black font-bold block">
+                        تاریخ: ____ / ____ / {toPersianDigits((normalizeJalaliDate(s.settlementDate || s.endDate).split('/')[0] || String(currentYear)))}
+                      </span>
                     </div>
 
                     {/* امور اداری و منابع انسانی */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
+                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10.5px]">امور اداری و کارگزینی</span>
-                        <span className="text-[9.5px] text-black font-bold block mt-0.5">تایید کارکرد و مرخصی</span>
+                        <span className="font-black text-black block text-[10px]">امور اداری و کارگزینی</span>
+                        <span className="text-[9px] text-black font-bold block mt-0.5">تایید کارکرد و مرخصی</span>
                       </div>
-                      <div className="h-14 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8.5px] text-black font-bold block">امضا و تایید: ________________</span>
+                      <div className="h-12 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8px] text-black font-bold block">امضا و تایید: ________________</span>
                     </div>
 
                     {/* امور مالی و حسابداری */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
+                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10.5px]">امور مالی و حسابداری</span>
-                        <span className="text-[9.5px] text-black font-bold block mt-0.5">بررسی محاسبات و پرداخت</span>
+                        <span className="font-black text-black block text-[10px]">امور مالی و حسابداری</span>
+                        <span className="text-[9px] text-black font-bold block mt-0.5">بررسی محاسبات و پرداخت</span>
                       </div>
-                      <div className="h-14 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8.5px] text-black font-bold block">امضا و تایید: ________________</span>
+                      <div className="h-12 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8px] text-black font-bold block">امضا و تایید: ________________</span>
                     </div>
 
                     {/* کارفرما / صاحب پروانه کسب */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
+                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10.5px]">کارفرما / صاحب پروانه کسب</span>
-                        <span className="text-[9.5px] text-black font-bold block mt-0.5">تصویب نهایی و صدور مفاصاحساب</span>
+                        <span className="font-black text-black block text-[10px]">کارفرما / صاحب پروانه کسب</span>
+                        <span className="text-[9px] text-black font-bold block mt-0.5">تصویب نهایی و صدور مفاصاحساب</span>
                       </div>
-                      <div className="h-14 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8.5px] text-black font-bold block">مهر و امضای کارفرما</span>
+                      <div className="h-12 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8px] text-black font-bold block">مهر و امضای کارفرما</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Official Page Footer */}
-                <div className="border-t-2 border-black pt-1.5 flex items-center justify-between text-[9px] text-black font-bold font-sans">
+                <div className="border-t-2 border-black pt-1.5 flex items-center justify-between text-[8.5px] text-black font-bold font-sans print-avoid-break">
                   <span>سامانه مدیریت مالی و حقوق دستمزد - فروشگاه نان و شیرینی گاتان (شخصیت حقیقی)</span>
                   <span>کد پیگیری اصالت سند: {toPersianDigits(s.settlementNo)}-{toPersianDigits(s.employeeCode)}</span>
                   <span>تاریخ و زمان چاپ: {toPersianDigits(getTodayJalali())}</span>

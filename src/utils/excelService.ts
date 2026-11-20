@@ -1271,6 +1271,8 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     totalWorkerInsurance: s.totalWorkerInsurance || 0,
     totalNetSalaries: s.totalNetSalaries || 0,
     totalGrossPayable: s.totalGrossPayable || 0,
+    previousYearReceivableAmount: s.previousYearReceivableAmount || 0,
+    previousYearReceivableDescription: s.previousYearReceivableDescription || '',
     personnelPurchasesAmount: s.personnelPurchasesAmount || 0,
     otherDeductionsAmount: s.otherDeductionsAmount || 0,
     otherDeductionsDescription: s.otherDeductionsDescription || '',
@@ -1279,6 +1281,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     finalNetPayable: s.finalNetPayable || 0,
     status: s.status || 'draft',
     notes: s.notes || '',
+    payrollSyncedAt: s.payrollSyncedAt || '',
     registeredBy: s.registeredBy || '',
     createdAt: s.createdAt || '',
     updatedAt: s.updatedAt || '',
@@ -1317,7 +1320,11 @@ export function exportDatabaseToExcel(db: AppDatabase) {
         insurableGross: m.insurableGross || 0,
         workerInsuranceShare: m.workerInsuranceShare,
         netSalaryPayable: m.netSalaryPayable,
-        usedLeaveDays: m.usedLeaveDays
+        usedLeaveDays: m.usedLeaveDays,
+        syncedFromPayroll: m.syncedFromPayroll ? 1 : 0,
+        payrollSourceType: m.payrollSourceType || '',
+        payrollItemPayable: m.payrollItemPayable || 0,
+        payrollLeaveRemainingMinutes: m.payrollLeaveRemainingMinutes !== undefined ? m.payrollLeaveRemainingMinutes : ''
       });
     });
   });
@@ -2576,7 +2583,11 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
             grossSalary: parseNumber(m.grossSalary),
             insurableGross: m.insurableGross !== undefined ? parseNumber(m.insurableGross) : undefined,
             workerInsuranceShare: parseNumber(m.workerInsuranceShare),
-            netSalaryPayable: parseNumber(m.netSalaryPayable)
+            netSalaryPayable: parseNumber(m.netSalaryPayable),
+            syncedFromPayroll: m.syncedFromPayroll !== undefined ? Boolean(parseNumber(m.syncedFromPayroll) || m.syncedFromPayroll === true) : undefined,
+            payrollSourceType: m.payrollSourceType ? String(m.payrollSourceType) as any : undefined,
+            payrollItemPayable: m.payrollItemPayable !== undefined && m.payrollItemPayable !== '' ? parseNumber(m.payrollItemPayable) : undefined,
+            payrollLeaveRemainingMinutes: m.payrollLeaveRemainingMinutes !== undefined && m.payrollLeaveRemainingMinutes !== '' ? parseNumber(m.payrollLeaveRemainingMinutes) : undefined
           }));
       }
 
@@ -2616,6 +2627,8 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         unusedLeaveDays: parseNumber(r.unusedLeaveDays),
         unusedLeaveAmount: parseNumber(r.unusedLeaveAmount),
         totalGrossPayable: parseNumber(r.totalGrossPayable),
+        previousYearReceivableAmount: r.previousYearReceivableAmount !== undefined && r.previousYearReceivableAmount !== '' ? parseNumber(r.previousYearReceivableAmount) : 0,
+        previousYearReceivableDescription: r.previousYearReceivableDescription ? String(r.previousYearReceivableDescription) : undefined,
         personnelPurchasesAmount: parseNumber(r.personnelPurchasesAmount),
         otherDeductionsAmount: parseNumber(r.otherDeductionsAmount),
         otherDeductionsDescription: r.otherDeductionsDescription ? String(r.otherDeductionsDescription) : undefined,
@@ -2624,6 +2637,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         finalNetPayable: parseNumber(r.finalNetPayable),
         status: (r.status || 'draft') as any,
         notes: r.notes ? String(r.notes) : undefined,
+        payrollSyncedAt: r.payrollSyncedAt ? String(r.payrollSyncedAt) : undefined,
         registeredBy: r.registeredBy ? String(r.registeredBy) : undefined,
         createdAt: String(r.createdAt || ''),
         updatedAt: r.updatedAt ? String(r.updatedAt) : undefined,

@@ -200,6 +200,37 @@ export async function loadSharedDatabaseFromPostgres(keys?: string[]): Promise<{
   };
 }
 
+export async function fetchFullBackupFromPostgres(): Promise<{
+  ok: boolean;
+  exportedAt?: string;
+  database?: Record<string, unknown>;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/db/backup', {
+      method: 'GET',
+      headers: authHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.database) {
+      return {
+        ok: false,
+        error: data.error || `خطای سرور (${res.status}) در دریافت نسخه پشتیبان از PostgreSQL`,
+      };
+    }
+    return {
+      ok: true,
+      exportedAt: data.exportedAt,
+      database: data.database as Record<string, unknown>,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: `خطای ارتباط با سرور هنگام تهیه نسخه پشتیبان: ${err?.message || String(err)}`,
+    };
+  }
+}
+
 export async function fetchPostgresVersions(): Promise<{
   ok: boolean;
   versions: Record<string, number>;
