@@ -36,6 +36,7 @@ export interface Item {
   categoryId: string; // From ItemCategory
   unit: 'عددی' | 'کیلویی'; // default 'کیلویی'
   barcode: string;
+  systemBarcode?: string; // بارکد شناسه سیستمی
   packageType: 'کارتن' | 'گونی' | 'سطل' | 'حلب'; // default 'کارتن'
   qtyPerPackage: number; // default 1
   weightPerPackage: number; // default 1
@@ -524,6 +525,7 @@ export interface SalaryBaseRate {
   overtimeHourlyRate: number; // "مبلغ اضافه کاری ساعتی"
   fridayWorkHourlyRate?: number; // "حق جمعه کاری ساعتی (۴۰٪ حقوق پایه روزانه)"
   holidayWorkHourlyRate?: number; // "حق تعطیل کاری ساعتی"
+  monthlyLeaveHours?: string; // "مرخصی ساعتی ماهانه" (فرمت HH:MM، پیش‌فرض 15:53)
 }
 
 export interface SeniorityRateRule {
@@ -641,6 +643,14 @@ export interface AppDatabase {
   personnelContracts?: PersonnelContract[];
   seniorityRateRules?: SeniorityRateRule[];
   insuredSalaryItems?: {
+    id: string;
+    periodId?: string;
+    startDate?: string;
+    endDate?: string;
+    itemKey: string;
+    itemName: string;
+  }[];
+  leaveBuyoutSalaryItems?: {
     id: string;
     periodId?: string;
     startDate?: string;

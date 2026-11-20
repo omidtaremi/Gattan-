@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   AppDatabase, Item, ItemCategory, Supplier, PurchaseInvoice, 
@@ -18,9 +18,12 @@ import {
   Plus, Search, Edit2, Edit3, Trash2, CheckCircle, XCircle, FileSpreadsheet, 
   Printer, ArrowRight, Save, Calendar, FileText, Check, AlertTriangle, RefreshCw, Download, Upload,
   Ruler, Scale, Folder, Layers, Tag, ChevronDown, ChevronUp, Eye, Filter, Settings, X, Package, 
-  SlidersHorizontal, ArrowUpDown, Sparkles, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
+  SlidersHorizontal, ArrowUpDown, Sparkles, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  ScanLine, Building2, CheckSquare
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
+import ShamsiDatePicker from './ShamsiDatePicker';
+import { generateCode128SvgString, generateNextSystemBarcode } from '../utils/barcodeSvg';
 
 // Utility to round numbers to at most 2 decimal places
 export function roundTo2Decimals(val: number | undefined | null): number {
@@ -286,7 +289,61 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     });
   };
 
-  // --- Common Helper ---
+  // --- Common Helper: Auto-select text on entering any textbox ---
+  const justFocusedTextElRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const justFocusedTimerRef = useRef<number | null>(null);
+
+  const isAutoSelectableTextField = (
+    el: EventTarget | null
+  ): el is HTMLInputElement | HTMLTextAreaElement => {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    if (el instanceof HTMLTextAreaElement) {
+      return !el.disabled;
+    }
+    if (el instanceof HTMLInputElement) {
+      if (el.disabled) return false;
+      const t = (el.type || 'text').toLowerCase();
+      return ['text', 'number', 'search', 'tel', 'email', 'url', 'password'].includes(t);
+    }
+    return false;
+  };
+
+  const handleContainerFocusCapture = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (!isAutoSelectableTextField(e.target)) return;
+    const el = e.target;
+    justFocusedTextElRef.current = el;
+    if (justFocusedTimerRef.current !== null) {
+      window.clearTimeout(justFocusedTimerRef.current);
+    }
+    justFocusedTimerRef.current = window.setTimeout(() => {
+      if (justFocusedTextElRef.current === el) {
+        justFocusedTextElRef.current = null;
+      }
+    }, 450);
+    try {
+      el.select();
+    } catch {
+      // Ignore non-selectable input edge cases
+    }
+  };
+
+  const handleContainerMouseUpCapture = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (justFocusedTextElRef.current && e.target === justFocusedTextElRef.current) {
+      const el = justFocusedTextElRef.current;
+      justFocusedTextElRef.current = null;
+      if (justFocusedTimerRef.current !== null) {
+        window.clearTimeout(justFocusedTimerRef.current);
+        justFocusedTimerRef.current = null;
+      }
+      e.preventDefault();
+      try {
+        el.select();
+      } catch {
+        // Ignore
+      }
+    }
+  };
+
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
     e.target.select();
   };
@@ -368,9 +425,16 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [itemSearch, setItemSearch] = useState('');
   const [itemCategoryFilter, setItemCategoryFilter] = useState<string>('all');
-  const [itemViewGroupMode, setItemViewGroupMode] = useState<'flat' | 'grouped'>('flat');
+  const [itemWarehouseFilter, setItemWarehouseFilter] = useState<string>('all');
+  const [itemViewGroupMode, setItemViewGroupMode] = useState<'flat' | 'grouped' | 'warehouse'>('flat');
   const [catalogPageSize, setCatalogPageSize] = useState<number | 'all'>(100);
   const [catalogPage, setCatalogPage] = useState<number>(1);
+
+  // Bulk Edit States for Selected Items
+  const [bulkEditWarehouse, setBulkEditWarehouse] = useState<string>('__keep__');
+  const [bulkEditCategoryId, setBulkEditCategoryId] = useState<string>('__keep__');
+  const [bulkEditUnit, setBulkEditUnit] = useState<string>('__keep__');
+  const [bulkEditFeedback, setBulkEditFeedback] = useState<string>('');
 
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [newItem, setNewItem] = useState<Partial<Item>>({
@@ -378,8 +442,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     accountId: '',
     name: '',
     categoryId: categories[0]?.id || '',
-    unit: 'کیلوگرم',
+    unit: 'کیلوگرم' as any,
     barcode: '',
+    systemBarcode: '',
     packageType: 'کارتن',
     qtyPerPackage: 1,
     weightPerPackage: 1,
@@ -419,10 +484,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     );
   }, [activeItemCode, items, editingItem]);
 
-  // Reset pagination page on search or category filter change
+  // Reset pagination page on search or category/warehouse filter change
   React.useEffect(() => {
     setCatalogPage(1);
-  }, [itemSearch, itemCategoryFilter]);
+  }, [itemSearch, itemCategoryFilter, itemWarehouseFilter]);
 
   // Units of Measurement list state
   const unitsOfMeasurementList = useMemo(() => {
@@ -538,21 +603,110 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     );
   };
 
+  const itemsMissingSystemBarcodeCount = useMemo(() => {
+    return items.filter(i => !(i.systemBarcode || '').trim()).length;
+  }, [items]);
+
+  const itemWarehouseOptions = useMemo(() => {
+    const names = new Set<string>();
+    (db.warehouses || [])
+      .filter(w => w.periodId === activePeriodId)
+      .forEach(w => {
+        if (w.name?.trim()) names.add(w.name.trim());
+      });
+    items.forEach(i => {
+      if (i.warehouse?.trim()) names.add(i.warehouse.trim());
+    });
+    return Array.from(names);
+  }, [db.warehouses, activePeriodId, items]);
+
+  const handleAssignMissingSystemBarcodes = () => {
+    if (itemsMissingSystemBarcodeCount === 0) {
+      setBulkEditFeedback('تمامی کالاهای این دوره دارای بارکد شناسه سیستمی هستند.');
+      setTimeout(() => setBulkEditFeedback(''), 3500);
+      return;
+    }
+
+    const newlyAssigned = new Set<string>();
+    let assignedCount = 0;
+
+    const updatedItems = db.items.map(item => {
+      if (item.periodId !== activePeriodId) return item;
+      if ((item.systemBarcode || '').trim()) return item;
+      const nextCode = generateNextSystemBarcode(db.items, newlyAssigned);
+      newlyAssigned.add(nextCode);
+      assignedCount += 1;
+      return {
+        ...item,
+        systemBarcode: nextCode
+      };
+    });
+
+    if (assignedCount > 0) {
+      onUpdateDb({ ...db, items: updatedItems });
+      setBulkEditFeedback(`بارکد شناسه سیستمی یکتا با موفقیت برای ${toPersianDigits(assignedCount)} کالا تخصیص داده شد.`);
+      setTimeout(() => setBulkEditFeedback(''), 5000);
+    }
+  };
+
+  const handleApplyBulkEditItems = () => {
+    if (selectedItemIds.length === 0) return;
+    if (bulkEditWarehouse === '__keep__' && bulkEditCategoryId === '__keep__' && bulkEditUnit === '__keep__') {
+      setBulkEditFeedback('لطفاً حداقل یکی از فیلدهای انبار، دسته‌بندی یا واحد سنجش را جهت اعمال تغییر دسته‌ای انتخاب کنید.');
+      setTimeout(() => setBulkEditFeedback(''), 4000);
+      return;
+    }
+
+    const selectedSet = new Set(selectedItemIds);
+    const updatedItems = db.items.map(item => {
+      if (!selectedSet.has(item.id)) return item;
+      const next: Item = { ...item };
+      if (bulkEditWarehouse !== '__keep__') {
+        next.warehouse = bulkEditWarehouse === '__clear__' ? '' : bulkEditWarehouse;
+      }
+      if (bulkEditCategoryId !== '__keep__') {
+        next.categoryId = bulkEditCategoryId;
+      }
+      if (bulkEditUnit !== '__keep__') {
+        next.unit = bulkEditUnit as any;
+      }
+      return next;
+    });
+
+    onUpdateDb({ ...db, items: updatedItems });
+    const count = selectedItemIds.length;
+    setBulkEditWarehouse('__keep__');
+    setBulkEditCategoryId('__keep__');
+    setBulkEditUnit('__keep__');
+    setSelectedItemIds([]);
+    setBulkEditFeedback(`تغییرات دسته‌ای با موفقیت بر روی ${toPersianDigits(count)} کالا اعمال گردید.`);
+    setTimeout(() => setBulkEditFeedback(''), 5000);
+  };
+
   const searchedItems = useMemo(() => {
     let list = items;
     if (itemCategoryFilter && itemCategoryFilter !== 'all') {
       list = list.filter(i => i.categoryId === itemCategoryFilter);
+    }
+    if (itemWarehouseFilter && itemWarehouseFilter !== 'all') {
+      if (itemWarehouseFilter === 'none') {
+        list = list.filter(i => !(i.warehouse || '').trim());
+      } else {
+        list = list.filter(i => (i.warehouse || '').trim() === itemWarehouseFilter);
+      }
     }
     if (itemSearch) {
       list = list.filter(i => 
         matchPersianString(i.name, itemSearch) || 
         matchPersianString(i.accountId, itemSearch) || 
         matchPersianString(i.code, itemSearch) || 
-        matchPersianString(i.barcode, itemSearch)
+        matchPersianString(i.barcode, itemSearch) ||
+        matchPersianString(i.systemBarcode || '', itemSearch) ||
+        matchPersianString(i.warehouse || '', itemSearch)
       );
     }
     return list;
-  }, [items, itemSearch, itemCategoryFilter]);
+  }, [items, itemSearch, itemCategoryFilter, itemWarehouseFilter]);
 
   // Paginated items for catalog table
   const paginatedSearchedItems = useMemo(() => {
@@ -574,9 +728,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       return;
     }
     const resolvedCategoryId = hasValidCat ? String(rawCatId) : (categories[0]?.id || '');
+    const rawSystemBarcode = toEnglishDigits((isEdit ? editingItem!.systemBarcode : newItem.systemBarcode) || '').trim();
     const targetItem = isEdit
-      ? { ...editingItem!, categoryId: resolvedCategoryId }
-      : { ...newItem, categoryId: resolvedCategoryId, id: stableId, periodId: activePeriodId } as Item;
+      ? { ...editingItem!, categoryId: resolvedCategoryId, systemBarcode: rawSystemBarcode || undefined }
+      : { ...newItem, categoryId: resolvedCategoryId, systemBarcode: rawSystemBarcode || undefined, id: stableId, periodId: activePeriodId } as Item;
 
     const currentCode = (targetItem.code || '').trim();
     // Validate required fields
@@ -594,6 +749,17 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     if (isDuplicate) {
       alert(`کد اختصاصی کالا "${currentCode}" تکراری است و قبلاً برای کالای دیگری ثبت شده است.\nلطفاً یک کد اختصاصی یکتا وارد کنید یا از دکمه «کد پیشنهادی سیستم» استفاده فرمایید.`);
       return;
+    }
+
+    if (rawSystemBarcode) {
+      const isSysBarcodeDuplicate = items.some(i =>
+        (!isEdit || i.id !== editingItem?.id) &&
+        toEnglishDigits(i.systemBarcode || '').trim().toLowerCase() === rawSystemBarcode.toLowerCase()
+      );
+      if (isSysBarcodeDuplicate) {
+        alert(`بارکد شناسه سیستمی "${rawSystemBarcode}" تکراری است و قبلاً به کالای دیگری اختصاص داده شده است.`);
+        return;
+      }
     }
 
     let updatedItems = [...db.items];
@@ -645,6 +811,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
         categoryId: categories[0]?.id || '',
         unit: 'کیلویی',
         barcode: '',
+        systemBarcode: '',
         packageType: 'کارتن',
         qtyPerPackage: 1,
         weightPerPackage: 1,
@@ -672,7 +839,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   };
 
   const exportItemsCSV = () => {
-    const headers = ['کد کالا', 'کد حسابداری', 'نام کالا', 'دسته‌بندی', 'واحد سنجش', 'بارکد', 'بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'آستانه هشدار موجودی', 'قیمت ریالی', 'وضعیت فعال', 'انبار'];
+    const headers = ['کد کالا', 'کد حسابداری', 'نام کالا', 'دسته‌بندی', 'واحد سنجش', 'بارکد', 'بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'آستانه هشدار موجودی', 'قیمت ریالی', 'وضعیت فعال', 'انبار', 'بارکد شناسه سیستمی'];
     const rows = items.map(i => [
       i.code,
       i.accountId,
@@ -686,7 +853,8 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       i.reorderThreshold,
       i.price,
       i.isActive ? 'فعال' : 'غیرفعال',
-      i.warehouse || ''
+      i.warehouse || '',
+      i.systemBarcode || ''
     ]);
     downloadCSV('Gatan_Catalog_Items', headers, rows);
   };
@@ -721,6 +889,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
         const priceVal = parseNumber(row[10]) || 0;
         const warehouseVal = row[12] ? row[12].trim() : '';
+        const systemBarcodeVal = row[13] ? toEnglishDigits(row[13]).trim() : '';
 
         // Compare using accountId (if present). If accountId is empty, we fall back to code.
         const duplicateIndex = updatedItems.findIndex(ui => 
@@ -740,6 +909,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           if (warehouseVal) {
             updatedItems[duplicateIndex].warehouse = warehouseVal;
           }
+          if (systemBarcodeVal && !updatedItems[duplicateIndex].systemBarcode) {
+            updatedItems[duplicateIndex].systemBarcode = systemBarcodeVal;
+          }
           updatedCount++;
         } else {
           // Otherwise, insert as new item
@@ -753,6 +925,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             categoryId: matchedCat?.id || '',
             unit: row[4]?.includes('عددی') ? 'عددی' : 'کیلویی',
             barcode: row[5] || '',
+            systemBarcode: systemBarcodeVal || undefined,
             packageType: (row[6] || 'کارتن') as any,
             qtyPerPackage: parseNumber(row[7]) || 1,
             weightPerPackage: parseNumber(row[8]) || 1,
@@ -774,11 +947,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   };
 
   const downloadSampleItemsCSV = () => {
-    const headers = ['کد کالا', 'کد حسابداری', 'نام کالا', 'دسته‌بندی', 'واحد سنجش', 'بارکد', 'بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'آستانه هشدار موجودی', 'قیمت ریالی', 'وضعیت فعال', 'انبار'];
+    const headers = ['کد کالا', 'کد حسابداری', 'نام کالا', 'دسته‌بندی', 'واحد سنجش', 'بارکد', 'بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'آستانه هشدار موجودی', 'قیمت ریالی', 'وضعیت فعال', 'انبار', 'بارکد شناسه سیستمی'];
     const rows = [
-      ['R-101', '102030', 'آرد نول شیرینی', 'آردها', 'کیلویی', '100000000001', 'گونی', '1', '40', '10', '420000', 'فعال', 'انبار مرکزی آرد'],
-      ['R-102', '102031', 'روغن مارگارین قنادی', 'روغن‌ها', 'کیلویی', '100000000002', 'کارتن', '1', '10', '5', '950000', 'فعال', 'سردخانه شماره ۱'],
-      ['R-103', '102032', 'سلفون بسته‌بندی نهایی', 'لفاف و نایلون', 'عددی', '100000000003', 'رول', '1', '1', '50', '250000', 'فعال', 'سوله ملزومات']
+      ['R-101', '102030', 'آرد نول شیرینی', 'آردها', 'کیلویی', '100000000001', 'گونی', '1', '40', '10', '420000', 'فعال', 'انبار مرکزی آرد', '90000001'],
+      ['R-102', '102031', 'روغن مارگارین قنادی', 'روغن‌ها', 'کیلویی', '100000000002', 'کارتن', '1', '10', '5', '950000', 'فعال', 'سردخانه شماره ۱', '90000002'],
+      ['R-103', '102032', 'سلفون بسته‌بندی نهایی', 'لفاف و نایلون', 'عددی', '100000000003', 'رول', '1', '1', '50', '250000', 'فعال', 'سوله ملزومات', '90000003']
     ];
     downloadCSV('Sample_Gatan_Catalog_Items', headers, rows);
   };
@@ -1403,6 +1576,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       alert('انتخاب تامین کننده اجباری است.');
       return;
     }
+    if (!invoiceDate.trim()) {
+      alert('لطفاً تاریخ ثبت فاکتور خرید را از تقویم شمسی انتخاب نمایید.');
+      return;
+    }
     if (invoiceItems.length === 0) {
       alert('باید حداقل یک ردیف کالا به صورت خرید در فاکتور ثبت شده باشد.');
       return;
@@ -1596,9 +1773,38 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const [countNotes, setCountNotes] = useState<string>('');
   const [editingCountId, setEditingCountId] = useState<string | null>(null);
 
+  // Barcode Scanner Search in Stock Count Tab
+  const [barcodeScanValue, setBarcodeScanValue] = useState<string>('');
+  const [barcodeScanFeedback, setBarcodeScanFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [blankPrintWarehouse, setBlankPrintWarehouse] = useState<string>('all');
+  const barcodeScanInputRef = useRef<HTMLInputElement>(null);
+  const countPacksInputRef = useRef<HTMLInputElement>(null);
+  const barcodeScanDebounceRef = useRef<number | null>(null);
+
   // Quick Edit Item Master Modal states
   const [isQuickEditItemModalOpen, setIsQuickEditItemModalOpen] = useState(false);
   const [quickEditItem, setQuickEditItem] = useState<Item | null>(null);
+
+  const focusBarcodeScannerInput = () => {
+    window.setTimeout(() => {
+      if (barcodeScanInputRef.current) {
+        barcodeScanInputRef.current.focus();
+        barcodeScanInputRef.current.select();
+      }
+    }, 50);
+  };
+
+  // Auto-focus barcode search input upon entering inventory tab or switching active audit
+  React.useEffect(() => {
+    if (activeTab === 'inventory' && selectedAuditId) {
+      focusBarcodeScannerInput();
+    }
+    return () => {
+      if (barcodeScanDebounceRef.current) {
+        window.clearTimeout(barcodeScanDebounceRef.current);
+      }
+    };
+  }, [activeTab, selectedAuditId]);
 
   const countableItemsList = useMemo(() => {
     if (countingWarehouse === 'all') return activeItemsList;
@@ -1703,6 +1909,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           matchPersianString(raw?.code || '', q) ||
           matchPersianString(raw?.accountId || '', q) ||
           matchPersianString(raw?.barcode || '', q) ||
+          matchPersianString(raw?.systemBarcode || '', q) ||
           matchPersianString(wh, q) ||
           matchPersianString(cat, q) ||
           matchPersianString(c.shelfLocation || '', q) ||
@@ -1733,6 +1940,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           matchPersianString(raw?.code || '', q) ||
           matchPersianString(raw?.accountId || '', q) ||
           matchPersianString(raw?.barcode || '', q) ||
+          matchPersianString(raw?.systemBarcode || '', q) ||
           matchPersianString(whStr, q) ||
           matchPersianString(cat, q)
         );
@@ -1785,6 +1993,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const createNewAudit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAuditTitle.trim()) return;
+    if (!newAuditDate.trim()) {
+      alert('لطفاً تاریخ ثبتی انبارگردانی را از تقویم شمسی انتخاب نمایید.');
+      return;
+    }
 
     const newAuditObj: StockCountAudit = {
       id: `aud-${Date.now()}`,
@@ -1818,6 +2030,106 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
   };
 
+  const selectMatchedBarcodeItem = (matched: Item) => {
+    if (barcodeScanDebounceRef.current) {
+      window.clearTimeout(barcodeScanDebounceRef.current);
+      barcodeScanDebounceRef.current = null;
+    }
+    setCountItemId(matched.id);
+    if (matched.warehouse) {
+      setCountRecordWarehouse(matched.warehouse);
+    }
+    setBarcodeScanValue('');
+    setBarcodeScanFeedback({
+      type: 'success',
+      text: `کالا انتخاب شد: ${matched.name} (کد: ${toPersianDigits(matched.code)}${matched.systemBarcode ? ` | بارکد سیستمی: ${toPersianDigits(matched.systemBarcode)}` : ''})`
+    });
+    window.setTimeout(() => {
+      if (countPacksInputRef.current) {
+        countPacksInputRef.current.focus();
+        countPacksInputRef.current.select();
+      }
+    }, 90);
+  };
+
+  const handleBarcodeScanSubmit = (rawOverride?: string) => {
+    if (barcodeScanDebounceRef.current) {
+      window.clearTimeout(barcodeScanDebounceRef.current);
+      barcodeScanDebounceRef.current = null;
+    }
+    const raw = (rawOverride !== undefined ? rawOverride : barcodeScanValue);
+    const normalized = toEnglishDigits(raw || '').trim();
+    if (!normalized) {
+      focusBarcodeScannerInput();
+      return;
+    }
+
+    const lower = normalized.toLowerCase();
+    // Priority match: exact systemBarcode -> exact item barcode -> exact item code
+    let matched =
+      activeItemsList.find(i => toEnglishDigits(i.systemBarcode || '').trim().toLowerCase() === lower) ||
+      activeItemsList.find(i => toEnglishDigits(i.barcode || '').trim().toLowerCase() === lower) ||
+      activeItemsList.find(i => toEnglishDigits(i.code || '').trim().toLowerCase() === lower);
+
+    // Fallback: unique partial match on systemBarcode or barcode
+    if (!matched) {
+      const partials = activeItemsList.filter(i =>
+        toEnglishDigits(i.systemBarcode || '').trim().toLowerCase().includes(lower) ||
+        toEnglishDigits(i.barcode || '').trim().toLowerCase().includes(lower)
+      );
+      if (partials.length === 1) {
+        matched = partials[0];
+      }
+    }
+
+    if (matched) {
+      selectMatchedBarcodeItem(matched);
+    } else {
+      setBarcodeScanFeedback({
+        type: 'error',
+        text: `کالایی با بارکد شناسه سیستمی یا بارکد کالا «${toPersianDigits(normalized)}» یافت نشد.`
+      });
+      focusBarcodeScannerInput();
+    }
+  };
+
+  const handleBarcodeInputChange = (rawVal: string) => {
+    setBarcodeScanValue(rawVal);
+    if (barcodeScanFeedback) setBarcodeScanFeedback(null);
+
+    if (barcodeScanDebounceRef.current) {
+      window.clearTimeout(barcodeScanDebounceRef.current);
+      barcodeScanDebounceRef.current = null;
+    }
+
+    const normalized = toEnglishDigits(rawVal || '').trim();
+    if (!normalized) return;
+
+    const lower = normalized.toLowerCase();
+    // Immediate auto-selection on exact systemBarcode or barcode match when no longer barcode shares this prefix
+    const exactBarcodeMatch =
+      activeItemsList.find(i => toEnglishDigits(i.systemBarcode || '').trim().toLowerCase() === lower) ||
+      activeItemsList.find(i => toEnglishDigits(i.barcode || '').trim().toLowerCase() === lower);
+
+    if (exactBarcodeMatch) {
+      const hasLongerPrefixCollision = activeItemsList.some(i => {
+        if (i.id === exactBarcodeMatch.id) return false;
+        const sys = toEnglishDigits(i.systemBarcode || '').trim().toLowerCase();
+        const bar = toEnglishDigits(i.barcode || '').trim().toLowerCase();
+        return (sys.length > lower.length && sys.startsWith(lower)) || (bar.length > lower.length && bar.startsWith(lower));
+      });
+      if (!hasLongerPrefixCollision) {
+        selectMatchedBarcodeItem(exactBarcodeMatch);
+        return;
+      }
+    }
+
+    // Automatically evaluate after short pause (supports scanners without Enter & manual entry without clicking any button)
+    barcodeScanDebounceRef.current = window.setTimeout(() => {
+      handleBarcodeScanSubmit(rawVal);
+    }, 450);
+  };
+
   const handleCancelEditCount = () => {
     setEditingCountId(null);
     setCountItemId('');
@@ -1826,6 +2138,8 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     setCountRecordWarehouse('');
     setCountShelfLocation('');
     setCountNotes('');
+    setBarcodeScanValue('');
+    focusBarcodeScannerInput();
   };
 
   const handleAddOrUpdateCount = (e: React.FormEvent) => {
@@ -1836,6 +2150,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
     if (!countItemId) {
       alert('نام کالا را جهت شمارش انتخاب کنید.');
+      focusBarcodeScannerInput();
       return;
     }
 
@@ -1879,13 +2194,16 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
     onUpdateDb({ ...db, stockCounts: updatedCounts });
     
-    // Clear item selector and inputs
+    // Clear item selector and inputs, then immediately re-focus barcode scanner input
     setCountItemId('');
     setCountPacks(0);
     setCountLoose(0);
     setCountRecordWarehouse('');
     setCountShelfLocation('');
     setCountNotes('');
+    setBarcodeScanValue('');
+    setBarcodeScanFeedback(null);
+    focusBarcodeScannerInput();
   };
 
   const deleteCount = (id: string) => {
@@ -1924,6 +2242,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       code: quickEditItem.code.trim(),
       accountId: (quickEditItem.accountId || '').trim(),
       barcode: (quickEditItem.barcode || '').trim(),
+      systemBarcode: toEnglishDigits(quickEditItem.systemBarcode || '').trim() || undefined,
       qtyPerPackage: Math.max(1, parseNumber(quickEditItem.qtyPerPackage) || 1),
       weightPerPackage: Math.max(0.001, parseNumber(quickEditItem.weightPerPackage) || 1),
       price: Math.max(0, parseNumber(quickEditItem.price) || 0),
@@ -2228,7 +2547,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     reader.readAsArrayBuffer(file);
   };
 
-  // Professional Print Report: aggregates multiple warehouse counts for the same item into ONE single row with maximum paper utilization
+  // Professional Print Report: aggregates multiple warehouse counts for the same item into ONE single row with scannable system barcode
   const printAuditReport = () => {
     const auditObj = db.stockCountAudits.find(a => a.id === selectedAuditId);
     const auditTitle = auditObj ? auditObj.title : 'گزارش تجمیعی شمارش فیزیکی انبارگردانی';
@@ -2257,23 +2576,28 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       : `انبار: ${countWarehouseFilter}`;
 
     const rowsHtml = itemsToPrint.map((agg, idx) => {
-      const itemObj = agg.itemObj || { code: '-', accountId: '-', name: 'ناشناخته', price: 0, packageType: '-', unit: 'عدد' };
+      const itemObj = agg.itemObj || { code: '-', accountId: '-', name: 'ناشناخته', price: 0, packageType: '-', unit: 'عدد', systemBarcode: '' };
       const warehousesStr = agg.warehouses.length > 0 ? agg.warehouses.join('، ') : 'فاقد انبار';
+      const sysBarcode = (itemObj.systemBarcode || '').trim();
+      const barcodeCellHtml = sysBarcode
+        ? generateCode128SvgString(sysBarcode, { height: 22, moduleWidth: 1.05, quietZoneModules: 6, showText: true, fontSize: 7.5, maxWidthPx: 118 })
+        : '<span style="font-size: 7.5pt; color: #94a3b8;">فاقد بارکد</span>';
 
       return `
         <tr>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 8.5pt; font-weight: 600; color: #475569;">${toPersianDigits(idx + 1)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 9pt; font-weight: 800; color: #0f172a;">${toPersianDigits(itemObj.code)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 8.5pt; font-weight: 600; color: #475569;">${toPersianDigits(itemObj.accountId || '-')}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 6px; text-align: right; font-weight: 800; font-size: 9pt; color: #0f172a; line-height: 1.35;">${itemObj.name}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 8.5pt; color: #334155;">${warehousesStr}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 3px; text-align: center; font-size: 8.5pt; font-weight: 700; color: #1e293b;">${toPersianDigits(agg.recordsCount)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 3px; text-align: center; font-size: 8.5pt; color: #334155;">${itemObj.packageType || 'بسته'}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 9pt; font-weight: 700; color: #0f172a;">${toPersianDigits(agg.totalPackages)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-size: 9pt; font-weight: 700; color: #0f172a;">${toPersianDigits(agg.totalLooseQty)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 4px; text-align: center; font-weight: 900; font-size: 9.5pt; color: #991b1b; background-color: #fef2f2 !important;">${toPersianDigits(roundTo2Decimals(agg.totalCalculatedQty))} <span style="font-size: 7.5pt; font-weight: 600; color: #64748b;">${itemObj.unit === 'کیلویی' ? 'کیلو' : 'عدد'}</span></td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 5px; text-align: left; font-size: 8.5pt; font-weight: 600; color: #1e293b;">${formatWithCommas(itemObj.price)}</td>
-          <td style="border: 1px solid #94a3b8; padding: 3px 5px; text-align: left; font-weight: 900; font-size: 9.5pt; color: #065f46; background-color: #f0fdf4 !important;">${formatWithCommas(roundTo2Decimals(agg.totalValue))}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 8.5pt; font-weight: 600; color: #475569;">${toPersianDigits(idx + 1)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2px 3px; text-align: center; background-color: #ffffff !important;">${barcodeCellHtml}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 9pt; font-weight: 800; color: #0f172a;">${toPersianDigits(itemObj.code)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 8.5pt; font-weight: 600; color: #475569;">${toPersianDigits(itemObj.accountId || '-')}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 6px; text-align: right; font-weight: 800; font-size: 9pt; color: #0f172a; line-height: 1.3;">${itemObj.name}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 8.5pt; color: #334155;">${warehousesStr}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 3px; text-align: center; font-size: 8.5pt; font-weight: 700; color: #1e293b;">${toPersianDigits(agg.recordsCount)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 3px; text-align: center; font-size: 8.5pt; color: #334155;">${itemObj.packageType || 'بسته'}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 9pt; font-weight: 700; color: #0f172a;">${toPersianDigits(agg.totalPackages)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-size: 9pt; font-weight: 700; color: #0f172a;">${toPersianDigits(agg.totalLooseQty)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 4px; text-align: center; font-weight: 900; font-size: 9.5pt; color: #991b1b; background-color: #fef2f2 !important;">${toPersianDigits(roundTo2Decimals(agg.totalCalculatedQty))} <span style="font-size: 7.5pt; font-weight: 600; color: #64748b;">${itemObj.unit === 'کیلویی' ? 'کیلو' : 'عدد'}</span></td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 5px; text-align: left; font-size: 8.5pt; font-weight: 600; color: #1e293b;">${formatWithCommas(itemObj.price)}</td>
+          <td style="border: 1px solid #94a3b8; padding: 2.5px 5px; text-align: left; font-weight: 900; font-size: 9.5pt; color: #065f46; background-color: #f0fdf4 !important;">${formatWithCommas(roundTo2Decimals(agg.totalValue))}</td>
         </tr>
       `;
     }).join('');
@@ -2291,7 +2615,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
             
             @page {
-              size: A4 portrait;
+              size: A4 landscape;
               margin: 5mm 6mm 5mm 6mm;
             }
             * {
@@ -2312,7 +2636,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               direction: rtl;
               text-align: right;
               font-size: 8.5pt;
-              line-height: 1.35;
+              line-height: 1.3;
             }
             .header-table {
               width: 100%;
@@ -2341,7 +2665,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             table.main-table th {
               background-color: #f1f5f9 !important;
               border: 1.2px solid #334155;
-              padding: 4.5px 3px;
+              padding: 4px 3px;
               font-weight: 800;
               text-align: center;
               color: #0f172a;
@@ -2350,7 +2674,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             }
             table.main-table td {
               border: 1px solid #94a3b8;
-              padding: 3px 4px;
+              padding: 2.5px 4px;
               vertical-align: middle;
               font-size: 8.5pt;
             }
@@ -2381,7 +2705,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               width: 33.33%;
               padding: 4px 5px;
               border-left: 1px solid #0f172a;
-              height: 42px;
+              height: 40px;
               vertical-align: top;
               font-size: 8.5pt;
             }
@@ -2416,24 +2740,25 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           <table class="main-table">
             <thead>
               <tr>
-                <th style="width: 26px;">ردیف</th>
+                <th style="width: 24px;">ردیف</th>
+                <th style="width: 124px;">بارکد شناسه سیستمی</th>
                 <th style="width: 50px;">کد کالا</th>
-                <th style="width: 50px;">کد معین</th>
+                <th style="width: 52px;">کد معین</th>
                 <th>نام کالا / مواد اولیه</th>
-                <th style="width: 65px;">انبار</th>
-                <th style="width: 36px;">نوبت</th>
-                <th style="width: 44px;">بسته‌بندی</th>
-                <th style="width: 44px;">جمع بسته</th>
-                <th style="width: 44px;">جمع فله</th>
-                <th style="width: 78px;">شمارش نهایی</th>
-                <th style="width: 72px;">قیمت واحد (ریال)</th>
-                <th style="width: 86px;">ارزش کل ریالی</th>
+                <th style="width: 74px;">انبار</th>
+                <th style="width: 34px;">نوبت</th>
+                <th style="width: 46px;">بسته‌بندی</th>
+                <th style="width: 48px;">جمع بسته</th>
+                <th style="width: 48px;">جمع فله</th>
+                <th style="width: 82px;">شمارش نهایی</th>
+                <th style="width: 74px;">قیمت واحد (ریال)</th>
+                <th style="width: 90px;">ارزش کل ریالی</th>
               </tr>
             </thead>
             <tbody>
               ${rowsHtml}
               <tr class="total-row">
-                <td colspan="7" style="text-align: right; padding: 5px 8px; font-weight: 900; color: #0f172a; font-size: 9pt;">
+                <td colspan="8" style="text-align: right; padding: 5px 8px; font-weight: 900; color: #0f172a; font-size: 9pt;">
                   جمع کل ارقام تجمیعی کارنامه انبارگردانی (${toPersianDigits(itemsToPrint.length)} قلم کالا):
                 </td>
                 <td style="text-align: center; font-weight: 900; font-size: 9pt; color: #0f172a;">${toPersianDigits(totalPackagesSum)}</td>
@@ -2449,19 +2774,306 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             <tr>
               <td>
                 <div style="font-weight: 800; color: #0f172a;">۱. ناظر امین و مجری انبارگردانی</div>
-                <div style="margin-top: 18px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
               </td>
               <td>
                 <div style="font-weight: 800; color: #0f172a;">۲. مدیریت انبارها و لجستیک گاتان</div>
-                <div style="margin-top: 18px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
               </td>
               <td>
                 <div style="font-weight: 800; color: #0f172a;">۳. مدیر مالی و تاییدکننده نهایی</div>
-                <div style="margin-top: 18px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 8pt;">امضاء و تاریخ: .................................</div>
               </td>
             </tr>
           </table>
 
+          <script>
+            function triggerPrint() {
+              if (document.fonts && document.fonts.ready) {
+                document.fonts.ready.then(function() {
+                  setTimeout(function() {
+                    window.focus();
+                    window.print();
+                  }, 250);
+                });
+              } else {
+                setTimeout(function() {
+                  window.focus();
+                  window.print();
+                }, 400);
+              }
+            }
+            if (document.readyState === 'complete') {
+              triggerPrint();
+            } else {
+              window.addEventListener('load', triggerPrint);
+            }
+          </script>
+        </body>
+      </html>
+    `;
+
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(printHtml);
+      frameDoc.close();
+
+      setTimeout(() => {
+        if (document.body.contains(printFrame)) {
+          document.body.removeChild(printFrame);
+        }
+      }, 60000);
+    }
+  };
+
+  // Blank A4 Physical Inventory Sheet Print — Grouped by Warehouse for Manual Paper Counting with Scannable System Barcodes
+  const printBlankStockCountSheet = (warehouseOverride?: string) => {
+    const targetWarehouse = warehouseOverride !== undefined ? warehouseOverride : blankPrintWarehouse;
+    const periodObj = db.periods.find(p => p.id === activePeriodId);
+    const periodName = periodObj ? periodObj.name : 'دوره جاری';
+    const auditObj = db.stockCountAudits.find(a => a.id === selectedAuditId);
+    const auditTitle = auditObj ? auditObj.title : 'فرم خام شمارش فیزیکی انبارگردانی';
+    const auditDateStr = auditObj?.date || getTodayJalali();
+    const todayJalali = getTodayJalali();
+    const curTime = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+    const candidateItems = activeItemsList.filter(item => {
+      const wh = (item.warehouse || '').trim();
+      if (targetWarehouse === 'all') return true;
+      if (targetWarehouse === 'none') return !wh;
+      return wh === targetWarehouse;
+    });
+
+    if (candidateItems.length === 0) {
+      alert('هیچ کالای فعالی در انبار انتخاب‌شده برای چاپ فرم خام انبارگردانی یافت نشد.');
+      return;
+    }
+
+    // Group items by warehouse
+    const groupsMap = new Map<string, Item[]>();
+    candidateItems.forEach(item => {
+      const whKey = (item.warehouse || '').trim() || 'فاقد انبار مشخص';
+      const arr = groupsMap.get(whKey) || [];
+      arr.push(item);
+      groupsMap.set(whKey, arr);
+    });
+
+    const orderedWarehouses = Array.from(groupsMap.keys()).sort((a, b) => {
+      if (a === 'فاقد انبار مشخص') return 1;
+      if (b === 'فاقد انبار مشخص') return -1;
+      return a.localeCompare(b, 'fa');
+    });
+
+    const sectionsHtml = orderedWarehouses.map((whName, sectionIdx) => {
+      const whItems = (groupsMap.get(whName) || []).slice().sort((a, b) =>
+        (a.code || '').localeCompare(b.code || '', 'fa', { numeric: true })
+      );
+
+      const rowsHtml = whItems.map((item, idx) => {
+        const sysBarcode = (item.systemBarcode || '').trim();
+        const barcodeSvg = sysBarcode
+          ? generateCode128SvgString(sysBarcode, { height: 24, moduleWidth: 1.15, quietZoneModules: 7, showText: true, fontSize: 7.5, maxWidthPx: 126 })
+          : `<div style="font-size: 7.5pt; color: #94a3b8; padding: 4px 0;">فاقد بارکد سیستمی</div>`;
+        const weightLabel = `${toPersianDigits(roundTo2Decimals(item.weightPerPackage || 1))} <span style="font-size: 7pt; color: #475569;">${item.unit === 'کیلویی' ? 'کیلو' : item.unit || 'واحد'} / ${item.packageType || 'بسته'}</span>`;
+
+        return `
+          <tr>
+            <td style="text-align: center; font-weight: 700; color: #334155;">${toPersianDigits(idx + 1)}</td>
+            <td style="text-align: center; padding: 2px 3px; background: #ffffff !important;">${barcodeSvg}</td>
+            <td style="text-align: center; font-weight: 800; color: #0f172a; font-size: 8.5pt;">${toPersianDigits(item.code || '-')}</td>
+            <td style="text-align: right; font-weight: 800; color: #0f172a; font-size: 8.5pt; line-height: 1.3; padding: 3px 6px;">${item.name}</td>
+            <td style="text-align: center; font-weight: 700; color: #1e293b; font-size: 8pt;">${weightLabel}</td>
+            <td class="write-cell"></td>
+            <td class="write-cell"></td>
+            <td class="write-cell write-total"></td>
+          </tr>
+        `;
+      }).join('');
+
+      return `
+        <section class="warehouse-section ${sectionIdx > 0 ? 'page-break' : ''}">
+          <table class="header-table">
+            <tr>
+              <td style="width: 34%;">
+                <div style="font-size: 11.5pt; font-weight: 900; color: #b91c1c;">کارگاه تولیدی صنعتی گاتان</div>
+                <div style="font-size: 9pt; font-weight: 800; color: #0f172a; margin-top: 1px;">${auditTitle}</div>
+                <div style="font-size: 7.5pt; color: #475569; margin-top: 1px;">دوره مالی: <strong style="color: #0f172a;">${periodName}</strong> | تاریخ انبارگردانی: <strong style="color: #0f172a;">${toPersianDigits(auditDateStr)}</strong></div>
+              </td>
+              <td style="width: 36%; text-align: center;">
+                <div style="font-size: 10.5pt; font-weight: 900; color: #0f172a; border-bottom: 2px solid #0f172a; display: inline-block; padding-bottom: 1px;">فرم خام شمارش فیزیکی انبارگردانی</div>
+                <div style="font-size: 9.5pt; font-weight: 900; color: #1d4ed8; margin-top: 3px; background: #eff6ff !important; border: 1px solid #93c5fd; border-radius: 4px; padding: 1px 8px; display: inline-block;">
+                  انبار: ${whName}
+                </div>
+              </td>
+              <td style="width: 30%; text-align: left;">
+                <div style="font-size: 8pt; color: #475569;">تعداد اقلام این انبار: <strong style="color: #0f172a; font-size: 9pt;">${toPersianDigits(whItems.length)} قلم</strong></div>
+                <div style="font-size: 7.5pt; color: #475569; margin-top: 2px;">تاریخ چاپ: <strong style="color: #0f172a;">${todayJalali} - ${curTime}</strong></div>
+                <div style="font-size: 7.5pt; color: #475569; margin-top: 2px;">شمارشگر: ................................</div>
+              </td>
+            </tr>
+          </table>
+
+          <table class="sheet-table">
+            <thead>
+              <tr>
+                <th style="width: 24px;">ردیف</th>
+                <th style="width: 132px;">بارکد شناسه سیستمی</th>
+                <th style="width: 52px;">کد کالا</th>
+                <th>نام کالا</th>
+                <th style="width: 68px;">وزن بسته</th>
+                <th style="width: 68px;">تعداد بسته کامل</th>
+                <th style="width: 68px;">مقدار جزئی / فله</th>
+                <th style="width: 78px;">مجموع شمارش</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+
+          <table class="sign-table">
+            <tr>
+              <td>
+                <div style="font-weight: 800; color: #0f172a;">۱. مسئول شمارش (${whName})</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 7.5pt;">نام و امضاء: ................................</div>
+              </td>
+              <td>
+                <div style="font-weight: 800; color: #0f172a;">۲. انباردار / تحویل‌گیرنده</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 7.5pt;">نام و امضاء: ................................</div>
+              </td>
+              <td>
+                <div style="font-weight: 800; color: #0f172a;">۳. ناظر و تاییدکننده انبارگردانی</div>
+                <div style="margin-top: 16px; color: #64748b; font-size: 7.5pt;">نام و امضاء: ................................</div>
+              </td>
+            </tr>
+          </table>
+        </section>
+      `;
+    }).join('');
+
+    const printHtml = `
+      <!DOCTYPE html>
+      <html dir="rtl" lang="fa">
+        <head>
+          <meta charset="utf-8">
+          <title>فرم خام انبارگردانی به تفکیک انبار - ${periodName}</title>
+          <link rel="preconnect" href="https://fonts.googleapis.com">
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+          <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&display=swap');
+            @page {
+              size: A4 portrait;
+              margin: 4.5mm 5mm 5mm 5mm;
+            }
+            * {
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+            body {
+              font-family: 'Vazirmatn', 'IRANSans', Tahoma, Arial, sans-serif !important;
+              font-feature-settings: "ss05" 1, "locl" 1, "tnum" 1;
+              font-variant-numeric: tabular-nums;
+              margin: 0;
+              padding: 0;
+              color: #0f172a;
+              background: #ffffff;
+              direction: rtl;
+              text-align: right;
+              font-size: 8.5pt;
+              line-height: 1.25;
+            }
+            .page-break {
+              page-break-before: always;
+              break-before: page;
+            }
+            .header-table {
+              width: 100%;
+              border: 1.5px solid #0f172a;
+              border-collapse: collapse;
+              margin-bottom: 4px;
+              background: #ffffff;
+            }
+            .header-table td {
+              padding: 4px 6px;
+              vertical-align: middle;
+              border: none;
+            }
+            table.sheet-table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: fixed;
+            }
+            table.sheet-table thead {
+              display: table-header-group;
+            }
+            table.sheet-table th {
+              background-color: #e2e8f0 !important;
+              border: 1.2px solid #1e293b;
+              padding: 4px 3px;
+              font-weight: 900;
+              font-size: 8pt;
+              text-align: center;
+              color: #0f172a;
+              line-height: 1.2;
+            }
+            table.sheet-table td {
+              border: 1px solid #64748b;
+              padding: 2.5px 4px;
+              vertical-align: middle;
+              height: 36px;
+              word-wrap: break-word;
+            }
+            table.sheet-table tr {
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
+            table.sheet-table tbody tr:nth-child(even) td:not(.write-cell) {
+              background-color: #f8fafc !important;
+            }
+            td.write-cell {
+              background-color: #ffffff !important;
+              border: 1px solid #334155 !important;
+            }
+            td.write-total {
+              background-color: #fafafa !important;
+              border-right: 1.5px solid #0f172a !important;
+            }
+            .sign-table {
+              width: 100%;
+              border: 1.2px solid #0f172a;
+              margin-top: 5px;
+              border-collapse: collapse;
+              text-align: center;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
+            .sign-table td {
+              width: 33.33%;
+              padding: 4px 5px;
+              border-left: 1px solid #0f172a;
+              height: 40px;
+              vertical-align: top;
+              font-size: 8pt;
+            }
+            .sign-table td:last-child {
+              border-left: none;
+            }
+          </style>
+        </head>
+        <body>
+          ${sectionsHtml}
           <script>
             function triggerPrint() {
               if (document.fonts && document.fonts.ready) {
@@ -2537,15 +3149,20 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   }, [activeCounts, itemMap]);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 text-right" dir="rtl">
+    <div
+      className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right"
+      dir="rtl"
+      onFocusCapture={handleContainerFocusCapture}
+      onMouseUpCapture={handleContainerMouseUpCapture}
+    >
       {/* Tab Controls */}
-      <div className="flex flex-wrap items-center justify-between border-b border-slate-800 pb-4 mb-6 gap-4">
-        <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between border-b border-slate-800 pb-2.5 sm:pb-4 mb-4 sm:mb-6 gap-2 sm:gap-4">
+        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar gap-1.5 sm:gap-2 pb-0.5 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
           <button
             id="tab-btn-items"
             type="button"
             onClick={() => setActiveTab('items')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'items' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2557,7 +3174,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             id="tab-btn-categories"
             type="button"
             onClick={() => setActiveTab('categories')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'categories' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2569,7 +3186,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             id="tab-btn-units"
             type="button"
             onClick={() => setActiveTab('units')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'units' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2581,7 +3198,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             id="tab-btn-purchases"
             type="button"
             onClick={() => setActiveTab('purchases')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'purchases' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2593,7 +3210,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             id="tab-btn-inventory"
             type="button"
             onClick={() => setActiveTab('inventory')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'inventory' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2605,7 +3222,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             id="tab-btn-warehouses"
             type="button"
             onClick={() => setActiveTab('warehouses')}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
               activeTab === 'warehouses' 
                 ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
                 : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
@@ -2615,7 +3232,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           </button>
         </div>
 
-        <div className="text-xs bg-rose-950/20 text-rose-400 px-3.5 py-2 rounded-xl border border-rose-500/20 font-bold">
+        <div className="hidden sm:block text-xs bg-rose-950/20 text-rose-400 px-3.5 py-2 rounded-xl border border-rose-500/20 font-bold">
           دوره فعال: <strong className="font-semibold text-rose-300">{db.periods.find(p => p.id === activePeriodId)?.name}</strong>
         </div>
       </div>
@@ -2782,6 +3399,38 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   />
                 </div>
 
+                {/* 7b. System Barcode */}
+                <div>
+                  <div className="flex items-center justify-between gap-1 mb-1.5">
+                    <label htmlFor="item-sysbarcode-input" className="block text-[11px] font-bold text-sky-400">بارکد شناسه سیستمی</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextSys = generateNextSystemBarcode(db.items);
+                        if (editingItem) setEditingItem({ ...editingItem, systemBarcode: nextSys });
+                        else setNewItem({ ...newItem, systemBarcode: nextSys });
+                      }}
+                      className="text-[10px] font-bold text-sky-400 hover:text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/25 px-1.5 py-0.5 rounded-md cursor-pointer transition-colors"
+                      title="تولید خودکار بارکد شناسه سیستمی یکتا"
+                    >
+                      تولید خودکار
+                    </button>
+                  </div>
+                  <input
+                    id="item-sysbarcode-input"
+                    type="text"
+                    dir="ltr"
+                    className="w-full px-3.5 py-2 text-xs bg-zinc-950 border border-sky-500/30 rounded-xl text-sky-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 hover:border-sky-500/50 transition-all font-mono text-left"
+                    value={(editingItem ? editingItem.systemBarcode : newItem.systemBarcode) || ''}
+                    onChange={(e) => {
+                      const val = toEnglishDigits(e.target.value).trim();
+                      if (editingItem) setEditingItem({ ...editingItem, systemBarcode: val });
+                      else setNewItem({ ...newItem, systemBarcode: val });
+                    }}
+                    placeholder="90000001"
+                  />
+                </div>
+
                 {/* 8. Package Type */}
                 <div>
                   <label htmlFor="item-pkg-select" className="block text-[11px] font-bold text-zinc-400 mb-1.5">نوع بسته‌بندی تحویلی</label>
@@ -2929,7 +3578,23 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     </select>
                   </div>
 
-                  {/* View Mode Toggle: List vs Grouped */}
+                  {/* Warehouse Filter Dropdown */}
+                  <div className="w-full sm:w-auto">
+                    <select
+                      id="item-warehouse-filter-select"
+                      value={itemWarehouseFilter}
+                      onChange={(e) => setItemWarehouseFilter(e.target.value)}
+                      className="w-full bg-zinc-950 border border-zinc-800 text-sky-200 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                    >
+                      <option value="all">همه انبارها</option>
+                      {itemWarehouseOptions.map(wh => (
+                        <option key={wh} value={wh}>{wh}</option>
+                      ))}
+                      <option value="none">فاقد انبار مشخص</option>
+                    </select>
+                  </div>
+
+                  {/* View Mode Toggle: List vs Category Grouped vs Warehouse Grouped */}
                   <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-zinc-800 text-xs font-bold shadow-inner">
                     <button
                       type="button"
@@ -2947,10 +3612,36 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     >
                       تفکیک دسته‌بندی
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setItemViewGroupMode('warehouse')}
+                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${itemViewGroupMode === 'warehouse' ? 'bg-sky-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'}`}
+                      title="دسته‌بندی و نمایش کالاها به تفکیک انبار"
+                    >
+                      تفکیک انبار
+                    </button>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={handleAssignMissingSystemBarcodes}
+                    className={`flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all border ${
+                      itemsMissingSystemBarcodeCount > 0
+                        ? 'bg-sky-600 hover:bg-sky-500 text-white border-sky-500 shadow-lg shadow-sky-600/15'
+                        : 'bg-sky-950/30 text-sky-400 border-sky-800/60 hover:bg-sky-900/40'
+                    }`}
+                    title="تخصیص خودکار بارکد شناسه سیستمی یکتا به تمامی کالاهایی که هنوز بارکد سیستمی ندارند"
+                  >
+                    <ScanLine className="h-4 w-4" />
+                    <span>تخصیص بارکد سیستمی</span>
+                    {itemsMissingSystemBarcodeCount > 0 && (
+                      <span className="bg-white/20 text-white text-[10px] px-1.5 py-0.5 rounded-md font-mono">
+                        {toPersianDigits(itemsMissingSystemBarcodeCount)}
+                      </span>
+                    )}
+                  </button>
                   <button
                     onClick={downloadSampleItemsCSV}
                     className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 border border-zinc-700 rounded-xl text-xs font-bold cursor-pointer transition-all"
@@ -3010,6 +3701,111 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   )}
                 </div>
               </div>
+
+              {/* Feedback Toast Banner for System Barcodes & Bulk Edits */}
+              {bulkEditFeedback && (
+                <div className="bg-emerald-950/40 border border-emerald-500/35 text-emerald-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                    <span>{bulkEditFeedback}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBulkEditFeedback('')}
+                    className="text-emerald-400 hover:text-white cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Bulk Edit Panel when items are selected */}
+              {selectedItemIds.length > 0 && (
+                <div className="bg-sky-950/30 border border-sky-500/40 p-4 rounded-2xl shadow-lg space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-500/20 pb-2.5">
+                    <div className="flex items-center gap-2 text-sky-300 text-xs font-black">
+                      <CheckSquare className="h-4 w-4 text-sky-400" />
+                      <span>ویرایش دسته‌ای کالاهای انتخاب‌شده ({toPersianDigits(selectedItemIds.length)} کالا)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {searchedItems.length > selectedItemIds.length && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedItemIds(searchedItems.map(i => i.id))}
+                          className="text-[11px] font-bold text-sky-300 hover:text-white bg-sky-900/40 hover:bg-sky-800/60 border border-sky-500/30 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                        >
+                          انتخاب همه نتایج فیلترشده ({toPersianDigits(searchedItems.length)})
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedItemIds([])}
+                        className="text-[11px] font-bold text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-700 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                      >
+                        لغو انتخاب
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر انبار کالاهای انتخابی</label>
+                      <select
+                        value={bulkEditWarehouse}
+                        onChange={(e) => setBulkEditWarehouse(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                      >
+                        <option value="__keep__">-- بدون تغییر انبار --</option>
+                        <option value="__clear__">حذف انبار (فاقد انبار)</option>
+                        {itemWarehouseOptions.map(wh => (
+                          <option key={wh} value={wh}>{wh}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر دسته‌بندی کالاهای انتخابی</label>
+                      <select
+                        value={bulkEditCategoryId}
+                        onChange={(e) => setBulkEditCategoryId(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                      >
+                        <option value="__keep__">-- بدون تغییر دسته‌بندی --</option>
+                        {categories.map(cat => (
+                          <option key={cat.id} value={cat.id}>{cat.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر واحد سنجش کالاهای انتخابی</label>
+                      <select
+                        value={bulkEditUnit}
+                        onChange={(e) => setBulkEditUnit(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                      >
+                        <option value="__keep__">-- بدون تغییر واحد سنجش --</option>
+                        {unitsOfMeasurementList.map(u => (
+                          <option key={u.id} value={u.name}>{u.name} {u.symbol ? `(${u.symbol})` : ''}</option>
+                        ))}
+                        {!unitsOfMeasurementList.some(u => u.name === 'کیلویی') && <option value="کیلویی">کیلویی</option>}
+                        {!unitsOfMeasurementList.some(u => u.name === 'عددی') && <option value="عددی">عددی</option>}
+                      </select>
+                    </div>
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={handleApplyBulkEditItems}
+                        className="w-full bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold py-2.5 px-4 rounded-xl shadow-lg shadow-sky-600/20 flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                      >
+                        <Save className="h-4 w-4" />
+                        <span>اعمال تغییرات دسته‌ای</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {unmatchedCatalogPriceItems.length > 0 && (
                 <div className="bg-amber-950/25 border-2 border-amber-500/30 p-5 rounded-2xl space-y-4 shadow-xl animate-fade-in my-4">
@@ -3195,6 +3991,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                           />
                         </th>
                         <th className="px-3.5 py-3 text-2xs font-bold tracking-wider text-zinc-400">کد کالا</th>
+                        <th className="px-3.5 py-3 text-2xs font-bold tracking-wider text-sky-400">بارکد سیستمی</th>
                         <th className="px-3.5 py-3 text-2xs font-bold tracking-wider text-zinc-400">کد معین</th>
                         <th className="px-3.5 py-3 text-2xs font-bold tracking-wider text-zinc-400">شرح شناسنامه کالا</th>
                         <th className="px-3.5 py-3 text-2xs font-bold tracking-wider text-zinc-400">گروه کالا</th>
@@ -3208,15 +4005,14 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     <tbody className="divide-y divide-zinc-900/40 text-xs text-zinc-300">
                       {searchedItems.length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="px-4 py-12 text-center text-zinc-500">
+                          <td colSpan={11} className="px-4 py-12 text-center text-zinc-500">
                             <AlertTriangle className="h-8 w-8 mx-auto text-zinc-650 mb-2.5 opacity-40" />
-                            هیچ ردیف کالایی منطبق یافت نشد. از فرم سمت راست محصول یا ماده خام جدیدی بیافزایید.
+                            هیچ ردیف کالایی منطبق یافت نشد. از فرم بالا محصول یا ماده خام جدیدی بیافزایید.
                           </td>
                         </tr>
                       ) : itemViewGroupMode === 'grouped' ? (
                         /* Grouped View by Category */
                         (() => {
-                          // Group paginated items by categoryId
                           const categoryGroupMap: Record<string, Item[]> = {};
                           paginatedSearchedItems.forEach(item => {
                             const catKey = item.categoryId || 'uncategorized';
@@ -3224,7 +4020,6 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             categoryGroupMap[catKey].push(item);
                           });
 
-                          // Get present categories
                           const sortedCatKeys = Object.keys(categoryGroupMap);
 
                           return sortedCatKeys.map(catKey => {
@@ -3232,14 +4027,29 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             const catName = catObj ? catObj.name : (catKey === 'uncategorized' ? 'بدون دسته‌بندی' : 'سایر');
                             const groupItems = categoryGroupMap[catKey] || [];
                             const totalPrice = groupItems.reduce((sum, item) => sum + (item.price || 0), 0);
+                            const allGroupSelected = groupItems.length > 0 && groupItems.every(i => selectedItemIds.includes(i.id));
 
                             return (
                               <React.Fragment key={`cat-group-section-${catKey}`}>
                                 {/* Category Section Header Row */}
                                 <tr className="bg-rose-950/25 border-y border-rose-900/40">
-                                  <td colSpan={10} className="px-4 py-2.5 bg-gradient-to-r from-rose-950/40 via-zinc-900/80 to-zinc-950">
+                                  <td colSpan={11} className="px-4 py-2.5 bg-gradient-to-r from-rose-950/40 via-zinc-900/80 to-zinc-950">
                                     <div className="flex items-center justify-between text-xs font-black">
-                                      <div className="flex items-center gap-2 text-rose-300">
+                                      <div className="flex items-center gap-2.5 text-rose-300">
+                                        <input
+                                          type="checkbox"
+                                          className="rounded border-zinc-700 text-rose-600 focus:ring-rose-500/25 h-3.5 w-3.5 bg-zinc-950 cursor-pointer"
+                                          checked={allGroupSelected}
+                                          onChange={(e) => {
+                                            const ids = groupItems.map(g => g.id);
+                                            if (e.target.checked) {
+                                              setSelectedItemIds(prev => Array.from(new Set([...prev, ...ids])));
+                                            } else {
+                                              setSelectedItemIds(prev => prev.filter(id => !ids.includes(id)));
+                                            }
+                                          }}
+                                          title={`انتخاب همه کالاهای گروه ${catName}`}
+                                        />
                                         <Folder className="h-4 w-4 text-rose-500 fill-rose-500/20" />
                                         <span className="text-sm font-extrabold text-white">{catName}</span>
                                         <span className="bg-rose-900/60 text-rose-200 border border-rose-500/30 text-[11px] px-2.5 py-0.5 rounded-full font-bold">
@@ -3255,7 +4065,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
                                 {/* Item rows under this category */}
                                 {groupItems.map((i, iIdx) => (
-                                  <tr key={`${i.id}-${iIdx}`} className="hover:bg-zinc-900/20 transition-all">
+                                  <tr key={`${i.id}-${iIdx}`} className={`hover:bg-zinc-900/20 transition-all ${selectedItemIds.includes(i.id) ? 'bg-sky-950/20' : ''}`}>
                                     <td className="px-3.5 py-4 text-center">
                                       <input
                                         type="checkbox"
@@ -3271,6 +4081,13 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                                       />
                                     </td>
                                     <td className="px-3.5 py-4 font-mono font-black text-rose-500">{i.code}</td>
+                                    <td className="px-3.5 py-4 font-mono text-[11px]">
+                                      {i.systemBarcode ? (
+                                        <span className="px-2 py-0.5 rounded-md bg-sky-950/50 border border-sky-500/30 text-sky-300 font-bold">{toPersianDigits(i.systemBarcode)}</span>
+                                      ) : (
+                                        <span className="text-zinc-600 text-[10px]">فاقد بارکد</span>
+                                      )}
+                                    </td>
                                     <td className="px-3.5 py-4 font-mono text-zinc-500">{i.accountId || '-'}</td>
                                     <td className="px-3.5 py-4 font-bold text-zinc-100" style={{ color: '#fafafa' }}>{i.name}</td>
                                     <td className="px-3.5 py-4 text-zinc-400 text-xs">
@@ -3317,10 +4134,136 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             );
                           });
                         })()
+                      ) : itemViewGroupMode === 'warehouse' ? (
+                        /* Grouped View by Warehouse */
+                        (() => {
+                          const warehouseGroupMap: Record<string, Item[]> = {};
+                          paginatedSearchedItems.forEach(item => {
+                            const whKey = (item.warehouse || '').trim() || '__no_warehouse__';
+                            if (!warehouseGroupMap[whKey]) warehouseGroupMap[whKey] = [];
+                            warehouseGroupMap[whKey].push(item);
+                          });
+
+                          const sortedWhKeys = Object.keys(warehouseGroupMap).sort((a, b) => {
+                            if (a === '__no_warehouse__') return 1;
+                            if (b === '__no_warehouse__') return -1;
+                            return a.localeCompare(b, 'fa');
+                          });
+
+                          return sortedWhKeys.map(whKey => {
+                            const whName = whKey === '__no_warehouse__' ? 'فاقد انبار مشخص' : whKey;
+                            const groupItems = warehouseGroupMap[whKey] || [];
+                            const totalPrice = groupItems.reduce((sum, item) => sum + (item.price || 0), 0);
+                            const allGroupSelected = groupItems.length > 0 && groupItems.every(i => selectedItemIds.includes(i.id));
+
+                            return (
+                              <React.Fragment key={`wh-group-section-${whKey}`}>
+                                {/* Warehouse Section Header Row */}
+                                <tr className="bg-sky-950/25 border-y border-sky-900/40">
+                                  <td colSpan={11} className="px-4 py-2.5 bg-gradient-to-r from-sky-950/45 via-zinc-900/80 to-zinc-950">
+                                    <div className="flex items-center justify-between text-xs font-black">
+                                      <div className="flex items-center gap-2.5 text-sky-300">
+                                        <input
+                                          type="checkbox"
+                                          className="rounded border-zinc-700 text-sky-600 focus:ring-sky-500/25 h-3.5 w-3.5 bg-zinc-950 cursor-pointer"
+                                          checked={allGroupSelected}
+                                          onChange={(e) => {
+                                            const ids = groupItems.map(g => g.id);
+                                            if (e.target.checked) {
+                                              setSelectedItemIds(prev => Array.from(new Set([...prev, ...ids])));
+                                            } else {
+                                              setSelectedItemIds(prev => prev.filter(id => !ids.includes(id)));
+                                            }
+                                          }}
+                                          title={`انتخاب همه کالاهای انبار ${whName}`}
+                                        />
+                                        <Building2 className="h-4 w-4 text-sky-400" />
+                                        <span className="text-sm font-extrabold text-white">{whName}</span>
+                                        <span className="bg-sky-900/60 text-sky-200 border border-sky-500/30 text-[11px] px-2.5 py-0.5 rounded-full font-bold">
+                                          {toPersianDigits(groupItems.length)} کالا
+                                        </span>
+                                      </div>
+                                      <div className="text-zinc-400 text-xs font-mono">
+                                        مجموع قیمت پایه: <span className="font-bold text-sky-300">{formatWithCommas(totalPrice)}</span> ریال
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+
+                                {groupItems.map((i, iIdx) => (
+                                  <tr key={`${i.id}-${iIdx}`} className={`hover:bg-zinc-900/20 transition-all ${selectedItemIds.includes(i.id) ? 'bg-sky-950/20' : ''}`}>
+                                    <td className="px-3.5 py-4 text-center">
+                                      <input
+                                        type="checkbox"
+                                        className="rounded border-zinc-800 text-sky-600 focus:ring-sky-500/25 h-3.5 w-3.5 bg-zinc-950 cursor-pointer"
+                                        checked={selectedItemIds.includes(i.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setSelectedItemIds(prev => [...prev, i.id]);
+                                          } else {
+                                            setSelectedItemIds(prev => prev.filter(id => id !== i.id));
+                                          }
+                                        }}
+                                      />
+                                    </td>
+                                    <td className="px-3.5 py-4 font-mono font-black text-rose-500">{i.code}</td>
+                                    <td className="px-3.5 py-4 font-mono text-[11px]">
+                                      {i.systemBarcode ? (
+                                        <span className="px-2 py-0.5 rounded-md bg-sky-950/50 border border-sky-500/30 text-sky-300 font-bold">{toPersianDigits(i.systemBarcode)}</span>
+                                      ) : (
+                                        <span className="text-zinc-600 text-[10px]">فاقد بارکد</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3.5 py-4 font-mono text-zinc-500">{i.accountId || '-'}</td>
+                                    <td className="px-3.5 py-4 font-bold text-zinc-100" style={{ color: '#fafafa' }}>{i.name}</td>
+                                    <td className="px-3.5 py-4 text-zinc-400 text-xs">
+                                      <span className="bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-full text-zinc-300 font-medium text-[10px]">
+                                        {categoryMap[i.categoryId] || 'مشترک'}
+                                      </span>
+                                    </td>
+                                    <td className="px-3.5 py-4 text-sky-300 text-xs font-bold">{i.warehouse || '-'}</td>
+                                    <td className="px-3.5 py-4 text-xs text-zinc-400">{i.unit} <span className="text-zinc-500">({i.packageType})</span></td>
+                                    <td className="px-3.5 py-4 text-left font-mono font-extrabold text-[#fafafa]">{formatWithCommas(i.price)}</td>
+                                    <td className="px-3.5 py-4 text-center">
+                                      {i.isActive ? (
+                                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-950/30 border border-emerald-900/50 px-2.5 py-0.5 rounded-full font-bold">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                          فعال
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 text-[10px] text-zinc-400 bg-zinc-900 border border-zinc-800 px-2.5 py-0.5 rounded-full">
+                                          غیرفعال
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="px-3.5 py-4 text-center">
+                                      <div className="flex justify-center gap-2">
+                                        <button
+                                          onClick={() => setEditingItem(i)}
+                                          className="p-1 px-2 border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-all cursor-pointer"
+                                          title="ویرایش کالا"
+                                        >
+                                          <Edit2 className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => deleteItem(i.id)}
+                                          className="p-1 px-2 border border-rose-950/40 bg-rose-950/20 hover:bg-rose-900/35 text-rose-450 rounded-lg transition-all cursor-pointer"
+                                          title="حذف کالا"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </React.Fragment>
+                            );
+                          });
+                        })()
                       ) : (
                         /* Flat View */
                         paginatedSearchedItems.map((i, iIdx) => (
-                          <tr key={`${i.id}-${iIdx}`} className="hover:bg-zinc-900/20 transition-all">
+                          <tr key={`${i.id}-${iIdx}`} className={`hover:bg-zinc-900/20 transition-all ${selectedItemIds.includes(i.id) ? 'bg-sky-950/20' : ''}`}>
                             <td className="px-3.5 py-4.5 text-center">
                               <input
                                 type="checkbox"
@@ -3336,6 +4279,13 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                               />
                             </td>
                             <td className="px-3.5 py-4.5 font-mono font-black text-rose-500">{i.code}</td>
+                            <td className="px-3.5 py-4.5 font-mono text-[11px]">
+                              {i.systemBarcode ? (
+                                <span className="px-2 py-0.5 rounded-md bg-sky-950/50 border border-sky-500/30 text-sky-300 font-bold">{toPersianDigits(i.systemBarcode)}</span>
+                              ) : (
+                                <span className="text-zinc-600 text-[10px]">فاقد بارکد</span>
+                              )}
+                            </td>
                             <td className="px-3.5 py-4.5 font-mono text-zinc-500">{i.accountId || '-'}</td>
                             <td className="px-3.5 py-4.5 font-bold text-zinc-105" style={{ color: '#fafafa' }}>{i.name}</td>
                             <td className="px-3.5 py-4.5 text-zinc-400 text-xs">
@@ -3726,7 +4676,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       {/* ==================== TAB 3: REGISTER PURCHASE FACTOR ==================== */}
       {activeTab === 'purchases' && (
         <div className="space-y-6 animate-fade-in">
-          <div className="bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-6 rounded-2xl space-y-4 shadow-xl">
+          <div className="relative z-20 bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-6 rounded-2xl space-y-4 shadow-xl">
             <h3 className="text-xs font-black text-zinc-100 border-b border-zinc-800 pb-3 flex items-center gap-1.5">
               <Plus className="h-4.5 w-4.5 text-rose-500" />
               ثبت و الحاق فاکتور خرید تدارکات و مواد اولیه
@@ -3749,14 +4699,13 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               </div>
 
               <div>
-                <label htmlFor="purch-date-input" className="block text-[11px] font-bold text-zinc-400 mb-1.5">تاریخ ثبت فاکتور تدارکات (شمسی)</label>
-                <input
+                <ShamsiDatePicker
                   id="purch-date-input"
-                  type="text"
-                  className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs font-mono placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                  label="تاریخ ثبت فاکتور تدارکات (انتخابگر شمسی)"
                   value={invoiceDate}
-                  onChange={(e) => setInvoiceDate(e.target.value)}
-                  placeholder="۱۴۰۵/۰۱/۱۵"
+                  onChange={setInvoiceDate}
+                  labelClassName="block text-[11px] font-bold text-zinc-400"
+                  buttonClassName="w-full flex items-center justify-between px-3.5 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs font-bold cursor-pointer hover:bg-zinc-900 transition-all focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                 />
               </div>
 
@@ -4147,7 +5096,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       {activeTab === 'inventory' && (
         <div className="space-y-6 animate-fade-in">
           {/* Auditing Setup Panel - Full Width on Top */}
-          <div className="bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-5 sm:p-6 rounded-2xl shadow-xl space-y-4">
+          <div className="relative z-20 bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-5 sm:p-6 rounded-2xl shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-zinc-800 pb-3 gap-2">
               <h3 className="text-sm font-extrabold text-[#fafafa] flex items-center gap-2">
                 <Calendar className="h-4.5 w-4.5 text-rose-500" />
@@ -4206,7 +5155,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   <span>ایجاد انبارگردانی جدید برای این دوره مالی:</span>
                 </h4>
                 <form onSubmit={createNewAudit} className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                  <div className="sm:col-span-6">
+                  <div className="sm:col-span-5">
                     <label htmlFor="audit-title-input" className="block text-[10px] font-bold text-zinc-400 mb-1">
                       عنوان انبارگردانی <span className="text-rose-500">*</span>
                     </label>
@@ -4220,18 +5169,19 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                       required
                     />
                   </div>
-                  <div className="sm:col-span-3">
-                    <label htmlFor="audit-date-input" className="block text-[10px] font-bold text-zinc-400 mb-1">
-                      تاریخ ثبتی <span className="text-rose-500">*</span>
-                    </label>
-                    <input
+                  <div className="sm:col-span-4">
+                    <ShamsiDatePicker
                       id="audit-date-input"
-                      type="text"
-                      className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-rose-500/20 placeholder-zinc-650 text-center"
-                      placeholder="۱۴۰۴/۱۲/۲۸"
+                      label={
+                        <>
+                          تاریخ ثبتی (انتخابگر شمسی) <span className="text-rose-500">*</span>
+                        </>
+                      }
                       value={newAuditDate}
-                      onChange={(e) => setNewAuditDate(e.target.value)}
-                      required
+                      onChange={setNewAuditDate}
+                      popoverAlign="left"
+                      labelClassName="block text-[10px] font-bold text-zinc-400"
+                      buttonClassName="w-full flex items-center justify-between px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 text-xs font-bold cursor-pointer hover:bg-zinc-900 transition-all focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                     />
                   </div>
                   <div className="sm:col-span-3">
@@ -4244,6 +5194,44 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+
+            {/* Blank Physical Inventory Sheet Print Panel by Warehouse */}
+            <div className="bg-sky-950/25 border border-sky-500/30 p-3.5 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-sky-500/15 border border-sky-500/30 rounded-xl text-sky-400 shrink-0">
+                  <Printer className="h-4.5 w-4.5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-extrabold text-sky-200">
+                    چاپ فرم خام انبارگردانی فیزیکی به تفکیک انبار (A4 بهینه با بارکد شناسه سیستمی)
+                  </h4>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    جهت تکمیل کاغذی توسط تیم شمارش (شامل بارکد سیستمی قابل اسکن، کد و نام کالا، وزن بسته و ستون‌های خالی شمارش)
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+                <select
+                  value={blankPrintWarehouse}
+                  onChange={(e) => setBlankPrintWarehouse(e.target.value)}
+                  className="flex-1 md:flex-initial px-3 py-2 bg-zinc-950 border border-sky-500/30 rounded-xl text-xs text-sky-100 font-bold focus:outline-none focus:border-sky-400 cursor-pointer"
+                >
+                  <option value="all">همه انبارها (هر انبار صفحه مجزا)</option>
+                  {itemWarehouseOptions.map(wh => (
+                    <option key={wh} value={wh}>انبار: {wh}</option>
+                  ))}
+                  <option value="none">کالاهای فاقد انبار مشخص</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => printBlankStockCountSheet()}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl shadow-md shadow-sky-600/20 flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>چاپ فرم خام انبارگردانی</span>
+                </button>
               </div>
             </div>
           </div>
@@ -4267,6 +5255,75 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                   </div>
 
                   <form id="stock-count-form-card" onSubmit={handleAddOrUpdateCount} className={`p-5 rounded-2xl border transition-all ${editingCountId ? 'bg-amber-950/20 border-amber-500/40 ring-1 ring-amber-500/30' : 'bg-zinc-950/40 border-zinc-850'}`}>
+                    {/* Auto-focused Barcode Scanner Search Bar (fully automatic without needing a button) */}
+                    <div className="mb-4 bg-sky-950/25 border border-sky-500/35 p-3.5 rounded-xl space-y-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                        <label htmlFor="cnt-barcode-scanner-input" className="text-xs font-extrabold text-sky-300 flex items-center gap-1.5">
+                          <ScanLine className="h-4 w-4 text-sky-400" />
+                          <span>جستجو و انتخاب سریع با بارکدخوان (بارکد شناسه سیستمی یا بارکد کالا)</span>
+                        </label>
+                        <span className="text-[10px] text-sky-400/80 font-medium">
+                          انتخاب خودکار بلافاصله پس از ورود یا اسکن بارکد
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <ScanLine className="h-4 w-4 text-sky-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          ref={barcodeScanInputRef}
+                          id="cnt-barcode-scanner-input"
+                          type="text"
+                          dir="ltr"
+                          autoComplete="off"
+                          value={barcodeScanValue}
+                          onChange={(e) => handleBarcodeInputChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (barcodeScanValue.trim()) {
+                                handleBarcodeScanSubmit();
+                              }
+                            }
+                          }}
+                          placeholder="بارکد شناسه سیستمی (مثلاً 90000001) یا بارکد کالا را اسکن یا وارد نمایید..."
+                          className="w-full pr-9 pl-9 py-2.5 bg-zinc-950 border border-sky-500/40 focus:border-sky-400 focus:ring-2 focus:ring-sky-500/25 rounded-xl text-sky-100 text-xs font-mono text-left placeholder:text-right placeholder:text-zinc-500 focus:outline-none transition-all"
+                        />
+                        {barcodeScanValue && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (barcodeScanDebounceRef.current) {
+                                window.clearTimeout(barcodeScanDebounceRef.current);
+                                barcodeScanDebounceRef.current = null;
+                              }
+                              setBarcodeScanValue('');
+                              setBarcodeScanFeedback(null);
+                              focusBarcodeScannerInput();
+                            }}
+                            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 p-1 cursor-pointer"
+                            title="پاک کردن بارکد"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      {barcodeScanFeedback && (
+                        <div
+                          className={`text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 ${
+                            barcodeScanFeedback.type === 'success'
+                              ? 'bg-emerald-950/50 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-rose-950/50 text-rose-300 border border-rose-500/30'
+                          }`}
+                        >
+                          {barcodeScanFeedback.type === 'success' ? (
+                            <CheckCircle className="h-3.5 w-3.5 shrink-0" />
+                          ) : (
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <span>{barcodeScanFeedback.text}</span>
+                        </div>
+                      )}
+                    </div>
+
                     {/* Notice banner when editing an existing count */}
                     {editingCountId && (
                       <div className="mb-4 bg-amber-500/15 border border-amber-500/30 p-3 rounded-xl flex items-center justify-between flex-wrap gap-2 text-amber-300 text-xs font-bold">
@@ -4285,22 +5342,51 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-                      {/* Item Selector */}
-                      <div className="sm:col-span-2 text-zinc-100">
-                        <label htmlFor="cnt-item-select" className="block text-[11px] font-bold text-zinc-400 mb-1.5">
-                          انتخاب کالا / ماده اولیه جهت شمارش (امکان ثبت مکرر و چندباره فراهم است)
-                        </label>
-                        <SearchableSelect
-                          id="cnt-item-select"
-                          value={countItemId}
-                          onChange={(val) => setCountItemId(val)}
-                          options={activeItemsList.map(i => ({
-                            value: i.id,
-                            label: `${i.code} | ${i.name} ${i.accountId ? `(${i.accountId})` : ''}`
-                          }))}
-                          placeholder="-- جستجو در نام، کد کالا یا کد حسابداری جهت شمارش --"
-                        />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-start">
+                      {/* Item Selector + Compact Item Specs & Edit Button Directly Underneath */}
+                      <div className="sm:col-span-2 text-zinc-100 space-y-2">
+                        <div>
+                          <label htmlFor="cnt-item-select" className="block text-[11px] font-bold text-zinc-400 mb-1.5">
+                            انتخاب کالا / ماده اولیه جهت شمارش (امکان ثبت مکرر و چندباره فراهم است)
+                          </label>
+                          <SearchableSelect
+                            id="cnt-item-select"
+                            value={countItemId}
+                            onChange={(val) => setCountItemId(val)}
+                            options={activeItemsList.map(i => ({
+                              value: i.id,
+                              label: `${i.code} | ${i.name}${i.systemBarcode ? ` [بارکد: ${i.systemBarcode}]` : ''}${i.accountId ? ` (${i.accountId})` : ''}`
+                            }))}
+                            placeholder="-- جستجو در نام، کد کالا، بارکد سیستمی یا کد حسابداری --"
+                          />
+                        </div>
+
+                        {/* Compact Selected Item Info + Small Edit Button right under the item combo box */}
+                        {selectedCountItemData && (
+                          <div className="bg-zinc-950/80 border border-zinc-800/90 px-2.5 py-2 rounded-xl flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 text-[10.5px] text-zinc-400">
+                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono">
+                              <span>کد: <strong className="text-zinc-200">{selectedCountItemData.code}</strong></span>
+                              <span className="text-zinc-700">|</span>
+                              <span>واحد: <strong className="text-zinc-200">{selectedCountItemData.unit}</strong></span>
+                              <span className="text-zinc-700">|</span>
+                              <span>بسته: <strong className="text-zinc-200">{selectedCountItemData.packageType}</strong> ({toPersianDigits(selectedCountItemData.qtyPerPackage)})</span>
+                              <span className="text-zinc-700">|</span>
+                              <span>وزن بسته: <strong className="text-sky-300">{toPersianDigits(selectedCountItemData.weightPerPackage)} کیلو</strong></span>
+                              <span className="text-zinc-700">|</span>
+                              <span>فی: <strong className="text-emerald-400">{formatWithCommas(selectedCountItemData.price)} ریال</strong></span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => openQuickEditItem(selectedCountItemData)}
+                              className="px-2 py-1 bg-zinc-900 hover:bg-rose-950/50 text-rose-400 hover:text-rose-300 border border-zinc-700/80 hover:border-rose-500/60 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shrink-0"
+                              title="ویرایش سریع قیمت، بسته‌بندی، نام و مشخصات کالا"
+                            >
+                              <Edit3 className="h-3 w-3" />
+                              <span>ویرایش کالا</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {/* Package Count */}
@@ -4309,6 +5395,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                           تعداد بسته کامل ({selectedCountItemData?.packageType || 'کارتن'})
                         </label>
                         <input
+                          ref={countPacksInputRef}
                           id="cnt-packs"
                           type="number"
                           onFocus={handleFocus}
@@ -4351,37 +5438,39 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                         />
                       </div>
 
-                      {/* Selected Item Master Info and Quick Edit Button */}
+                      {/* Separated Summary Cards: Total Counted Volume & Total Rial Valuation */}
                       {selectedCountItemData && (
-                        <div className="sm:col-span-2 lg:col-span-4 bg-zinc-950 border border-zinc-850 p-3.5 rounded-xl text-2xs text-zinc-400 font-mono mt-1">
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-                            <div>کد کالا: <strong className="font-semibold text-zinc-200">{selectedCountItemData.code}</strong></div>
-                            <div>واحد سنجش: <strong className="font-semibold text-zinc-200">{selectedCountItemData.unit}</strong></div>
-                            <div>بسته‌بندی انبار: <strong className="font-semibold text-zinc-200">{selectedCountItemData.packageType}</strong></div>
-                            <div>ضریب در بسته: <strong className="font-semibold text-zinc-200">{toPersianDigits(selectedCountItemData.qtyPerPackage)}</strong></div>
-                            <div>وزن بسته: <strong className="font-semibold text-zinc-200">{toPersianDigits(selectedCountItemData.weightPerPackage)} کیلو</strong></div>
-                            <div>قیمت واحد: <strong className="font-semibold text-emerald-400">{formatWithCommas(selectedCountItemData.price)} ریال</strong></div>
-                          </div>
-                          
-                          <div className="border-t border-zinc-850 pt-2.5 mt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                            <div className="flex flex-wrap items-center gap-3 font-bold text-rose-400 text-xs">
-                              <span>مجموع حجم شمارش شده این ردیف: <strong className="text-white font-mono">{toPersianDigits(roundTo2Decimals(calculatedLiveCountVal.qty))}</strong> {selectedCountItemData.unit}</span>
-                              <span className="text-zinc-400 text-2xs font-normal font-mono bg-zinc-900/80 px-2 py-0.5 rounded-md border border-zinc-800">
-                                ({toPersianDigits(countPacks)} بسته × {toPersianDigits(selectedCountItemData.weightPerPackage || 1)} وزن بسته + {toPersianDigits(countLoose)} جزئی)
+                        <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div className="bg-rose-950/25 border border-rose-500/35 rounded-xl px-3.5 py-2.5 flex flex-col justify-between">
+                            <span className="text-[10.5px] font-bold text-rose-300/90">
+                              مجموع حجم شمارش شده این ردیف
+                            </span>
+                            <div className="flex items-baseline gap-1.5 mt-1">
+                              <strong className="text-base font-black text-white font-mono">
+                                {toPersianDigits(roundTo2Decimals(calculatedLiveCountVal.qty))}
+                              </strong>
+                              <span className="text-[11px] font-bold text-rose-300">
+                                {selectedCountItemData.unit}
                               </span>
-                              <span className="text-emerald-400">ارزش ریالی: <strong className="font-mono">{formatWithCommas(calculatedLiveCountVal.val)}</strong> ریال</span>
                             </div>
+                            <span className="text-[10px] text-zinc-400 font-mono mt-1">
+                              ({toPersianDigits(countPacks)} بسته × {toPersianDigits(selectedCountItemData.weightPerPackage || 1)} + {toPersianDigits(countLoose)} جزئی)
+                            </span>
+                          </div>
 
-                            {/* Quick edit item master button */}
-                            <button
-                              type="button"
-                              onClick={() => openQuickEditItem(selectedCountItemData)}
-                              className="px-3 py-1.5 bg-zinc-900 hover:bg-rose-950/40 text-rose-400 hover:text-rose-300 border border-zinc-700 hover:border-rose-600 rounded-lg text-2xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs shrink-0"
-                              title="ویرایش سریع قیمت، بسته‌بندی، نام و مشخصات کالا در همین بخش بدون نیاز به خروج از انبارگردانی"
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                              <span>ویرایش سریع مشخصات کالا</span>
-                            </button>
+                          <div className="bg-emerald-950/25 border border-emerald-500/35 rounded-xl px-3.5 py-2.5 flex flex-col justify-between">
+                            <span className="text-[10.5px] font-bold text-emerald-300/90">
+                              ارزش ریالی این ردیف شمارش
+                            </span>
+                            <div className="flex items-baseline gap-1.5 mt-1">
+                              <strong className="text-base font-black text-emerald-300 font-mono">
+                                {formatWithCommas(calculatedLiveCountVal.val)}
+                              </strong>
+                              <span className="text-[11px] font-bold text-emerald-400/80">ریال</span>
+                            </div>
+                            <span className="text-[10px] text-zinc-400 font-mono mt-1">
+                              نرخ واحد: {formatWithCommas(selectedCountItemData.price)} ریال
+                            </span>
                           </div>
                         </div>
                       )}
@@ -4528,12 +5617,21 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                         <div className="flex flex-wrap gap-2 w-full sm:w-auto justify-end">
                           <button
                             type="button"
-                            onClick={printAuditReport}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-xs"
-                            title="چاپ بهینه و فشرده گزارش تجمیعی انبارگردانی (A4 با حداقل مصرف کاغذ)"
+                            onClick={() => printBlankStockCountSheet(countWarehouseFilter === 'فاقد انبار مشخص' ? 'none' : countWarehouseFilter)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-xs"
+                            title="چاپ فرم خام انبارگردانی به تفکیک انبار جهت شمارش کاغذی توسط پرسنل"
                           >
                             <Printer className="h-3.5 w-3.5" />
-                            <span>چاپ گزارش تجمیعی (A4 بهینه)</span>
+                            <span>چاپ فرم خام انبارگردانی</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={printAuditReport}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-xs"
+                            title="چاپ بهینه و فشرده گزارش تجمیعی انبارگردانی همراه با بارکد شناسه سیستمی"
+                          >
+                            <Printer className="h-3.5 w-3.5" />
+                            <span>چاپ گزارش تجمیعی (A4 با بارکد)</span>
                           </button>
                           <button
                             type="button"
@@ -5099,6 +6197,28 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                     placeholder="اختیاری"
                     value={quickEditItem.barcode || ''}
                     onChange={(e) => setQuickEditItem({ ...quickEditItem, barcode: e.target.value })}
+                  />
+                </div>
+
+                {/* System Barcode */}
+                <div>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <label className="block text-2xs font-bold text-sky-300">بارکد شناسه سیستمی</label>
+                    <button
+                      type="button"
+                      onClick={() => setQuickEditItem({ ...quickEditItem, systemBarcode: generateNextSystemBarcode(db.items) })}
+                      className="text-[10px] font-bold text-sky-400 hover:text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/25 px-1.5 py-0.5 rounded-md cursor-pointer"
+                    >
+                      تولید خودکار
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    className="w-full px-3 py-2 bg-zinc-950 border border-sky-500/30 rounded-xl text-xs text-sky-200 font-mono text-left placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-sky-500/30 focus:border-sky-500"
+                    placeholder="90000001"
+                    value={quickEditItem.systemBarcode || ''}
+                    onChange={(e) => setQuickEditItem({ ...quickEditItem, systemBarcode: toEnglishDigits(e.target.value).trim() })}
                   />
                 </div>
 

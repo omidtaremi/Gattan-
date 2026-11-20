@@ -294,18 +294,18 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 animate-fade-in text-right selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right selection:bg-rose-500 selection:text-white" dir="rtl">
       
-      <div className="flex flex-col sm:flex-row items-center justify-between border-b border-slate-800 pb-4 mb-6 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
         <div className="flex items-center gap-3">
-          <div className="bg-emerald-500/10 text-emerald-400 p-2.5 rounded-2xl border border-emerald-500/15">
-            <Plus className="h-6 w-6 text-emerald-400" />
+          <div className="bg-emerald-500/10 text-emerald-400 p-2 sm:p-2.5 rounded-2xl border border-emerald-500/15 shrink-0">
+            <Plus className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-400" />
           </div>
           <div>
-            <h2 className="text-xl font-black text-white">
+            <h2 className="text-base sm:text-xl font-black text-white">
               دفترچه و حساب‌های بانکی تامین کنندگان
             </h2>
-            <p className="text-xs text-slate-400 mt-1">مدیریت مشخصات خریداران کالا، شماره حساب کارت‌ها، شباهای متصل و کالاهای تحت تملک</p>
+            <p className="hidden sm:block text-xs text-slate-400 mt-1">مدیریت مشخصات خریداران کالا، شماره حساب کارت‌ها، شباهای متصل و کالاهای تحت تملک</p>
           </div>
         </div>
 

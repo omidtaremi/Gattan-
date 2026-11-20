@@ -27,10 +27,14 @@ import AttendanceSettingsForm from './AttendanceSettingsForm';
 import PersonnelSettlementTab from './payroll/PersonnelSettlementTab';
 import { PersonnelPayslipModal, PayslipItemData } from './payroll/PersonnelPayslipModal';
 import {
+  DEFAULT_MONTHLY_LEAVE_HM,
   didEmployeeDepartInMonth,
   didSettleLeaveThroughMonth,
   findFirstAttendanceDateForCode,
+  formatMonthlyLeaveHM,
+  getMonthlyLeaveMinutesForYearMonth,
   isDepartedOrSettlingInMonth,
+  normalizeMonthlyLeaveHMInput,
   ProvisionalSettlementPreview,
   resolveDepartedMonthAttendancePerf
 } from '../utils/payrollSettlementSync';
@@ -2557,6 +2561,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [rateOvertimeHourlyRate, setRateOvertimeHourlyRate] = useState<string>('');
   const [rateFridayWorkHourlyRate, setRateFridayWorkHourlyRate] = useState<string>('');
   const [rateHolidayWorkHourlyRate, setRateHolidayWorkHourlyRate] = useState<string>('');
+  const [rateMonthlyLeaveHours, setRateMonthlyLeaveHours] = useState<string>(DEFAULT_MONTHLY_LEAVE_HM);
   const [rateSearchQuery, setRateSearchQuery] = useState<string>('');
 
   // Seniority Rates states
@@ -2625,6 +2630,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateOvertimeHourlyRate('');
     setRateFridayWorkHourlyRate('');
     setRateHolidayWorkHourlyRate('');
+    setRateMonthlyLeaveHours(DEFAULT_MONTHLY_LEAVE_HM);
   };
 
   const handleSaveSalaryBaseRate = (e: React.FormEvent) => {
@@ -2688,7 +2694,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       taxableAmount: parseNumber(rateTaxableAmount) || 0,
       overtimeHourlyRate: resolvedOvertimeWork,
       fridayWorkHourlyRate: resolvedFridayWork,
-      holidayWorkHourlyRate: resolvedHolidayWork
+      holidayWorkHourlyRate: resolvedHolidayWork,
+      monthlyLeaveHours: normalizeMonthlyLeaveHMInput(rateMonthlyLeaveHours)
     };
 
     let updatedRates: SalaryBaseRate[];
@@ -2741,15 +2748,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const prevRates = (db.salaryBaseRates || []).filter(r => r.periodId === prevId);
     const prevInsured = (db.insuredSalaryItems || []).filter(item => item.periodId === prevId);
+    const prevLeaveBuyout = (db.leaveBuyoutSalaryItems || []).filter(item => item.periodId === prevId);
     const prevTaxable = (db.taxableSalaryItems || []).filter(item => item.periodId === prevId);
 
-    if (prevRates.length === 0 && prevInsured.length === 0 && prevTaxable.length === 0) {
-      alert('هیچ قانون، ثوابت دستمزد یا آیتم‌های مشمول بیمه و مالیاتی در دوره قبلی یافت نشد.');
+    if (prevRates.length === 0 && prevInsured.length === 0 && prevLeaveBuyout.length === 0 && prevTaxable.length === 0) {
+      alert('هیچ قانون، ثوابت دستمزد یا آیتم‌های مشمول بیمه، بازخرید مرخصی و مالیاتی در دوره قبلی یافت نشد.');
       return;
     }
 
     const activeRates = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const activeInsured = (db.insuredSalaryItems || []).filter(item => item.periodId === activePeriodId);
+    const activeLeaveBuyout = (db.leaveBuyoutSalaryItems || []).filter(item => item.periodId === activePeriodId);
     const activeTaxable = (db.taxableSalaryItems || []).filter(item => item.periodId === activePeriodId);
     
     let addedCount = 0;
@@ -2781,6 +2790,20 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     });
 
+    let addedLeaveBuyoutCount = 0;
+    const newLeaveBuyoutItems: any[] = [];
+    prevLeaveBuyout.forEach(item => {
+      const isDup = activeLeaveBuyout.some(i => i.itemKey === item.itemKey);
+      if (!isDup) {
+        newLeaveBuyoutItems.push({
+          ...item,
+          id: `leave-buyout-item-${Date.now()}-${addedLeaveBuyoutCount}-${Math.random().toString(36).substring(2, 10)}`,
+          periodId: activePeriodId
+        });
+        addedLeaveBuyoutCount++;
+      }
+    });
+
     let addedTaxableCount = 0;
     const newTaxableItems: any[] = [];
     prevTaxable.forEach(item => {
@@ -2795,7 +2818,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     });
 
-    if (addedCount === 0 && addedInsuredCount === 0 && addedTaxableCount === 0) {
+    if (addedCount === 0 && addedInsuredCount === 0 && addedLeaveBuyoutCount === 0 && addedTaxableCount === 0) {
       alert('تمامی ثوابت و آیتم‌های مشمول دوره قبل از پیش در این دوره وجود دارند.');
       return;
     }
@@ -2804,12 +2827,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ...db,
       salaryBaseRates: [...(db.salaryBaseRates || []), ...newRates],
       insuredSalaryItems: [...(db.insuredSalaryItems || []), ...newInsuredItems],
+      leaveBuyoutSalaryItems: [...(db.leaveBuyoutSalaryItems || []), ...newLeaveBuyoutItems],
       taxableSalaryItems: [...(db.taxableSalaryItems || []), ...newTaxableItems]
     });
 
     const summaryParts: string[] = [];
     if (addedCount > 0) summaryParts.push(`${toPersianDigits(addedCount)} قانون ثوابت`);
     if (addedInsuredCount > 0) summaryParts.push(`${toPersianDigits(addedInsuredCount)} آیتم مشمول بیمه`);
+    if (addedLeaveBuyoutCount > 0) summaryParts.push(`${toPersianDigits(addedLeaveBuyoutCount)} آیتم مشمول بازخرید مرخصی`);
     if (addedTaxableCount > 0) summaryParts.push(`${toPersianDigits(addedTaxableCount)} آیتم مشمول مالیات`);
 
     alert(`${summaryParts.join(' و ')} از دوره قبل با موفقیت کپی شد.`);
@@ -2961,6 +2986,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateOvertimeHourlyRate(formatWithCommas(currentOt));
     setRateFridayWorkHourlyRate(formatWithCommas(currentFriday));
     setRateHolidayWorkHourlyRate(formatWithCommas(currentHoliday));
+    setRateMonthlyLeaveHours(rate.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM);
   };
 
   const handleCancelEditSeniority = () => {
@@ -3846,6 +3872,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         let daysWorkedCount = 0;
         const finalFridayMinutes = netFridayMinutes;
 
+        const pMonthlyLeaveMinutes = getMonthlyLeaveMinutesForYearMonth(db, pYear, activePeriodId);
+
         if (skipLeaveInjection) {
           const depPerf = resolveDepartedMonthAttendancePerf({
             netNormalOnlyMinutes,
@@ -3854,7 +3882,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             requiredMinutes: reqMinutes,
             presenceDaysCount,
             prevLeaveMinutes,
-            totalDaysInMonth: pTotalDays
+            totalDaysInMonth: pTotalDays,
+            monthlyLeaveMinutes: pMonthlyLeaveMinutes
           });
           allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
           currentWorkedMinutes = depPerf.finalWorkedMinutes;
@@ -3864,9 +3893,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           daysWorkedCount = depPerf.daysWorkedCount;
         } else {
           if (netWorkMinutes >= reqMinutes) {
-            allocatedLeaveMinutes = 20 * 60;
+            allocatedLeaveMinutes = pMonthlyLeaveMinutes;
           } else if (reqMinutes > 0) {
-            allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * 20 * 60);
+            allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * pMonthlyLeaveMinutes);
           }
 
           const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
@@ -4594,6 +4623,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       let isNormalWorkFullOrMore = false;
       let daysWorkedCount = 0;
 
+      const curMonthlyLeaveMinutes = getMonthlyLeaveMinutesForYearMonth(db, calcYear, activePeriodId);
+
       if (isDepartedNoLeavePad) {
         const depPerf = resolveDepartedMonthAttendancePerf({
           netNormalOnlyMinutes,
@@ -4602,7 +4633,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           requiredMinutes: b.requiredMinutes,
           presenceDaysCount: b.presenceDaysCount ?? 0,
           prevLeaveMinutes: b.prevLeaveMinutes,
-          totalDaysInMonth: b.totalDaysInMonth
+          totalDaysInMonth: b.totalDaysInMonth,
+          monthlyLeaveMinutes: curMonthlyLeaveMinutes
         });
         allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
         totalLeaveMinutes = depPerf.totalLeaveMinutes;
@@ -4615,9 +4647,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         daysWorkedCount = depPerf.daysWorkedCount;
       } else {
         if (netWorkMinutes >= b.requiredMinutes) {
-          allocatedLeaveMinutes = 20 * 60;
+          allocatedLeaveMinutes = curMonthlyLeaveMinutes;
         } else if (b.requiredMinutes > 0) {
-          allocatedLeaveMinutes = Math.round((netWorkMinutes / b.requiredMinutes) * 20 * 60);
+          allocatedLeaveMinutes = Math.round((netWorkMinutes / b.requiredMinutes) * curMonthlyLeaveMinutes);
         }
         totalLeaveMinutes = b.prevLeaveMinutes + allocatedLeaveMinutes;
         finalLeaveMinutes = totalLeaveMinutes;
@@ -4935,6 +4967,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     userInsuranceDays,
     userNormalMgmtDeductions,
     db.personnelSettlements,
+    db.salaryBaseRates,
     pendingSettlementPreview,
     calcYear,
     calcMonth,
@@ -8456,9 +8489,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         monthlyEidi: monthlyEidi,
         monthlyYearsBenefit: monthlyYears,
         prevLeaveHM: '۰:۰۰',
-        allocatedLeaveHM: '۲۰:۰۰',
+        allocatedLeaveHM: formatMonthlyLeaveHM(getMonthlyLeaveMinutesForYearMonth(db, calcYear, activePeriodId), true),
         usedLeaveHM: '۰:۰۰',
-        finalLeaveHM: '۲۰:۰۰',
+        finalLeaveHM: formatMonthlyLeaveHM(getMonthlyLeaveMinutesForYearMonth(db, calcYear, activePeriodId), true),
         totalGrossSalary: gross,
 
         workerInsurance7: ins7,
@@ -8759,6 +8792,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [insuredItemCustomName, setInsuredItemCustomName] = useState<string>('');
   const [editingInsuredItemId, setEditingInsuredItemId] = useState<string | null>(null);
 
+  // ====== STATE FOR LEAVE BUYOUT SALARY ITEMS RULES ======
+  const [leaveBuyoutItemStartDate, setLeaveBuyoutItemStartDate] = useState<string>('1403/01/01');
+  const [leaveBuyoutItemEndDate, setLeaveBuyoutItemEndDate] = useState<string>('1403/12/29');
+  const [leaveBuyoutItemKey, setLeaveBuyoutItemKey] = useState<string>('dailyBaseSalary');
+  const [leaveBuyoutItemCustomName, setLeaveBuyoutItemCustomName] = useState<string>('');
+  const [editingLeaveBuyoutItemId, setEditingLeaveBuyoutItemId] = useState<string | null>(null);
+
   // ====== STATE FOR TAXABLE SALARY ITEMS RULES ======
   const [taxableItemStartDate, setTaxableItemStartDate] = useState<string>('1403/01/01');
   const [taxableItemEndDate, setTaxableItemEndDate] = useState<string>('1403/12/29');
@@ -8961,6 +9001,89 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           insuredSalaryItems: remaining
         });
         alert('آیتم متبوع با موفقیت از سیستم حذف شد.');
+      }
+    );
+  };
+
+  const handleSaveLeaveBuyoutItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!leaveBuyoutItemKey) return;
+
+    if (!leaveBuyoutItemStartDate.trim() || !leaveBuyoutItemEndDate.trim()) {
+      alert('لطفاً هر دو تاریخ شروع و پایان بازه اعتبار آیتم مشمول بازخرید مرخصی را وارد کنید.');
+      return;
+    }
+
+    const sDate = normalizeDateStr(leaveBuyoutItemStartDate);
+    const eDate = normalizeDateStr(leaveBuyoutItemEndDate);
+    if (sDate > eDate) {
+      alert('تاریخ شروع دوره نمی‌تواند بزرگتر از تاریخ پایان دوره باشد.');
+      return;
+    }
+
+    const matchedOption = INSURED_ITEM_OPTIONS.find(opt => opt.key === leaveBuyoutItemKey);
+    const label = leaveBuyoutItemCustomName.trim() || matchedOption?.defaultLabel || leaveBuyoutItemKey;
+    const year = getJalaliYear(sDate) || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
+
+    const newItem = {
+      id: editingLeaveBuyoutItemId || `leave-buyout-item-${Date.now()}`,
+      startDate: sDate,
+      endDate: eDate,
+      periodId: year,
+      itemKey: leaveBuyoutItemKey,
+      itemName: label,
+    };
+
+    let updatedList = [...(db.leaveBuyoutSalaryItems || [])];
+    if (editingLeaveBuyoutItemId) {
+      updatedList = updatedList.map(item => item.id === editingLeaveBuyoutItemId ? newItem : item);
+    } else {
+      const exists = updatedList.some(item => {
+        if (item.id === editingLeaveBuyoutItemId) return false;
+        if (item.itemKey !== leaveBuyoutItemKey) return false;
+        const iStart = item.startDate ? normalizeDateStr(item.startDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '');
+        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '');
+        return iStart === sDate && iEnd === eDate;
+      });
+      if (exists) {
+        alert('این آیتم از پیش با همین بازه زمانی در لیست بازخرید مرخصی ثبت شده است.');
+        return;
+      }
+      updatedList.push(newItem);
+    }
+
+    onUpdateDb({
+      ...db,
+      leaveBuyoutSalaryItems: updatedList
+    });
+
+    setEditingLeaveBuyoutItemId(null);
+    setLeaveBuyoutItemKey('dailyBaseSalary');
+    setLeaveBuyoutItemCustomName('');
+    alert(editingLeaveBuyoutItemId ? 'آیتم مشمول بازخرید مرخصی با موفقیت ویرایش شد.' : 'آیتم مشمول بازخرید مرخصی جدید با موفقیت ثبت شد.');
+  };
+
+  const handleEditLeaveBuyoutItem = (item: any) => {
+    setEditingLeaveBuyoutItemId(item.id);
+    const sDate = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
+    const eDate = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+    setLeaveBuyoutItemStartDate(sDate);
+    setLeaveBuyoutItemEndDate(eDate);
+    setLeaveBuyoutItemKey(item.itemKey);
+    setLeaveBuyoutItemCustomName(item.itemName);
+  };
+
+  const handleDeleteLeaveBuyoutItem = (id: string) => {
+    askConfirm(
+      'حذف آیتم مشمول بازخرید مرخصی',
+      'آیا مطمئن هستید که می‌خواهید این آیتم را از لیست موارد مشمول محاسبه بازخرید مرخصی خارج کنید؟',
+      () => {
+        const remaining = (db.leaveBuyoutSalaryItems || []).filter(item => item.id !== id);
+        onUpdateDb({
+          ...db,
+          leaveBuyoutSalaryItems: remaining
+        });
+        alert('آیتم مورد نظر با موفقیت حذف شد.');
       }
     );
   };
@@ -10688,7 +10811,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const exportSalaryBaseRatesCSV = () => {
     const headers = [
-      'سال مالی', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی'
+      'سال مالی', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
     ];
     const rates = db.salaryBaseRates || [];
     const rows = rates.map(r => [
@@ -10703,7 +10826,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       String(r.marriageAllowance || 0),
       String(r.taxableAmount || 0),
       String((r.overtimeHourlyRate && r.overtimeHourlyRate > ((r.dailyBaseSalary || 0) * 0.8)) ? Math.round(r.overtimeHourlyRate / 7.33) : (r.overtimeHourlyRate || Math.round(((r.dailyBaseSalary || 0) * 1.4) / 7.33))),
-      String((r.fridayWorkHourlyRate && r.fridayWorkHourlyRate > ((r.dailyBaseSalary || 0) * 0.15)) ? Math.round(r.fridayWorkHourlyRate / 7.33) : (r.fridayWorkHourlyRate ?? Math.round(((r.dailyBaseSalary || 0) * 0.40) / 7.33)))
+      String((r.fridayWorkHourlyRate && r.fridayWorkHourlyRate > ((r.dailyBaseSalary || 0) * 0.15)) ? Math.round(r.fridayWorkHourlyRate / 7.33) : (r.fridayWorkHourlyRate ?? Math.round(((r.dailyBaseSalary || 0) * 0.40) / 7.33))),
+      String(r.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM)
     ]);
     downloadCSV('Gatan_Salary_Constants_and_Rates', headers, rows);
   };
@@ -10772,6 +10896,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         let overtime = rawOt > (dailyBase * 0.8) ? Math.round(rawOt / 7.33) : rawOt;
         const rawFri = row[offset + 11] !== undefined ? parseNumber(row[offset + 11]) : Math.round((dailyBase * 0.40) / 7.33);
         let fridayWork = rawFri > (dailyBase * 0.15) ? Math.round(rawFri / 7.33) : rawFri;
+        const rawLeaveVal = row[offset + 13] !== undefined && String(row[offset + 13]).includes(':')
+          ? row[offset + 13]
+          : (row[offset + 12] !== undefined && String(row[offset + 12]).includes(':') ? row[offset + 12] : DEFAULT_MONTHLY_LEAVE_HM);
+        const monthlyLeaveHoursVal = normalizeMonthlyLeaveHMInput(String(rawLeaveVal || DEFAULT_MONTHLY_LEAVE_HM));
 
         const matchIndex = updatedRates.findIndex(r => r.periodId === activePeriodId && r.year === sYear);
         const rateObj: SalaryBaseRate = {
@@ -10788,7 +10916,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           marriageAllowance: marriage,
           taxableAmount: taxLimit,
           overtimeHourlyRate: overtime,
-          fridayWorkHourlyRate: fridayWork
+          fridayWorkHourlyRate: fridayWork,
+          monthlyLeaveHours: monthlyLeaveHoursVal
         };
 
         if (matchIndex >= 0) {
@@ -11938,63 +12067,63 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 animate-fade-in text-right payroll-management-root-wrapper" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right payroll-management-root-wrapper" dir="rtl">
       
       {/* Upper sub navigation */}
-      <div className="flex flex-col sm:flex-row items-center justify-between border-b border-slate-800 pb-4 mb-6 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
         <div>
-          <h2 className="text-xl font-bold text-white block">نظام حقوق دستمزد و کنترل هزینه‌ها</h2>
-          <p className="text-xs text-slate-400 mt-1">مدیریت پرسنل تولید، مدیریت حساب‌های بانکی متعدد پرسنل، محاسبه هوشمند حقوق و گزارش مراکز هزینه کارگاه</p>
+          <h2 className="text-base sm:text-xl font-bold text-white block">نظام حقوق دستمزد و کنترل هزینه‌ها</h2>
+          <p className="hidden sm:block text-xs text-slate-400 mt-1">مدیریت پرسنل تولید، مدیریت حساب‌های بانکی متعدد پرسنل، محاسبه هوشمند حقوق و گزارش مراکز هزینه کارگاه</p>
         </div>
 
-        <div className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-850 gap-0.5">
+        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar w-full sm:w-auto bg-slate-950 p-1 rounded-xl border border-slate-850 gap-1 sm:gap-0.5">
           <button
             onClick={() => setActiveTab('employees')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'employees' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <Users className="h-4 w-4" /> پرونده پرسنل و دسته‌بندی‌ها
+            <Users className="h-4 w-4 shrink-0" /> پرونده پرسنل و دسته‌بندی‌ها
           </button>
           <button
             onClick={() => setActiveTab('payroll')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'payroll' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <FileSpreadsheet className="h-4 w-4" /> محاسبه حقوق و دستمزد و تسهیم حقوق
+            <FileSpreadsheet className="h-4 w-4 shrink-0" /> محاسبه حقوق و دستمزد و تسهیم حقوق
           </button>
           <button
             onClick={() => setActiveTab('payrollConstants')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'payrollConstants' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <DollarSign className="h-4 w-4" /> قوانین و ثوابت دستمزد
+            <DollarSign className="h-4 w-4 shrink-0" /> قوانین و ثوابت دستمزد
           </button>
           <button
             onClick={() => setActiveTab('contracts')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'contracts' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <FileCheck className="h-4 w-4 text-emerald-400" /> قراردادهای پرسنلی
+            <FileCheck className="h-4 w-4 text-emerald-400 shrink-0" /> قراردادهای پرسنلی
           </button>
           <button
             onClick={() => setActiveTab('settlement')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'settlement' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <Receipt className="h-4 w-4 text-rose-300" /> تسویه حساب پرسنل
+            <Receipt className="h-4 w-4 text-rose-300 shrink-0" /> تسویه حساب پرسنل
           </button>
           <button
             onClick={() => setActiveTab('attendanceSettings')}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'attendanceSettings' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
-            <Settings className="h-4 w-4 text-amber-400" /> تنظیمات حقوق و دستمزد
+            <Settings className="h-4 w-4 text-amber-400 shrink-0" /> تنظیمات حقوق و دستمزد
           </button>
         </div>
       </div>
@@ -16469,6 +16598,27 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     )}
                   </div>
 
+                  {/* مرخصی ساعتی ماهانه */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-bold text-slate-600">مرخصی ساعتی ماهانه</label>
+                      <span className="text-[9.5px] text-indigo-600 font-semibold">(فرمت ساعت:دقیقه - پیش‌فرض ۱۵:۵۳)</span>
+                    </div>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      placeholder="15:53"
+                      value={rateMonthlyLeaveHours}
+                      onChange={(e) => setRateMonthlyLeaveHours(toEnglishDigits(e.target.value).replace(/[^0-9:.]/g, ''))}
+                      onBlur={() => setRateMonthlyLeaveHours(normalizeMonthlyLeaveHMInput(rateMonthlyLeaveHours))}
+                      onFocus={handleFocus}
+                      className="w-full px-3 py-2 border border-indigo-200 bg-indigo-50/30 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono text-left text-slate-800 font-bold"
+                    />
+                    <span className="block text-[10px] text-slate-400 mt-1 mr-1 text-right font-medium">
+                      سقف تخصیص ماهانه در محاسبه حقوق و دستمزد: {toPersianDigits(normalizeMonthlyLeaveHMInput(rateMonthlyLeaveHours))} ساعت
+                    </span>
+                  </div>
+
                   {/* Submit / Cancel buttons */}
                   <div className="flex gap-2 pt-2">
                     {editingRateId && (
@@ -16663,6 +16813,191 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteInsuredItem(item.id)}
+                                  className="text-rose-700 hover:text-rose-800 p-1 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-300/40 cursor-pointer transition-colors"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Card option: Leave buyout salary components config */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
+                <div className="border-b border-slate-100 pb-3">
+                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 font-sans">
+                    <span className="p-1.5 bg-indigo-50 rounded-lg text-indigo-600">
+                      <Clock className="h-4 w-4" />
+                    </span>
+                    {editingLeaveBuyoutItemId ? 'اصلاح آیتم مشمول بازخرید مرخصی' : 'تعریف آیتم‌های مشمول محاسبه بازخرید مرخصی'}
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-medium mt-1">
+                    تعیین اقلام مشمول جهت محاسبه نرخ هر ساعت بازخرید مرخصی در فرم تسویه حساب (جمع اقلام مشمول ÷ ۲۲۰ ساعت)
+                  </p>
+                </div>
+
+                <form onSubmit={handleSaveLeaveBuyoutItem} className="space-y-4 font-sans text-right">
+                  {/* Two dates: Start Date and End Date */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10.5px] font-bold text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                      <div className="flex gap-1">
+                        {['1403', '1404', '1405'].map((yr) => (
+                          <button
+                            key={yr}
+                            type="button"
+                            onClick={() => {
+                              setLeaveBuyoutItemStartDate(`${yr}/01/01`);
+                              setLeaveBuyoutItemEndDate(`${yr}/12/29`);
+                            }}
+                            className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer transition-colors"
+                          >
+                            سال {toPersianDigits(yr)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ شروع اعتبار</label>
+                        <input
+                          type="text"
+                          value={leaveBuyoutItemStartDate}
+                          onChange={(e) => setLeaveBuyoutItemStartDate(e.target.value)}
+                          placeholder="۱۴۰۳/۰۱/۰۱"
+                          dir="ltr"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ پایان اعتبار</label>
+                        <input
+                          type="text"
+                          value={leaveBuyoutItemEndDate}
+                          onChange={(e) => setLeaveBuyoutItemEndDate(e.target.value)}
+                          placeholder="۱۴۰۳/۱۲/۲۹"
+                          dir="ltr"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
+                    <select
+                      value={leaveBuyoutItemKey}
+                      onChange={(e) => setLeaveBuyoutItemKey(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                    >
+                      {INSURED_ITEM_OPTIONS.map(opt => (
+                        <option key={opt.key} value={opt.key}>{opt.defaultLabel}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex gap-2">
+                    {editingLeaveBuyoutItemId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingLeaveBuyoutItemId(null);
+                          setLeaveBuyoutItemKey('dailyBaseSalary');
+                          setLeaveBuyoutItemCustomName('');
+                        }}
+                        className="w-1/2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
+                      >
+                        انصراف
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
+                        editingLeaveBuyoutItemId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-indigo-600 hover:bg-indigo-700'
+                      }`}
+                    >
+                      {editingLeaveBuyoutItemId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                    </button>
+                  </div>
+                </form>
+
+                {/* List of registered leave buyout items */}
+                <div className="border-t border-slate-100 pt-4 space-y-2.5 font-sans">
+                  <div className="text-[10px] font-black text-indigo-600 flex justify-between items-center">
+                    <span>آیتم‌های مشمول بازخرید مرخصی ثبت‌شده:</span>
+                    <span className="text-[8.5px] text-slate-400 font-bold">مبنای نرخ ساعتی (جمع ÷ ۲۲۰)</span>
+                  </div>
+
+                  {(() => {
+                    const allLeaveBuyoutItems = db.leaveBuyoutSalaryItems || [];
+
+                    const getAmountForLeaveBuyoutItem = (key: string, itemYear: string) => {
+                      const yr = itemYear || '1403';
+                      const activeRates = (db.salaryBaseRates || []).find((r: any) => r.year === yr || r.periodId?.startsWith(yr)) || (db.salaryBaseRates || [])[0];
+                      if (!activeRates) return 'تعریف نشده';
+                      switch (key) {
+                        case 'dailyBaseSalary':
+                          return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
+                        case 'dailyInsuranceSalary':
+                          return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
+                        case 'housingAllowance':
+                          return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
+                        case 'foodAllowance':
+                          return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
+                        case 'childAllowance':
+                          return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
+                        case 'marriageAllowance':
+                          return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
+                        case 'baseYearsRate':
+                          return 'پایه سنوات قرارداد (۳۰ روزه)';
+                        case 'jobAllowance':
+                          return 'فوق‌العاده شغلی پرونده';
+                        default:
+                          return 'ثبت شده';
+                      }
+                    };
+
+                    if (allLeaveBuyoutItems.length === 0) {
+                      return (
+                        <div className="bg-slate-50 p-3 rounded-xl border border-dashed border-slate-200 text-center text-[9.5px] text-slate-500 font-bold leading-relaxed">
+                          پیکربندی وجود ندارد. لیست پیش‌فرض اعمال می‌شود (حقوق پایه ماهانه ۳۰ روز، حق پایه سنوات، حق بن، حق مسکن، حق تاهل).
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 font-sans">
+                        {allLeaveBuyoutItems.map((item: any) => {
+                          const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
+                          const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+                          const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+
+                          return (
+                            <div key={item.id} className="flex justify-between items-center bg-slate-100/90 hover:bg-slate-200/60 px-3 py-2 rounded-xl border border-slate-300 text-[10px] text-slate-900 shadow-sm transition-colors">
+                              <div className="font-extrabold text-right flex flex-col items-start gap-0.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-black font-black">{item.itemName}</span>
+                                  <span className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
+                                  </span>
+                                </div>
+                                <span className="text-[9px] text-indigo-700 font-black">مبلغ مرجع: {getAmountForLeaveBuyoutItem(item.itemKey, itemYear)}</span>
+                              </div>
+                              <div className="flex gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditLeaveBuyoutItem(item)}
+                                  className="text-amber-800 hover:text-amber-900 p-1 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-300/40 text-[9px] font-black cursor-pointer transition-colors"
+                                >
+                                  اصلاح
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteLeaveBuyoutItem(item.id)}
                                   className="text-rose-700 hover:text-rose-800 p-1 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-300/40 cursor-pointer transition-colors"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -17100,6 +17435,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             {toPersianDigits(formatWithCommas((rate.holidayWorkHourlyRate && rate.holidayWorkHourlyRate > ((rate.dailyBaseSalary || 0) * 0.8)) ? Math.round(rate.holidayWorkHourlyRate / 7.33) : (rate.holidayWorkHourlyRate ?? (rate.overtimeHourlyRate || Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33)))))}
                           </span>
                           <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+
+                        <div>
+                          <span className="text-[10.5px] text-indigo-300 block mb-1">مرخصی ساعتی ماهانه</span>
+                          <span className="font-bold text-indigo-300 font-mono">
+                            {toPersianDigits(rate.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM)}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ساعت</span>
                         </div>
 
                       </div>

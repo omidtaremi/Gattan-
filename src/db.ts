@@ -309,10 +309,12 @@ export function getInitialDatabase(): AppDatabase {
         taxableAmount: 15000000,
         overtimeHourlyRate: 450000,
         fridayWorkHourlyRate: 190996,
-        holidayWorkHourlyRate: 450000
+        holidayWorkHourlyRate: 450000,
+        monthlyLeaveHours: '15:53'
       }
     ],
     insuredSalaryItems: [],
+    leaveBuyoutSalaryItems: [],
     personnelCategories: [
       { id: 'cat-pers-1', name: 'پشتیبانی کل' },
       { id: 'cat-pers-2', name: 'بازاریابی کل' },
@@ -1057,7 +1059,7 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
     'payrollPeriods', 'payrollItems', 'personnelAllocations', 'periodOverheads',
     'procurementOrders', 'stockCountAudits', 'stockCounts', 'purchaseInvoices', 'roles', 'users',
     'dailyProductionSegments', 'shifts', 'shiftAssignments', 'productionSections', 'salaryBaseRates',
-    'personnelContracts', 'insuredSalaryItems', 'personnelCategories', 'monthlyWorkdaySettings', 'officialHolidays',
+    'personnelContracts', 'insuredSalaryItems', 'leaveBuyoutSalaryItems', 'personnelCategories', 'monthlyWorkdaySettings', 'officialHolidays',
     'customers', 'customerCategories',
     'bankAccounts', 'cashDrawers', 'posTerminals', 'cashiers',
     'chequeBooks', 'chequeLeaves',

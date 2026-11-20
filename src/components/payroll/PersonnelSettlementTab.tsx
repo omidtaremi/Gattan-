@@ -27,10 +27,13 @@ import { getInsuredSalaryItemsForContract, getTaxableSalaryItemsForContract, get
 import {
   addDaysToJalali,
   computeMonthlyPayrollSnapshotForEmployee,
+  DEFAULT_LEAVE_BUYOUT_ITEM_KEYS,
   findFirstAttendanceDateForCode,
   findLastAttendanceDateForEmployee,
   getEmployeeRegisteredPayrollsSummary,
   getEmployeeTreasuryPaidInPeriod,
+  getLeaveBuyoutSalaryItemsForContract,
+  getMonthlyLeaveMinutesForYearMonth,
   getPriorWithoutDepartureSettlements,
   getSettlementReasonLabel,
   isPayrollMonthLocked,
@@ -68,17 +71,14 @@ function getShamsiMonthDays(year: number, month: number): number {
 
 function parseJalali(dateStr: string): { y: number; m: number; d: number } | null {
   if (!dateStr) return null;
-  const clean = toEnglishDigits(dateStr).trim().replace(/[-_.\s/]+/g, '/');
-  const parts = clean.split('/').filter(Boolean);
+  const clean = toEnglishDigits(dateStr).trim().replace(/[-\s]/g, '/');
+  const parts = clean.split('/');
   if (parts.length === 3) {
-    const p0 = parseInt(parts[0], 10);
-    const p1 = parseInt(parts[1], 10);
-    const p2 = parseInt(parts[2], 10);
-    if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
-      if (p2 > 1300 && p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12) {
-        return { y: p2, m: p1, d: p0 };
-      }
-      return { y: p0, m: p1, d: p2 };
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const d = parseInt(parts[2], 10);
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+      return { y, m, d };
     }
   }
   return null;
@@ -217,13 +217,41 @@ function formatMinutesToPersianHM(totalMinutes: number): string {
   return `${toPersianDigits(h)}:${toPersianDigits(String(m).padStart(2, '0'))}`;
 }
 
+function formatMinutesToEnglishHM(totalMinutes: number): string {
+  const mins = Math.max(0, Math.round(totalMinutes || 0));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+function parseLeaveHMToMinutes(raw: string): number | null {
+  const cleaned = toEnglishDigits(raw || '').trim();
+  if (!cleaned) return null;
+  if (cleaned.includes(':')) {
+    const [hPart, mPart = '0'] = cleaned.split(':');
+    const h = Math.max(0, parseInt(hPart || '0', 10) || 0);
+    const m = Math.max(0, parseInt(mPart || '0', 10) || 0);
+    return h * 60 + m;
+  }
+  if (cleaned.includes('.') || cleaned.includes('٫')) {
+    const dec = parseFloat(cleaned.replace(/٫/g, '.'));
+    return Number.isFinite(dec) ? Math.max(0, Math.round(dec * 60)) : 0;
+  }
+  const hOnly = parseInt(cleaned, 10);
+  return Number.isFinite(hOnly) ? Math.max(0, hOnly * 60) : 0;
+}
+
 function getSettlementUnusedLeaveHours(
   s: Pick<PersonnelSettlement, 'unusedLeaveHours' | 'unusedLeaveDays'>
 ): number {
   if (s.unusedLeaveHours !== undefined && s.unusedLeaveHours !== null) {
-    return Math.max(0, Math.round(Number(s.unusedLeaveHours) * 100) / 100);
+    return Math.max(0, Math.round(Number(s.unusedLeaveHours) * 10000) / 10000);
   }
-  return Math.max(0, Math.round(((Number(s.unusedLeaveDays) || 0) * 8) * 100) / 100);
+  return Math.max(0, Math.round(((Number(s.unusedLeaveDays) || 0) * 8) * 10000) / 10000);
+}
+
+function formatHoursAsPersianHM(hours: number): string {
+  return formatMinutesToPersianHM(Math.round((Number(hours) || 0) * 60));
 }
 
 function formatPersianHoursValue(hours: number): string {
@@ -912,20 +940,17 @@ export default function PersonnelSettlementTab({
       preferredMonth
     );
     const suggestedDepartureDate = detectedLastAttendance ? addDaysToJalali(detectedLastAttendance, 1) : '';
-    const normFallbackDep = emp?.departureDate ? normalizeJalaliDate(emp.departureDate) : '';
-    const normContractEnd = contract?.contractEndDate ? normalizeJalaliDate(contract.contractEndDate) : '';
-    const normEmpContractEnd = emp?.contractEndDate ? normalizeJalaliDate(emp.contractEndDate) : '';
     const endDate =
       settlementType === 'without_departure'
-        ? (normContractEnd || detectedLastAttendance || normEmpContractEnd || getTodayJalali())
+        ? (contract?.contractEndDate || detectedLastAttendance || emp?.contractEndDate || getTodayJalali())
         : (suggestedDepartureDate ||
-          normFallbackDep ||
-          normContractEnd ||
-          normEmpContractEnd ||
+          (emp?.departureDate && String(emp.departureDate).trim()) ||
+          contract?.contractEndDate ||
+          emp?.contractEndDate ||
           getTodayJalali());
     const startDate = isCurrentYearMode
       ? resolveStartDateForCurrentYear(emp, empContracts, targetYearForStart, excludeSettlementId, endDate)
-      : (normalizeJalaliDate(contract?.contractStartDate || emp?.contractStartDate || emp?.entryDate) || `${targetYearForStart}/01/01`);
+      : (contract?.contractStartDate || emp?.contractStartDate || emp?.entryDate || `${targetYearForStart}/01/01`);
     return { reason: resolvedReason, startDate, endDate, detectedLastAttendance };
   };
 
@@ -1501,8 +1526,188 @@ export default function PersonnelSettlementTab({
     const defaultBonusAmount = Math.round((lastMonthlyBaseSalary * 2 * totalWorkedDays) / 365);
     const bonusAmount = formBonusAmount !== '' ? parseNumber(formBonusAmount) : defaultBonusAmount;
 
-    // 3. مرخصی استحقاقی و بازخرید آن بر اساس ساعت (ماده ۶۴ و ۷۱ قانون کار - مبنای هر روز ۸ ساعت، هر ماه ۲۰ ساعت):
-    const leaveHourlyRate = lastDailySalary / 8;
+    // 3. مرخصی استحقاقی و بازخرید آن بر اساس ساعت:
+    // سقف مرخصی ماهانه از فیلد «مرخصی ساعتی ماهانه» در قوانین و ثوابت دستمزد (پیش‌فرض ۱۵:۵۳) خوانده می‌شود.
+    // نرخ هر ساعت بازخرید = جمع مبلغ ماهانه (مبنای ۳۰ روز) آیتم‌های مشمول محاسبه بازخرید مرخصی ÷ ۲۲۰ ساعت
+    const monthlyLeaveMinutes = getMonthlyLeaveMinutesForYearMonth(db, contractEndYear, activePeriodId);
+
+    // یافتن آخرین قرارداد پرسنل برای خواندن اقلام مبنای ۳۰ روزه
+    const allContractsForEmployee = (employeeContracts.length > 0
+      ? employeeContracts
+      : (db.personnelContracts || []).filter(c => c.employeeCode === selectedPersonnel?.employeeCode)
+    ).slice().sort((a, b) => {
+      const aDate = normalizeJalaliDate(toEnglishDigits(a.contractStartDate || ''));
+      const bDate = normalizeJalaliDate(toEnglishDigits(b.contractStartDate || ''));
+      if (bDate !== aDate) return bDate.localeCompare(aDate);
+      return Number(b.isActive !== false) - Number(a.isActive !== false);
+    });
+    const latestEmployeeContract = selectedContract || allContractsForEmployee[0];
+
+    const buyoutLookupDate = effectiveSummaryEndDate || formEndDate || `${contractEndYear}/01/01`;
+    const buyoutLookupContract = {
+      ...(latestEmployeeContract || {}),
+      contractStartDate: latestEmployeeContract?.contractStartDate || formStartDate || `${contractEndYear}/01/01`,
+      contractEndDate: latestEmployeeContract?.contractEndDate || buyoutLookupDate,
+      monthDate: buyoutLookupDate
+    };
+    const buyoutContractRate =
+      getSalaryBaseRateForContract(buyoutLookupContract, selectedPersonnel, db, activePeriodId) || endYearRate;
+
+    const { items: configuredBuyoutItems, isConfigured: isLeaveBuyoutCustomConfigured } =
+      getLeaveBuyoutSalaryItemsForContract(buyoutLookupContract, selectedPersonnel, db, activePeriodId);
+
+    const LEAVE_BUYOUT_ITEM_LABELS: Record<string, string> = {
+      dailyBaseSalary: 'حقوق پایه ماهانه (۳۰ روز)',
+      dailyInsuranceSalary: 'حقوق پایه بیمه ماهانه (۳۰ روز)',
+      housingAllowance: 'کمک هزینه مسکن (حق مسکن)',
+      foodAllowance: 'کمک هزینه اقلام مصرفی (حق بن)',
+      childAllowance: 'کمک هزینه عائله‌مندی (حق اولاد)',
+      marriageAllowance: 'کمک هزینه تاهل (حق همسر)',
+      baseYearsRate: 'حق پایه سنوات (۳۰ روز)',
+      jobAllowance: 'فوق‌العاده شغلی (حق مسئولیت)'
+    };
+
+    const resolvedBuyoutEntries: { key: string; label: string }[] = [];
+    const seenBuyoutKeys = new Set<string>();
+    if (isLeaveBuyoutCustomConfigured && configuredBuyoutItems.length > 0) {
+      configuredBuyoutItems.forEach((it: any) => {
+        const k = String(it.itemKey || '').trim();
+        if (!k || seenBuyoutKeys.has(k)) return;
+        seenBuyoutKeys.add(k);
+        resolvedBuyoutEntries.push({
+          key: k,
+          label: it.itemName || LEAVE_BUYOUT_ITEM_LABELS[k] || k
+        });
+      });
+    } else {
+      DEFAULT_LEAVE_BUYOUT_ITEM_KEYS.forEach((k) => {
+        seenBuyoutKeys.add(k);
+        resolvedBuyoutEntries.push({
+          key: k,
+          label: LEAVE_BUYOUT_ITEM_LABELS[k] || k
+        });
+      });
+    }
+
+    const resolveMonthlyBuyoutItemAmount = (key: string): number => {
+      const emp = selectedPersonnel;
+      const con: any = latestEmployeeContract;
+      switch (key) {
+        case 'dailyBaseSalary': {
+          if (formDailySalaryOverride !== '') return lastDailySalary * 30;
+          if (con?.contractBaseSalary && con.contractBaseSalary > 0) return Number(con.contractBaseSalary);
+          if (con?.contractDailySalary && con.contractDailySalary > 0) return Math.round(Number(con.contractDailySalary) * 30);
+          return lastMonthlyBaseSalary;
+        }
+        case 'dailyInsuranceSalary': {
+          if (con?.contractBaseInsuranceSalary && con.contractBaseInsuranceSalary > 0) {
+            return Number(con.contractBaseInsuranceSalary);
+          }
+          if (con?.contractDailyInsuranceSalary && con.contractDailyInsuranceSalary > 0) {
+            return Math.round(Number(con.contractDailyInsuranceSalary) * 30);
+          }
+          if (emp?.baseSalaryInsurance && emp.baseSalaryInsurance > 0) {
+            return emp.baseSalaryInsurance > 10000000
+              ? Number(emp.baseSalaryInsurance)
+              : Math.round(Number(emp.baseSalaryInsurance) * 30);
+          }
+          if (emp?.dailySalaryInsurance && emp.dailySalaryInsurance > 0) {
+            return Math.round(Number(emp.dailySalaryInsurance) * 30);
+          }
+          return Math.round((buyoutContractRate?.dailyInsuranceSalary || endYearRate.dailyInsuranceSalary || lastDailySalary) * 30);
+        }
+        case 'baseYearsRate': {
+          if (con?.calculatedSeniorityBase && con.calculatedSeniorityBase > 0) {
+            return Number(con.calculatedSeniorityBase);
+          }
+          if (con?.contractSeniorityBase && con.contractSeniorityBase > 0) {
+            return Number(con.contractSeniorityBase);
+          }
+          if (con?.contract?.calculatedSeniorityBase && con.contract.calculatedSeniorityBase > 0) {
+            return Number(con.contract.calculatedSeniorityBase);
+          }
+          if (emp?.dailyYearsDifference && emp.dailyYearsDifference > 0) {
+            return Math.round(Number(emp.dailyYearsDifference) * 30);
+          }
+          if (emp?.yearsBase && emp.yearsBase > 0) {
+            return emp.yearsBase > 500000 ? Number(emp.yearsBase) : Math.round(Number(emp.yearsBase) * 30);
+          }
+          const insStart = parseJalali(emp?.insuranceDate || emp?.entryDate || '');
+          const refDateParsed = parseJalali(con?.contractStartDate || buyoutLookupDate || '');
+          if (insStart && refDateParsed) {
+            const totalMonthsDiff = (refDateParsed.y - insStart.y) * 12 + (refDateParsed.m - insStart.m) + (refDateParsed.d >= insStart.d ? 0 : -1);
+            const completedYears = Math.floor(totalMonthsDiff / 12);
+            if (completedYears >= 1) {
+              const yrStr = String(contractEndYear);
+              const rule = (db.seniorityRateRules || []).find(
+                r => r.seniorityYears === completedYears && toEnglishDigits(String(r.fiscalYear || '')).trim() === yrStr
+              );
+              if (rule && rule.dailyRate > 0) {
+                return Math.round(rule.dailyRate * 30);
+              }
+            }
+          }
+          if (refLastMonth && refLastMonth.seniorityBase && refLastMonth.seniorityBase > 0 && refLastMonth.workedDays > 0) {
+            return Math.round((refLastMonth.seniorityBase / refLastMonth.workedDays) * 30);
+          }
+          return 0;
+        }
+        case 'foodAllowance': {
+          if (con?.calculatedFoodAllowance && con.calculatedFoodAllowance > 0) return Number(con.calculatedFoodAllowance);
+          if (con?.contract?.calculatedFoodAllowance && con.contract.calculatedFoodAllowance > 0) {
+            return Number(con.contract.calculatedFoodAllowance);
+          }
+          return Number(buyoutContractRate?.foodAllowance || endYearRate.foodAllowance || 0);
+        }
+        case 'housingAllowance': {
+          if (con?.calculatedHousingAllowance && con.calculatedHousingAllowance > 0) return Number(con.calculatedHousingAllowance);
+          if (con?.contract?.calculatedHousingAllowance && con.contract.calculatedHousingAllowance > 0) {
+            return Number(con.contract.calculatedHousingAllowance);
+          }
+          return Number(buyoutContractRate?.housingAllowance || endYearRate.housingAllowance || 0);
+        }
+        case 'childAllowance': {
+          if (con?.calculatedChildAllowance && con.calculatedChildAllowance > 0) return Number(con.calculatedChildAllowance);
+          if (con?.contract?.calculatedChildAllowance && con.contract.calculatedChildAllowance > 0) {
+            return Number(con.contract.calculatedChildAllowance);
+          }
+          const childCount = emp?.childrenCount || (emp?.childrenList || []).length || 0;
+          const hasInsuranceDays = emp?.insuranceHistoryDays || 0;
+          const isChildEligible =
+            childCount > 0 && (hasInsuranceDays >= 720 || emp?.childrenList?.some(ch => ch.subjectToAllowance));
+          if (!isChildEligible) return 0;
+          const childRate = Number(buyoutContractRate?.childAllowance || endYearRate.childAllowance || 0);
+          return Math.round(childCount * childRate);
+        }
+        case 'marriageAllowance': {
+          const isMarried = emp?.maritalStatus === 'متاهل' || emp?.isMarried === true;
+          if (!isMarried) return 0;
+          if (con?.calculatedMarriageAllowance && con.calculatedMarriageAllowance > 0) {
+            return Number(con.calculatedMarriageAllowance);
+          }
+          if (con?.contract?.calculatedMarriageAllowance && con.contract.calculatedMarriageAllowance > 0) {
+            return Number(con.contract.calculatedMarriageAllowance);
+          }
+          return Number(buyoutContractRate?.marriageAllowance || endYearRate.marriageAllowance || 0);
+        }
+        case 'jobAllowance': {
+          if (con?.jobAllowance && con.jobAllowance > 0) return Number(con.jobAllowance);
+          if (con?.contract?.jobAllowance && con.contract.jobAllowance > 0) return Number(con.contract.jobAllowance);
+          return Number(emp?.jobAllowance || 0);
+        }
+        default:
+          return 0;
+      }
+    };
+
+    const leaveBuyoutBreakdown = resolvedBuyoutEntries.map(entry => ({
+      key: entry.key,
+      label: entry.label,
+      amount: Math.max(0, Math.round(resolveMonthlyBuyoutItemAmount(entry.key)))
+    }));
+    const leaveBuyoutBaseMonthlySum = leaveBuyoutBreakdown.reduce((sum, item) => sum + item.amount, 0);
+    const leaveHourlyRate = leaveBuyoutBaseMonthlySum / 220;
+
     let payrollRemainingLeaveMinutes: number | undefined = undefined;
     if (
       exactEndMonthRow &&
@@ -1541,26 +1746,29 @@ export default function PersonnelSettlementTab({
         ) / 100
       : 0;
 
-    // سهم مرخصی دوره طبق فرمول استاندارد: (کارکرد تسویه‌نشده / ۳۶۵) * ۲۴۰ ساعت (معادل ۳۰ روز ۸ ساعته)
-    const totalEntitledLeaveHours = Math.round(((totalWorkedDays / 365) * 240) * 100) / 100;
+    // سهم مرخصی دوره طبق فرمول: (کارکرد تسویه‌نشده / ۳۶۵) * (۱۲ × مرخصی ساعتی ماهانه)
+    const annualEntitledLeaveHours = (monthlyLeaveMinutes / 60) * 12;
+    const totalEntitledLeaveMinutes = Math.max(0, Math.round((totalWorkedDays / 365) * monthlyLeaveMinutes * 12));
+    const totalEntitledLeaveHours = Math.round((totalEntitledLeaveMinutes / 60) * 10000) / 10000;
     const totalEntitledLeaveDays = Math.round((totalEntitledLeaveHours / 8) * 100) / 100;
-    const formulaUnusedLeaveHours = Math.max(
-      0,
-      Math.round((totalEntitledLeaveHours - totalUsedLeaveHours) * 100) / 100
-    );
+    const formulaUnusedLeaveMinutes = Math.max(0, totalEntitledLeaveMinutes - totalUsedLeaveMinutes);
+    const formulaUnusedLeaveHours = Math.round((formulaUnusedLeaveMinutes / 60) * 10000) / 10000;
     const formulaUnusedLeaveDays = Math.round((formulaUnusedLeaveHours / 8) * 100) / 100;
-    const rawDefaultUnusedLeaveHours = hasPayrollLeaveBalance ? payrollUnusedLeaveHours : formulaUnusedLeaveHours;
-    const defaultUnusedLeaveHours = Math.max(
-      0,
-      Math.round((rawDefaultUnusedLeaveHours - sameMonthPriorSettledLeaveHours) * 100) / 100
-    );
+    const sameMonthPriorSettledLeaveMinutes = Math.max(0, Math.round(sameMonthPriorSettledLeaveHours * 60));
+    const rawDefaultUnusedLeaveMinutes = hasPayrollLeaveBalance
+      ? Math.max(0, Math.round(payrollRemainingLeaveMinutes!))
+      : formulaUnusedLeaveMinutes;
+    const defaultUnusedLeaveMinutes = Math.max(0, rawDefaultUnusedLeaveMinutes - sameMonthPriorSettledLeaveMinutes);
+    const defaultUnusedLeaveHours = Math.round((defaultUnusedLeaveMinutes / 60) * 10000) / 10000;
     const defaultUnusedLeaveDays = Math.round((defaultUnusedLeaveHours / 8) * 100) / 100;
-    const unusedLeaveHours =
+    const parsedFormUnusedMinutes = parseLeaveHMToMinutes(formUnusedLeaveHours);
+    const unusedLeaveMinutes =
       formUnusedLeaveHours !== ''
-        ? Math.max(0, parseFloat(toEnglishDigits(formUnusedLeaveHours).replace(/٫/g, '.')) || 0)
-        : defaultUnusedLeaveHours;
+        ? Math.max(0, parsedFormUnusedMinutes ?? 0)
+        : defaultUnusedLeaveMinutes;
+    const unusedLeaveHours = Math.round((unusedLeaveMinutes / 60) * 10000) / 10000;
     const unusedLeaveDays = Math.round((unusedLeaveHours / 8) * 100) / 100;
-    const defaultUnusedLeaveAmount = Math.round(unusedLeaveHours * leaveHourlyRate);
+    const defaultUnusedLeaveAmount = Math.round((unusedLeaveMinutes / 60) * leaveHourlyRate);
     const unusedLeaveAmount = formUnusedLeaveAmount !== '' ? parseNumber(formUnusedLeaveAmount) : defaultUnusedLeaveAmount;
 
     // 4. طلب حساب از قبل (مانده بستانکاری پرسنل از سال یا دوره قبل)
@@ -1605,6 +1813,10 @@ export default function PersonnelSettlementTab({
       defaultLastDailySalary,
       lastDailySalary,
       leaveHourlyRate,
+      monthlyLeaveMinutes,
+      leaveBuyoutBreakdown,
+      leaveBuyoutBaseMonthlySum,
+      isLeaveBuyoutCustomConfigured,
       lastMonthlyBaseSalary,
       severanceDays,
       defaultSeveranceAmount,
@@ -1614,15 +1826,19 @@ export default function PersonnelSettlementTab({
       bonusAmount,
       totalEntitledLeaveDays,
       totalEntitledLeaveHours,
+      totalEntitledLeaveMinutes,
       hasPayrollLeaveBalance,
       payrollRemainingLeaveMinutes,
       payrollUnusedLeaveHours,
       payrollUnusedLeaveDays,
       formulaUnusedLeaveHours,
+      formulaUnusedLeaveMinutes,
       formulaUnusedLeaveDays,
       defaultUnusedLeaveHours,
+      defaultUnusedLeaveMinutes,
       defaultUnusedLeaveDays,
       unusedLeaveHours,
+      unusedLeaveMinutes,
       unusedLeaveDays,
       defaultUnusedLeaveAmount,
       unusedLeaveAmount,
@@ -1635,7 +1851,8 @@ export default function PersonnelSettlementTab({
       finalNetPayable,
       overlappingPriors,
       priorSettledMonthsCount,
-      sameMonthPriorSettledLeaveHours
+      sameMonthPriorSettledLeaveHours,
+      sameMonthPriorSettledLeaveMinutes
     };
   }, [
     formMonthlyDetails,
@@ -1643,7 +1860,14 @@ export default function PersonnelSettlementTab({
     formEndDate,
     formSettlementType,
     priorWithoutDepartureForForm,
+    selectedPersonnel,
     selectedContract,
+    employeeContracts,
+    db.personnelContracts,
+    db.salaryBaseRates,
+    db.seniorityRateRules,
+    db.leaveBuyoutSalaryItems,
+    activePeriodId,
     formPurchasesAmount,
     formOtherDeductionsAmount,
     formEmployerPaidAmount,
@@ -1767,9 +1991,8 @@ export default function PersonnelSettlementTab({
     const effectiveContractId = settlement.contractId || CURRENT_YEAR_CONTRACT_ID;
     setFormContractId(effectiveContractId);
     setFormReason(settlement.reason);
-    const normStoredStart = normalizeJalaliDate(settlement.startDate) || settlement.startDate;
-    const normStoredEnd = normalizeJalaliDate(settlement.endDate) || settlement.endDate;
-    setFormStartDate(normStoredStart);
+    setFormStartDate(settlement.startDate);
+    setFormEndDate(settlement.endDate);
     setFormSettlementDate(settlement.settlementDate);
     setFormPurchasesAmount(formatWithCommas(settlement.personnelPurchasesAmount));
     setFormOtherDeductionsAmount(formatWithCommas(settlement.otherDeductionsAmount));
@@ -1785,9 +2008,11 @@ export default function PersonnelSettlementTab({
       settlement.unusedLeaveHours !== undefined && settlement.unusedLeaveHours !== null
         ? settlement.unusedLeaveHours
         : settlement.unusedLeaveDays !== undefined
-        ? Math.round(settlement.unusedLeaveDays * 8 * 100) / 100
+        ? Math.round(settlement.unusedLeaveDays * 8 * 10000) / 10000
         : undefined;
-    setFormUnusedLeaveHours(resolvedUnusedHours !== undefined ? String(resolvedUnusedHours) : '');
+    setFormUnusedLeaveHours(
+      resolvedUnusedHours !== undefined ? formatMinutesToEnglishHM(Math.round(resolvedUnusedHours * 60)) : ''
+    );
     setFormUnusedLeaveAmount(settlement.unusedLeaveAmount !== undefined ? formatWithCommas(settlement.unusedLeaveAmount) : '');
     setFormStatus(settlement.status);
     setFormNotes(settlement.notes || '');
@@ -1806,14 +2031,14 @@ export default function PersonnelSettlementTab({
     );
     setLastDetectedAttendanceDate(detected);
 
-    const effectiveEndDate =
-      !locked &&
-      resolvedType === 'with_departure' &&
-      detected &&
-      (!normStoredEnd || normStoredEnd === detected)
-        ? addDaysToJalali(detected, 1)
-        : normStoredEnd;
-    setFormEndDate(effectiveEndDate);
+    let effectiveEndDate = settlement.endDate;
+    if (!locked && resolvedType === 'with_departure' && detected) {
+      const normSavedEnd = normalizeJalaliDate(toEnglishDigits(settlement.endDate)) || toEnglishDigits(settlement.endDate);
+      if (normSavedEnd === detected) {
+        effectiveEndDate = addDaysToJalali(detected, 1);
+        setFormEndDate(effectiveEndDate);
+      }
+    }
 
     // Sync Step 2 months strictly to Payroll Lists unless locked with existing snapshot
     if (!locked || !settlement.monthlyDetails || settlement.monthlyDetails.length === 0) {
@@ -1822,10 +2047,10 @@ export default function PersonnelSettlementTab({
         (resolvedType === 'with_departure'
           ? parseEffectiveDepartureLastWorkYM(effectiveEndDate)?.year
           : parseJalali(effectiveEndDate)?.y) ||
-        parseJalali(normStoredStart)?.y ||
+        parseJalali(settlement.startDate)?.y ||
         currentYear;
       const synced = generateMonthsList(
-        normStoredStart,
+        settlement.startDate,
         effectiveEndDate,
         emp,
         contract,
@@ -1909,7 +2134,13 @@ export default function PersonnelSettlementTab({
     const yearPrefix = cleanSettlementDate.split('/')[0] || activePeriodId.split('-')[0] || '1405';
     const autoNumber = `SET-${yearPrefix}-${String(currentList.length + 1).padStart(3, '0')}`;
     const normalizedStartDate = normalizeJalaliDate(toEnglishDigits(formStartDate)) || toEnglishDigits(formStartDate);
-    const normalizedEndDate = normalizeJalaliDate(toEnglishDigits(formEndDate)) || toEnglishDigits(formEndDate);
+    const rawNormalizedEndDate = normalizeJalaliDate(toEnglishDigits(formEndDate)) || toEnglishDigits(formEndDate);
+    const normalizedEndDate =
+      formSettlementType === 'with_departure' &&
+      lastDetectedAttendanceDate &&
+      rawNormalizedEndDate === lastDetectedAttendanceDate
+        ? addDaysToJalali(lastDetectedAttendanceDate, 1)
+        : rawNormalizedEndDate;
     const effectiveReason: SettlementReason = formSettlementType === 'without_departure' ? 'contract_end' : formReason;
 
     const newRecord: PersonnelSettlement = {
@@ -2211,7 +2442,7 @@ export default function PersonnelSettlementTab({
 خالص حقوق و دستمزد ماه‌ها: ${formatWithCommas(s.totalNetSalaries)} ریال
 حق سنوات پایان خدمت: ${formatWithCommas(s.severanceAmount)} ریال
 عیدی و پاداش سالانه: ${formatWithCommas(s.bonusAmount)} ریال
-بازخرید مانده مرخصی: ${formatWithCommas(s.unusedLeaveAmount)} ریال (${formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت)
+بازخرید مانده مرخصی: ${formatWithCommas(s.unusedLeaveAmount)} ریال (${formatHoursAsPersianHM(getSettlementUnusedLeaveHours(s))} ساعت)
 طلب حساب از قبل (مانده سال قبل): ${formatWithCommas(s.previousYearReceivableAmount || 0)} ریال${s.previousYearReceivableDescription ? ` (${s.previousYearReceivableDescription})` : ''}
 جمع کل مطالبات: ${formatWithCommas(s.totalGrossPayable)} ریال
 کسورات و پرداختی قبلی: ${formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))} ریال
@@ -2456,10 +2687,13 @@ export default function PersonnelSettlementTab({
                         {formatWithCommas(s.bonusAmount)}
                       </td>
 
-                      <td className="p-3.5 text-left font-mono text-indigo-400 font-medium">
+                      <td
+                        className="p-3.5 text-left font-mono text-indigo-400 font-medium"
+                        title={`بازخرید مانده مرخصی: ${formatHoursAsPersianHM(getSettlementUnusedLeaveHours(s))} ساعت مانده — فرمول محاسبه: (جمع اقلام مشمول بازخرید مرخصی ÷ ۲۲۰ ساعت) × ساعت مانده مرخصی`}
+                      >
                         {formatWithCommas(s.unusedLeaveAmount)}
                         <span className="block text-[10px] text-slate-400 font-sans">
-                          {formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت مانده
+                          {formatHoursAsPersianHM(getSettlementUnusedLeaveHours(s))} ساعت مانده
                         </span>
                       </td>
 
@@ -2679,7 +2913,7 @@ export default function PersonnelSettlementTab({
                           <span>|</span>
                           <span className="font-mono">{toPersianDigits(ps.startDate)} تا {toPersianDigits(ps.endDate)}</span>
                           <span>|</span>
-                          <span>مرخصی تسویه‌شده: <strong className="font-mono text-emerald-300">{formatPersianHoursValue(getSettlementUnusedLeaveHours(ps))}</strong> ساعت</span>
+                          <span>مرخصی تسویه‌شده: <strong className="font-mono text-emerald-300">{formatHoursAsPersianHM(getSettlementUnusedLeaveHours(ps))}</strong> ساعت</span>
                         </span>
                       ))}
                     </div>
@@ -3369,7 +3603,9 @@ export default function PersonnelSettlementTab({
                           : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
                       }`}
                     >
-                      {settlementSummary.hasPayrollLeaveBalance ? 'متصل به تردد حقوق (ساعتی)' : '۲۰ ساعت در ماه'}
+                      {settlementSummary.hasPayrollLeaveBalance
+                        ? 'متصل به تردد حقوق (ساعتی)'
+                        : `${formatMinutesToPersianHM(settlementSummary.monthlyLeaveMinutes)} ساعت در ماه`}
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 flex flex-wrap justify-between gap-1">
@@ -3380,61 +3616,77 @@ export default function PersonnelSettlementTab({
                           <strong className="text-emerald-300 font-mono">
                             {formatMinutesToPersianHM(settlementSummary.payrollRemainingLeaveMinutes || 0)}
                           </strong>{' '}
-                          ساعت ({formatPersianHoursValue(settlementSummary.payrollUnusedLeaveHours)} ساعت)
+                          ساعت
                         </span>
                         <span className="text-slate-500">
-                          فرمول: {formatPersianHoursValue(settlementSummary.formulaUnusedLeaveHours)} ساعت
+                          فرمول: {formatMinutesToPersianHM(settlementSummary.formulaUnusedLeaveMinutes)} ساعت
                         </span>
                       </>
                     ) : (
                       <>
-                        <span>کل استحقاقی: <strong className="text-white font-mono">{formatPersianHoursValue(settlementSummary.totalEntitledLeaveHours)}</strong> ساعت</span>
+                        <span>کل استحقاقی: <strong className="text-white font-mono">{formatMinutesToPersianHM(settlementSummary.totalEntitledLeaveMinutes)}</strong> ساعت</span>
                         <span>استفاده شده: <strong className="text-white font-mono">{formatMinutesToPersianHM(settlementSummary.totalUsedLeaveMinutes)}</strong> ساعت</span>
-                        <span>مانده: <strong className="text-indigo-300 font-mono font-bold">{formatPersianHoursValue(settlementSummary.unusedLeaveHours)}</strong> ساعت</span>
+                        <span>مانده: <strong className="text-indigo-300 font-mono font-bold">{formatMinutesToPersianHM(settlementSummary.unusedLeaveMinutes)}</strong> ساعت</span>
                       </>
                     )}
                     <span className="text-indigo-300/90 w-full">
-                      نرخ هر ساعت مرخصی (مزد روزانه ÷ ۸): <strong className="font-mono text-white">{formatWithCommas(Math.round(settlementSummary.leaveHourlyRate))}</strong> ریال
+                      نرخ هر ساعت بازخرید (جمع آیتم‌های مشمول ÷ ۲۲۰):{' '}
+                      <strong className="font-mono text-white">
+                        {formatWithCommas(Math.round(settlementSummary.leaveHourlyRate))}
+                      </strong>{' '}
+                      ریال
                     </span>
-                    {settlementSummary.sameMonthPriorSettledLeaveHours > 0 && (
+                    {settlementSummary.sameMonthPriorSettledLeaveMinutes > 0 && (
                       <span className="text-amber-300 w-full">
-                        کسر مرخصی تسویه‌شده قبلی در این ماه: <strong className="font-mono">{formatPersianHoursValue(settlementSummary.sameMonthPriorSettledLeaveHours)}</strong> ساعت
+                        کسر مرخصی تسویه‌شده قبلی در این ماه: <strong className="font-mono">{formatMinutesToPersianHM(settlementSummary.sameMonthPriorSettledLeaveMinutes)}</strong> ساعت
                       </span>
                     )}
                   </div>
                   <div className="pt-2 border-t border-slate-800/80 space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <span className="text-slate-400 text-[10px] block mb-1">مانده مرخصی (ساعت):</span>
+                        <span className="text-slate-400 text-[10px] block mb-1">مانده مرخصی (ساعت:دقیقه):</span>
                         <input
                           type="text"
-                          inputMode="decimal"
+                          inputMode="text"
                           dir="ltr"
+                          placeholder="۰۰:۰۰"
                           disabled={isModalReadOnly}
                           value={toPersianDigits(
                             formUnusedLeaveHours !== ''
                               ? formUnusedLeaveHours
-                              : String(settlementSummary.defaultUnusedLeaveHours)
-                          ).replace('.', '٫')}
+                              : formatMinutesToEnglishHM(settlementSummary.defaultUnusedLeaveMinutes)
+                          )}
                           onChange={e => {
-                            const rawEng = toEnglishDigits(e.target.value).replace(/٫/g, '.').replace(/[^0-9.]/g, '');
-                            const firstDot = rawEng.indexOf('.');
-                            const hours =
-                              firstDot === -1
+                            const rawEng = toEnglishDigits(e.target.value).replace(/[^0-9:]/g, '');
+                            const firstColon = rawEng.indexOf(':');
+                            const cleaned =
+                              firstColon === -1
                                 ? rawEng
-                                : rawEng.slice(0, firstDot + 1) + rawEng.slice(firstDot + 1).replace(/\./g, '');
-                            setFormUnusedLeaveHours(hours);
-                            const numHours = parseFloat(hours) || 0;
-                            setFormUnusedLeaveAmount(formatWithCommas(Math.round(numHours * settlementSummary.leaveHourlyRate)));
+                                : rawEng.slice(0, firstColon + 1) + rawEng.slice(firstColon + 1).replace(/:/g, '').slice(0, 2);
+                            setFormUnusedLeaveHours(cleaned);
+                            const parsedMins = parseLeaveHMToMinutes(cleaned) ?? 0;
+                            setFormUnusedLeaveAmount(
+                              formatWithCommas(Math.round((parsedMins / 60) * settlementSummary.leaveHourlyRate))
+                            );
+                          }}
+                          onBlur={() => {
+                            if (formUnusedLeaveHours !== '') {
+                              const parsedMins = parseLeaveHMToMinutes(formUnusedLeaveHours) ?? 0;
+                              setFormUnusedLeaveHours(formatMinutesToEnglishHM(parsedMins));
+                            }
                           }}
                           className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-bold text-center disabled:opacity-70"
                         />
                         <span className="text-[9.5px] text-slate-400 block text-center mt-0.5 font-mono">
-                          معادل {formatMinutesToPersianHM(Math.round(settlementSummary.unusedLeaveHours * 60))} ساعت
+                          فرمت ساعت:دقیقه (مثلاً ۱۵:۵۳)
                         </span>
                       </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px] block mb-1">مبلغ بازخرید (ریال):</span>
+                      <div className="relative group">
+                        <span className="text-slate-400 text-[10px] flex items-center gap-1 mb-1 cursor-help">
+                          <span>مبلغ بازخرید (ریال):</span>
+                          <HelpCircle className="h-3 w-3 text-indigo-400 shrink-0" />
+                        </span>
                         <input
                           type="text"
                           dir="ltr"
@@ -3443,6 +3695,60 @@ export default function PersonnelSettlementTab({
                           onChange={e => setFormUnusedLeaveAmount(formatWithCommas(parseNumber(e.target.value)))}
                           className="w-full bg-slate-950 border border-slate-750 focus:border-indigo-500 rounded px-2 py-1 text-xs text-indigo-300 font-mono font-black text-left disabled:opacity-70"
                         />
+                        {/* Tooltip نمایش جزئیات روش محاسبه بازخرید مرخصی */}
+                        <div
+                          role="tooltip"
+                          className="pointer-events-none opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all duration-150 absolute bottom-full left-0 mb-2 z-50 w-80 max-w-[90vw] bg-slate-950/98 border border-indigo-400/50 rounded-xl shadow-2xl p-3 text-right space-y-2 backdrop-blur-md"
+                        >
+                          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5">
+                            <span className="text-[11px] font-black text-indigo-300">
+                              روش محاسبه مبلغ بازخرید مرخصی
+                            </span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-400/30 font-bold">
+                              {settlementSummary.isLeaveBuyoutCustomConfigured ? 'طبق قوانین ثبت‌شده' : 'پیش‌فرض قانونی'}
+                            </span>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-[9.5px] text-slate-400 font-bold">
+                              اقلام مشمول ماهانه (مبنای ۳۰ روز آخرین قرارداد/پرونده):
+                            </div>
+                            {settlementSummary.leaveBuyoutBreakdown.map(item => (
+                              <div key={item.key} className="flex items-center justify-between text-[10px] gap-2">
+                                <span className="text-slate-300">{item.label}</span>
+                                <span className="font-mono text-white font-bold whitespace-nowrap">
+                                  {formatWithCommas(item.amount)} ریال
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="border-t border-slate-800 pt-1.5 space-y-1 text-[10px]">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-300 font-bold">جمع آیتم‌های مشمول:</span>
+                              <span className="font-mono text-emerald-300 font-black whitespace-nowrap">
+                                {formatWithCommas(settlementSummary.leaveBuyoutBaseMonthlySum)} ریال
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-300">نرخ هر ساعت (جمع ÷ ۲۲۰ ساعت):</span>
+                              <span className="font-mono text-sky-300 font-bold whitespace-nowrap">
+                                {formatWithCommas(Math.round(settlementSummary.leaveHourlyRate))} ریال
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2 bg-indigo-500/15 border border-indigo-500/30 rounded-lg px-2 py-1 mt-1">
+                              <span className="text-indigo-200 font-bold">
+                                نرخ ساعتی × {formatMinutesToPersianHM(settlementSummary.unusedLeaveMinutes)} ساعت:
+                              </span>
+                              <span className="font-mono text-indigo-200 font-black whitespace-nowrap">
+                                {formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)} ریال
+                              </span>
+                            </div>
+                            {formUnusedLeaveAmount !== '' && (
+                              <div className="text-[9.5px] text-amber-300 pt-0.5">
+                                توجه: مقدار فعلی فیلد ({formatWithCommas(settlementSummary.unusedLeaveAmount)} ریال) به صورت دستی اصلاح شده است.
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                     {!isModalReadOnly && (formUnusedLeaveHours !== '' || formUnusedLeaveAmount !== '') && (
@@ -3455,7 +3761,7 @@ export default function PersonnelSettlementTab({
                         className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
                       >
                         <RotateCcw className="h-3 w-3" />
-                        بازنشانی به مقدار محاسبه‌شده ({formatPersianHoursValue(settlementSummary.defaultUnusedLeaveHours)} ساعت - {formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)} ریال)
+                        بازنشانی به مقدار محاسبه‌شده ({formatMinutesToPersianHM(settlementSummary.defaultUnusedLeaveMinutes)} ساعت - {formatWithCommas(settlementSummary.defaultUnusedLeaveAmount)} ریال)
                       </button>
                     )}
                   </div>
@@ -3731,6 +4037,29 @@ export default function PersonnelSettlementTab({
           s.endDate,
           s.monthlyDetails
         );
+        const normSStart = s.startDate
+          ? normalizeJalaliDate(toEnglishDigits(s.startDate)) || toEnglishDigits(s.startDate)
+          : '';
+        const normSEnd = s.endDate
+          ? normalizeJalaliDate(toEnglishDigits(s.endDate)) || toEnglishDigits(s.endDate)
+          : '';
+        let waiverLastAttendanceDate = s.endDate;
+        if ((s.settlementType || 'with_departure') !== 'without_departure') {
+          const effYM = parseEffectiveDepartureLastWorkYM(s.endDate);
+          const detectedMonth = findLastAttendanceDateForEmployee(
+            db,
+            emp,
+            activePeriodId,
+            effYM?.year,
+            effYM?.month
+          );
+          const detectedAny = detectedMonth || findLastAttendanceDateForEmployee(db, emp, activePeriodId);
+          if (detectedAny && (!normSEnd || detectedAny <= normSEnd)) {
+            waiverLastAttendanceDate = detectedAny;
+          } else if (normSEnd && (!normSStart || normSEnd > normSStart)) {
+            waiverLastAttendanceDate = addDaysToJalali(normSEnd, -1);
+          }
+        }
 
         return (
           <div 
@@ -3875,28 +4204,28 @@ export default function PersonnelSettlementTab({
                 transformOrigin: 'top center',
                 transition: 'transform 0.15s ease-out' 
               }}
-              className="w-full max-w-[210mm] transition-all print:transform-none print:max-w-none print:w-full"
+              className="w-full max-w-[210mm] transition-all print:transform-none"
             >
               <div 
                 id="printable-settlement-form" 
-                className="official-print-sheet w-full bg-white text-black p-4 sm:p-5 border-2 border-black print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full mx-auto mb-10 relative text-right leading-normal" 
+                className="official-print-sheet w-full bg-white text-black p-6 sm:p-8 border-2 border-black print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full mx-auto mb-10 relative text-right leading-normal" 
                 dir="rtl"
               >
                 {/* -------------------------------------------------------- */}
                 {/* 1. EMPLOYER & STORE HEADER (INDIVIDUAL BUSINESS IDENTITY) */}
                 {/* -------------------------------------------------------- */}
-                <div className="border-b-2 border-black pb-2.5 mb-3 grid grid-cols-3 items-stretch gap-2.5 print-avoid-break">
+                <div className="border-b-2 border-black pb-3 mb-3.5 flex items-start justify-between gap-3">
                   {/* Right: Store Name & Individual Identity */}
-                  <div className="text-right flex items-center">
-                    <div className="flex items-center gap-2">
+                  <div className="text-right w-1/3">
+                    <div className="flex items-center gap-2 mb-0.5">
                       <div className="w-8 h-8 border-2 border-black bg-white text-black flex items-center justify-center font-black text-sm shrink-0">
                         گ
                       </div>
                       <div>
-                        <h1 className="text-[13px] font-black text-black tracking-tight leading-tight">
+                        <h1 className="text-sm font-black text-black tracking-tight leading-tight">
                           فروشگاه نان و شیرینی گاتان
                         </h1>
-                        <span className="text-[9.5px] text-black font-bold block mt-0.5">
+                        <span className="text-[10px] text-black font-bold block mt-0.5">
                           کارفرما: شخصیت حقیقی (واحد صنفی)
                         </span>
                       </div>
@@ -3904,37 +4233,37 @@ export default function PersonnelSettlementTab({
                   </div>
 
                   {/* Center: Formal Title Box */}
-                  <div className="text-center flex items-center justify-center">
-                    <div className="w-full border-2 border-black bg-white px-2 py-1.5">
-                      <h2 className="text-[11px] font-black text-black tracking-tight leading-snug">
+                  <div className="text-center w-1/3 pt-0.5">
+                    <div className="border-2 border-black bg-white px-2.5 py-1">
+                      <h2 className="text-xs font-black text-black tracking-tight">
                         {(s.settlementType || 'with_departure') === 'without_departure'
                           ? 'برگه تسویه حساب قرارداد پرسنل (بدون ترک کار)'
                           : 'برگه تسویه حساب قطعی و مفاصاحساب پرسنل'}
                       </h2>
-                      <p className="text-[8.5px] text-black font-bold mt-0.5">
+                      <p className="text-[9px] text-black font-bold mt-0.5">
                         منطبق با مواد ۲۴، ۳۱، ۳۴، ۶۴ و ۷۱ قانون کار جمهوری اسلامی ایران
                       </p>
                     </div>
                   </div>
 
                   {/* Left: Document Ledger Box */}
-                  <div className="text-left">
-                    <div className="border-2 border-black bg-white p-1.5 font-sans text-[9.5px] space-y-0.5 text-black h-full flex flex-col justify-between">
-                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
-                        <span className="text-black font-bold whitespace-nowrap">شماره سند:</span>
-                        <strong className="text-black font-black whitespace-nowrap" dir="ltr">{toPersianDigits(s.settlementNo)}</strong>
+                  <div className="text-left w-1/3">
+                    <div className="border-2 border-black bg-white p-1.5 font-sans text-[10px] space-y-0.5 text-black">
+                      <div className="flex justify-between border-b border-black pb-0.5">
+                        <span className="text-black font-sans font-bold">شماره سند:</span>
+                        <strong className="text-black font-black">{toPersianDigits(s.settlementNo)}</strong>
                       </div>
-                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
-                        <span className="text-black font-bold whitespace-nowrap">تاریخ صدور:</span>
-                        <strong className="text-black font-bold whitespace-nowrap" dir="ltr">{toPersianDigits(s.settlementDate)}</strong>
+                      <div className="flex justify-between border-b border-black pb-0.5">
+                        <span className="text-black font-sans font-bold">تاریخ صدور:</span>
+                        <strong className="text-black font-bold">{toPersianDigits(s.settlementDate)}</strong>
                       </div>
-                      <div className="flex justify-between gap-2 border-b border-black pb-0.5">
-                        <span className="text-black font-bold whitespace-nowrap">دوره حقوقی:</span>
-                        <strong className="text-black font-bold whitespace-nowrap" dir="ltr">{toPersianDigits(s.periodId)}</strong>
+                      <div className="flex justify-between border-b border-black pb-0.5">
+                        <span className="text-black font-sans font-bold">دوره حقوقی:</span>
+                        <strong className="text-black font-bold">{toPersianDigits(s.periodId)}</strong>
                       </div>
-                      <div className="flex justify-between gap-2">
-                        <span className="text-black font-bold whitespace-nowrap">وضعیت مالی:</span>
-                        <strong className="text-black font-black whitespace-nowrap">قطعی و تسویه‌شده</strong>
+                      <div className="flex justify-between">
+                        <span className="text-black font-sans font-bold">وضعیت مالی:</span>
+                        <strong className="text-black font-sans font-black">قطعی و تسویه‌شده</strong>
                       </div>
                     </div>
                   </div>
@@ -3943,26 +4272,20 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 {/* 2. SECTION 1: PERSONNEL PROFILE & CONTRACT SPECS */}
                 {/* -------------------------------------------------------- */}
-                <div className="mb-3 print-avoid-break">
-                  <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
+                <div className="mb-3.5">
+                  <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[11px] font-black flex items-center justify-between border-b-0">
                     <span>۱. مشخصات هویتی، استخدامی و سوابق قراردادی کارگر</span>
-                    <span className="text-[9.5px] font-black text-black font-sans whitespace-nowrap">
+                    <span className="text-[10px] font-black text-black font-sans">
                       کد پرسنلی: {toPersianDigits(s.employeeCode)}
                     </span>
                   </div>
-                  <table className="w-full table-fixed border-collapse border-2 border-black text-[9.5px] text-black">
-                    <colgroup>
-                      <col style={{ width: '19%' }} />
-                      <col style={{ width: '31%' }} />
-                      <col style={{ width: '21%' }} />
-                      <col style={{ width: '29%' }} />
-                    </colgroup>
+                  <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
                     <tbody>
                       <tr>
-                        <td className="p-1.5 border border-black bg-white font-bold text-black">نام و نام خانوادگی:</td>
-                        <td className="p-1.5 border border-black bg-white font-black text-black text-[10.5px]">{empName}</td>
-                        <td className="p-1.5 border border-black bg-white font-bold text-black">کد پرسنلی:</td>
-                        <td className="p-1.5 border border-black bg-white font-sans font-black text-black">{toPersianDigits(s.employeeCode)}</td>
+                        <td className="p-1.5 border border-black bg-white font-bold w-1/6 text-black">نام و نام خانوادگی:</td>
+                        <td className="p-1.5 border border-black bg-white w-2/6 font-black text-black text-[11px]">{empName}</td>
+                        <td className="p-1.5 border border-black bg-white font-bold w-1/6 text-black">کد پرسنلی:</td>
+                        <td className="p-1.5 border border-black bg-white w-2/6 font-sans font-black text-black">{toPersianDigits(s.employeeCode)}</td>
                       </tr>
                       <tr>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">کد ملی / شناسنامه:</td>
@@ -3997,7 +4320,7 @@ export default function PersonnelSettlementTab({
                         </td>
                         <td className="p-1.5 border border-black bg-white font-bold text-black">آخرین مزد روزانه مبنا:</td>
                         <td className="p-1.5 border border-black bg-white font-sans font-black text-black">
-                          <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.dailySalaryForCalculation)}</span> ریال
+                          {formatWithCommas(s.dailySalaryForCalculation)} ریال
                         </td>
                       </tr>
                     </tbody>
@@ -4008,179 +4331,153 @@ export default function PersonnelSettlementTab({
                 {/* 3. SECTION 2: MONTHLY SALARY & WAGE BREAKDOWN */}
                 {/* -------------------------------------------------------- */}
                 {previewMode === 'full' ? (
-                  <div className="mb-3">
-                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
-                      <span>۲. صورت‌وضعیت کارکرد و ریز اقلام حقوق و دستمزد ماه‌های دوره همکاری</span>
-                      <span className="text-[9px] font-black text-black font-sans whitespace-nowrap">
+                  <div className="mb-3.5">
+                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[11px] font-black flex items-center justify-between border-b-0">
+                      <span>۲. صورت‌وضعیت کارکرد و ریز اقلام حقوق و دستمزد ماه‌های دوره همکاری (تفکیک دقیق اقلام)</span>
+                      <span className="text-[9.5px] font-black text-black font-sans">
                         ارقام به ریال
                       </span>
                     </div>
                     {(() => {
-                      const activePrintDetails = (s.monthlyDetails || []).filter(m => !m.alreadySettledInPrior);
-                      const totalPreviewOtHours = activePrintDetails.reduce((sum, m) => sum + (m.overtimeHours || 0), 0);
-                      const totalPreviewFriHours = activePrintDetails.reduce((sum, m) => sum + (m.fridayWorkHours || 0), 0);
-                      const totalPreviewHolHours = activePrintDetails.reduce((sum, m) => sum + (m.holidayWorkHours || 0), 0);
-                      const totalPreviewFamilyAllowances = (s.totalChildAllowances || 0) + (s.totalMarriageAllowances || 0);
-                      const totalPreviewOtherAllowances = activePrintDetails.reduce(
-                        (sum, m) => sum + (m.seniorityBase || 0) + (m.jobAllowance || 0),
-                        0
-                      );
-                      const totalPreviewFriAndHolAmount = (s.totalFridayWorkAmounts || 0) + (s.totalHolidayWorkAmounts || 0);
-                      const totalPreviewTaxAndSupp = activePrintDetails.reduce(
-                        (sum, m) => sum + (m.payrollTax || 0) + (m.supplementaryInsurance || 0),
-                        0
-                      );
+                      const totalPreviewOtHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.overtimeHours || 0), 0) || 0;
+                      const totalPreviewFriHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.fridayWorkHours || 0), 0) || 0;
+                      const totalPreviewHolHours = s.monthlyDetails?.reduce((sum, m) => sum + (m.holidayWorkHours || 0), 0) || 0;
+                      const totalPreviewOtherAllowances =
+                        s.monthlyDetails?.reduce(
+                          (sum, m) =>
+                            sum +
+                            (m.seniorityBase || 0) +
+                            (m.jobAllowance || 0),
+                          0
+                        ) || 0;
+                      const totalPreviewTaxAndSupp =
+                        s.monthlyDetails?.reduce(
+                          (sum, m) => sum + (m.payrollTax || 0) + (m.supplementaryInsurance || 0),
+                          0
+                        ) || 0;
                       const totalPreviewUsedLeaveMinutes =
                         s.monthlyDetails && s.monthlyDetails.length > 0
-                          ? activePrintDetails.reduce((sum, m) => sum + getMonthlyUsedLeaveMinutes(m), 0)
-                          : Math.round((s.totalUsedLeaveHours ?? (s.totalUsedLeaveDays || 0) * 8) * 60);
+                          ? s.monthlyDetails.reduce(
+                              (sum, m) =>
+                                m.alreadySettledInPrior ? sum : sum + getMonthlyUsedLeaveMinutes(m),
+                              0
+                            )
+                          : Math.round(
+                              (s.totalUsedLeaveHours ?? (s.totalUsedLeaveDays || 0) * 8) * 60
+                            );
                       return (
-                        <table className="w-full table-fixed border-collapse border-2 border-black text-[7.5px] leading-tight text-black">
-                          <colgroup>
-                            <col style={{ width: '9.5%' }} />
-                            <col style={{ width: '4%' }} />
-                            <col style={{ width: '6.5%' }} />
-                            <col style={{ width: '8.5%' }} />
-                            <col style={{ width: '7%' }} />
-                            <col style={{ width: '6.5%' }} />
-                            <col style={{ width: '6.5%' }} />
-                            <col style={{ width: '6.5%' }} />
-                            <col style={{ width: '7.5%' }} />
-                            <col style={{ width: '7.5%' }} />
-                            <col style={{ width: '8.5%' }} />
-                            <col style={{ width: '7%' }} />
-                            <col style={{ width: '6.5%' }} />
-                            <col style={{ width: '9%' }} />
-                          </colgroup>
+                        <table className="w-full border-collapse border-2 border-black text-[8px] text-black">
                           <thead className="bg-white text-black font-black text-center border-b-2 border-black">
                             <tr>
-                              <th className="border border-black px-0.5 py-1">ماه</th>
-                              <th className="border border-black px-0.5 py-1">کارکرد (روز)</th>
-                              <th className="border border-black px-0.5 py-1">مرخصی استفاده‌شده (ساعت)</th>
-                              <th className="border border-black px-0.5 py-1">حقوق پایه</th>
-                              <th className="border border-black px-0.5 py-1">بن خواربار</th>
-                              <th className="border border-black px-0.5 py-1">حق مسکن</th>
-                              <th className="border border-black px-0.5 py-1">اولاد و تاهل</th>
-                              <th className="border border-black px-0.5 py-1">سایر مزایا</th>
-                              <th className="border border-black px-0.5 py-1">اضافه‌کار</th>
-                              <th className="border border-black px-0.5 py-1">جمعه و تعطیل</th>
-                              <th className="border border-black px-0.5 py-1 font-black">ناخالص ماه</th>
-                              <th className="border border-black px-0.5 py-1">بیمه ۷٪</th>
-                              <th className="border border-black px-0.5 py-1">مالیات / تکمیلی</th>
-                              <th className="border border-black px-0.5 py-1 font-black">خالص ماه</th>
+                              <th className="border border-black p-1">ماه</th>
+                              <th className="border border-black p-1 w-6">کارکرد</th>
+                              <th className="border border-black p-1 w-10">مرخصی استفاده شده (ساعت)</th>
+                              <th className="border border-black p-1">حقوق پایه</th>
+                              <th className="border border-black p-1">بن خواربار</th>
+                              <th className="border border-black p-1">حق مسکن</th>
+                              <th className="border border-black p-1">حق اولاد</th>
+                              <th className="border border-black p-1">حق تاهل</th>
+                              <th className="border border-black p-1">سایر مزایا</th>
+                              <th className="border border-black p-1">اضافه‌کاری</th>
+                              <th className="border border-black p-1">جمعه‌کاری</th>
+                              <th className="border border-black p-1">تعطیل‌کاری</th>
+                              <th className="border border-black p-1 font-black">ناخالص</th>
+                              <th className="border border-black p-1">مشمول بیمه</th>
+                              <th className="border border-black p-1">بیمه ۷٪</th>
+                              <th className="border border-black p-1">مالیات/تکمیلی</th>
+                              <th className="border border-black p-1 font-black">خالص ماه</th>
                             </tr>
                           </thead>
                           <tbody className="text-center font-sans text-black font-bold">
                             {s.monthlyDetails?.map((m, idx) => {
-                              const rowFamilyAllowances = (m.childAllowance || 0) + (m.marriageAllowance || 0);
-                              const rowOtherAllowances = (m.seniorityBase || 0) + (m.jobAllowance || 0);
-                              const rowFriAndHolAmount = (m.fridayWorkAmount || 0) + (m.holidayWorkAmount || 0);
+                              const rowOtherAllowances =
+                                (m.seniorityBase || 0) +
+                                (m.jobAllowance || 0);
                               const rowTaxAndSupp = (m.payrollTax || 0) + (m.supplementaryInsurance || 0);
                               return (
                                 <tr key={idx} className="bg-white">
-                                  <td className="border border-black px-0.5 py-1 font-sans font-black text-black text-right">
-                                    <span>{toPersianDigits(m.monthName)}</span>
-                                    {m.alreadySettledInPrior && (
-                                      <span className="block text-[6.5px] font-bold">
-                                        (تسویه‌شده قبلی)
-                                      </span>
+                                  <td className="border border-black p-1 font-sans font-black text-black">{toPersianDigits(m.monthName)}</td>
+                                  <td className="border border-black p-1 font-black text-black">{toPersianDigits(m.workedDays)}</td>
+                                  <td className="border border-black p-1 text-black whitespace-nowrap">{formatMinutesToPersianHM(getMonthlyUsedLeaveMinutes(m))}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.baseSalary)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.foodAllowance)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.housingAllowance)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.childAllowance)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.marriageAllowance)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(rowOtherAllowances)}</td>
+                                  <td className="border border-black p-1 text-center text-black">
+                                    {m.overtimeHours > 0 ? (
+                                      <div className="leading-tight">
+                                        <span className="font-bold text-[7.5px] block">{toPersianDigits(m.overtimeHours)} ساعت</span>
+                                        <span className="text-[7.5px] block text-left">{formatWithCommas(m.overtimeAmount)}</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-left block">{formatWithCommas(m.overtimeAmount)}</span>
                                     )}
                                   </td>
-                                  <td className="border border-black px-0.5 py-1 font-black text-black tabular-nums">{toPersianDigits(m.workedDays)}</td>
-                                  <td className="border border-black px-0.5 py-1 text-black tabular-nums whitespace-nowrap" dir="ltr">
-                                    {formatMinutesToPersianHM(getMonthlyUsedLeaveMinutes(m))}
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.baseSalary)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.foodAllowance)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.housingAllowance)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowFamilyAllowances)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowOtherAllowances)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    {m.overtimeHours > 0 && (
-                                      <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(m.overtimeHours)} س</span>
+                                  <td className="border border-black p-1 text-center text-black">
+                                    {m.fridayWorkHours > 0 ? (
+                                      <div className="leading-tight">
+                                        <span className="font-bold text-[7.5px] block">{toPersianDigits(m.fridayWorkHours)} ساعت</span>
+                                        <span className="text-[7.5px] block text-left">{formatWithCommas(m.fridayWorkAmount)}</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-left block">{formatWithCommas(m.fridayWorkAmount)}</span>
                                     )}
-                                    <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(m.overtimeAmount)}</span>
                                   </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    {((m.fridayWorkHours || 0) > 0 || (m.holidayWorkHours || 0) > 0) && (
-                                      <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">
-                                        {toPersianDigits((m.fridayWorkHours || 0) + (m.holidayWorkHours || 0))} س
-                                      </span>
+                                  <td className="border border-black p-1 text-center text-black">
+                                    {m.holidayWorkHours > 0 ? (
+                                      <div className="leading-tight">
+                                        <span className="font-bold text-[7.5px] block">{toPersianDigits(m.holidayWorkHours)} ساعت</span>
+                                        <span className="text-[7.5px] block text-left">{formatWithCommas(m.holidayWorkAmount)}</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-left block">{formatWithCommas(m.holidayWorkAmount)}</span>
                                     )}
-                                    <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(rowFriAndHolAmount)}</span>
                                   </td>
-                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.grossSalary)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.workerInsuranceShare)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(rowTaxAndSupp)}</span>
-                                  </td>
-                                  <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                    <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(m.netSalaryPayable)}</span>
-                                  </td>
+                                  <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.grossSalary)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(m.insurableGross || 0)}</td>
+                                  <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.workerInsuranceShare)}</td>
+                                  <td className="border border-black p-1 text-left text-black">{formatWithCommas(rowTaxAndSupp)}</td>
+                                  <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(m.netSalaryPayable)}</td>
                                 </tr>
                               );
                             })}
                           </tbody>
                           <tfoot className="total-row font-black font-sans">
                             <tr className="bg-white text-black border-t-2 border-black">
-                              <td className="border border-black px-0.5 py-1 font-sans font-black text-black text-right">جمع کل</td>
-                              <td className="border border-black px-0.5 py-1 font-black text-black text-center tabular-nums">{toPersianDigits(s.totalWorkedDays)}</td>
-                              <td className="border border-black px-0.5 py-1 text-black text-center tabular-nums whitespace-nowrap" dir="ltr">
-                                {formatMinutesToPersianHM(totalPreviewUsedLeaveMinutes)}
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalBaseSalaries)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalFoodAllowances)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalHousingAllowances)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewFamilyAllowances)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewOtherAllowances)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
+                              <td className="border border-black p-1 font-sans font-black text-black">جمع کل</td>
+                              <td className="border border-black p-1 font-black text-black">{toPersianDigits(s.totalWorkedDays)}</td>
+                              <td className="border border-black p-1 text-black whitespace-nowrap">{formatMinutesToPersianHM(totalPreviewUsedLeaveMinutes)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalBaseSalaries)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalFoodAllowances)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalHousingAllowances)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalChildAllowances)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(s.totalMarriageAllowances)}</td>
+                              <td className="border border-black p-1 text-left text-black">{formatWithCommas(totalPreviewOtherAllowances)}</td>
+                              <td className="border border-black p-1 text-center text-black">
                                 {totalPreviewOtHours > 0 && (
-                                  <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(totalPreviewOtHours)} س</span>
+                                  <span className="font-bold text-[7.5px] block">{toPersianDigits(totalPreviewOtHours)} ساعت</span>
                                 )}
-                                <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalOvertimeAmounts)}</span>
+                                <span className="text-[7.5px] block text-left">{formatWithCommas(s.totalOvertimeAmounts)}</span>
                               </td>
-                              <td className="border border-black px-0.5 py-1 text-left text-black">
-                                {(totalPreviewFriHours + totalPreviewHolHours) > 0 && (
-                                  <span className="font-bold text-[6.5px] block text-center whitespace-nowrap">{toPersianDigits(totalPreviewFriHours + totalPreviewHolHours)} س</span>
+                              <td className="border border-black p-1 text-center text-black">
+                                {totalPreviewFriHours > 0 && (
+                                  <span className="font-bold text-[7.5px] block">{toPersianDigits(totalPreviewFriHours)} ساعت</span>
                                 )}
-                                <span dir="ltr" className="block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewFriAndHolAmount)}</span>
+                                <span className="text-[7.5px] block text-left">{formatWithCommas(s.totalFridayWorkAmounts)}</span>
                               </td>
-                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalGrossSalaries)}</span>
+                              <td className="border border-black p-1 text-center text-black">
+                                {totalPreviewHolHours > 0 && (
+                                  <span className="font-bold text-[7.5px] block">{toPersianDigits(totalPreviewHolHours)} ساعت</span>
+                                )}
+                                <span className="text-[7.5px] block text-left">{formatWithCommas(s.totalHolidayWorkAmounts)}</span>
                               </td>
-                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalWorkerInsurance)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(totalPreviewTaxAndSupp)}</span>
-                              </td>
-                              <td className="border border-black px-0.5 py-1 text-left font-black text-black">
-                                <span dir="ltr" className="inline-block tabular-nums whitespace-nowrap">{formatWithCommas(s.totalNetSalaries)}</span>
-                              </td>
+                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalGrossSalaries)}</td>
+                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalInsurableGross || 0)}</td>
+                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalWorkerInsurance)}</td>
+                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(totalPreviewTaxAndSupp)}</td>
+                              <td className="border border-black p-1 text-left font-black text-black">{formatWithCommas(s.totalNetSalaries)}</td>
                             </tr>
                           </tfoot>
                         </table>
@@ -4188,13 +4485,13 @@ export default function PersonnelSettlementTab({
                     })()}
                   </div>
                 ) : (
-                  <div className="mb-3 p-2 bg-white border-2 border-black text-center text-[10px] font-bold text-black print-avoid-break">
+                  <div className="mb-3.5 p-2 bg-white border-2 border-black text-center text-[10.5px] font-bold text-black">
                     <span>ریز اقلام کارکرد ماهانه در دفاتر حقوق و دستمزد فروشگاه ثبت و ضبط بوده و نسخه خلاصه مدیریتی نمایش داده شده است.</span>
                   </div>
                 )}
 
                 {printUnpaidLeaveInfo && (
-                  <div className="mb-3 px-2.5 py-1.5 bg-white border-2 border-black text-black text-[9.5px] font-bold flex flex-wrap items-center justify-between gap-2 print-avoid-break">
+                  <div className="mb-3.5 px-3 py-1.5 bg-white border-2 border-black text-black text-[10px] font-bold flex items-center justify-between gap-2">
                     <span>
                       توضیح کارکرد ماه ترک کار: پرسنل در ماه ترک کار تعداد{' '}
                       <strong className="font-black">
@@ -4202,7 +4499,7 @@ export default function PersonnelSettlementTab({
                       </strong>{' '}
                       روز مرخصی بدون حقوق داشته است.
                     </span>
-                    <span className="text-[8.5px] font-sans whitespace-nowrap">
+                    <span className="text-[9px] font-sans">
                       (روزهای ماه تا تاریخ ترک کار: {toPersianDigits(printUnpaidLeaveInfo.calendarDaysToDeparture)} روز - کارکرد: {toPersianDigits(printUnpaidLeaveInfo.workedDays)} روز)
                     </span>
                   </div>
@@ -4211,112 +4508,82 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 {/* 4. SECTION 3: LEGAL BENEFITS & DEDUCTIONS BREAKDOWN */}
                 {/* -------------------------------------------------------- */}
-                <div className="grid grid-cols-2 gap-3 mb-3 items-stretch print-avoid-break">
+                <div className="grid grid-cols-2 gap-3 mb-3.5">
                   {/* مطالبات و مزایای پایان خدمت */}
-                  <div className="flex flex-col border-2 border-black bg-white">
-                    <div className="bg-white border-b-2 border-black text-black px-2 py-1 text-[10px] font-black flex items-center justify-between">
+                  <div>
+                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
                       <span>۳. مطالبات و مزایای قانونی پایان خدمت (بستانکاری)</span>
-                      <span className="text-[8.5px] font-black text-black whitespace-nowrap">مقررات قانون کار</span>
+                      <span className="text-[9.5px] font-black text-black">مقررات قانون کار</span>
                     </div>
-                    <table className="w-full table-fixed border-collapse text-[9px] text-black flex-1">
-                      <colgroup>
-                        <col style={{ width: '63%' }} />
-                        <col style={{ width: '37%' }} />
-                      </colgroup>
+                    <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
                       <tbody>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">جمع خالص حقوق و دستمزد ماه‌های کارکرد:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.totalNetSalaries)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.totalNetSalaries)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
                             حق سنوات پایان خدمت (ماده ۲۴ - کارکرد {toPersianDigits(s.totalWorkedDays)} روز):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.severanceAmount)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.severanceAmount)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
                             عیدی و پاداش سالانه قانونی (به نسبت کارکرد {toPersianDigits(s.totalWorkedDays)} روز):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.bonusAmount)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.bonusAmount)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
-                            بازخرید مانده مرخصی استحقاقی ({formatPersianHoursValue(getSettlementUnusedLeaveHours(s))} ساعت):
+                            بازخرید مانده مرخصی استحقاقی ({formatHoursAsPersianHM(getSettlementUnusedLeaveHours(s))} ساعت):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.unusedLeaveAmount)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.unusedLeaveAmount)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">
-                            طلب حساب از قبل (مانده بستانکاری دوره قبل{s.previousYearReceivableDescription ? ` — ${s.previousYearReceivableDescription}` : ''}):
+                            طلب حساب از قبل (مانده بستانکاری سال/دوره قبل{s.previousYearReceivableDescription ? ` — ${s.previousYearReceivableDescription}` : ''}):
                           </td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.previousYearReceivableAmount || 0)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.previousYearReceivableAmount || 0)} ریال</td>
                         </tr>
-                      </tbody>
-                      <tfoot className="total-row">
                         <tr className="bg-white font-black text-black border-t-2 border-black">
                           <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل مطالبات ناخالص پایان خدمت:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-[10px] text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.totalGrossPayable)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-xs text-black">{formatWithCommas(s.totalGrossPayable)} ریال</td>
                         </tr>
-                      </tfoot>
+                      </tbody>
                     </table>
                   </div>
 
                   {/* کسورات و پرداختی‌های کارفرما */}
-                  <div className="flex flex-col border-2 border-black bg-white">
-                    <div className="bg-white border-b-2 border-black text-black px-2 py-1 text-[10px] font-black flex items-center justify-between">
+                  <div>
+                    <div className="bg-white border-2 border-black text-black px-2.5 py-1 text-[10.5px] font-black flex items-center justify-between border-b-0">
                       <span>۴. کسورات قانونی و پرداختی‌های قبلی کارفرما (بدهکاری)</span>
-                      <span className="text-[8.5px] font-black text-black whitespace-nowrap">اسناد مالی</span>
+                      <span className="text-[9.5px] font-black text-black">اسناد مالی</span>
                     </div>
-                    <table className="w-full table-fixed border-collapse text-[9px] text-black flex-1">
-                      <colgroup>
-                        <col style={{ width: '63%' }} />
-                        <col style={{ width: '37%' }} />
-                      </colgroup>
+                    <table className="w-full border-collapse border-2 border-black text-[10px] text-black">
                       <tbody>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">مانده خرید طی دوره پرسنل از فروشگاه:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.personnelPurchasesAmount)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.personnelPurchasesAmount)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">سایر کسورات قانونی، خسارت و تعهدات:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.otherDeductionsAmount)}</span> ریال
-                          </td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.otherDeductionsAmount)} ریال</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">شرح و علت سایر کسورات:</td>
-                          <td className="p-1.5 border border-black bg-white text-black font-medium text-[8.5px] leading-snug">{s.otherDeductionsDescription || 'فاقد کسورات متفرقه'}</td>
+                          <td className="p-1.5 border border-black bg-white text-black font-medium text-[9.5px]">{s.otherDeductionsDescription || 'فاقد کسورات متفرقه'}</td>
                         </tr>
                         <tr>
                           <td className="p-1.5 border border-black bg-white font-bold text-black">مبالغ پرداخت شده قبلی کارفرما (مساعده/حقوق):</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.employerPaidAmount)}</span> ریال
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-black">{formatWithCommas(s.employerPaidAmount)} ریال</td>
+                        </tr>
+                        <tr className="bg-white font-black text-black border-t-2 border-black">
+                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل کسورات و پرداختی‌های قبلی:</td>
+                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-xs text-black">
+                            {formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))} ریال
                           </td>
                         </tr>
                       </tbody>
-                      <tfoot className="total-row">
-                        <tr className="bg-white font-black text-black border-t-2 border-black">
-                          <td className="p-1.5 border border-black bg-white text-black font-black">جمع کل کسورات و پرداختی‌های قبلی:</td>
-                          <td className="p-1.5 border border-black bg-white text-left font-sans font-black text-[10px] text-black whitespace-nowrap">
-                            <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas((s.totalDeductions || 0) + (s.employerPaidAmount || 0))}</span> ریال
-                          </td>
-                        </tr>
-                      </tfoot>
                     </table>
                   </div>
                 </div>
@@ -4326,26 +4593,26 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black p-2.5 bg-white mb-3 flex items-center justify-between gap-3 print-avoid-break"
+                  className="border-2 border-black p-3 bg-white mb-3.5 flex flex-col sm:flex-row items-center justify-between gap-3"
                 >
                   <div className="space-y-0.5 text-right">
-                    <span className="text-[11px] font-black text-black block">
+                    <span className="text-xs font-black text-black block">
                       مبلغ خالص قابل پرداخت نهایی تسویه حساب (وجه تسویه):
                     </span>
-                    <div className="text-[10.5px] text-black font-bold">
-                      مبلغ به حروف: <strong className="text-black font-black text-[11px]">« {numberToWordsPersian(s.finalNetPayable)} ریال »</strong>
+                    <div className="text-[11.5px] text-black font-bold">
+                      مبلغ به حروف: <strong className="text-black font-black text-xs">« {numberToWordsPersian(s.finalNetPayable)} ریال »</strong>
                     </div>
-                    <span className="text-[9px] text-black font-bold block">
+                    <span className="text-[9.5px] text-black font-bold block">
                       روش تسویه: حواله بانکی ساتنا / پایا یا چک بانکی تضمین‌شده به شماره حساب و شماره شبا کارگر
                     </span>
                   </div>
                   <div 
                     style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                    className="text-left bg-white text-black px-4 py-1.5 border-2 border-black shrink-0"
+                    className="text-left bg-white text-black px-5 py-2 border-2 border-black"
                   >
-                    <span className="text-[9px] text-black block text-right font-black">مبلغ خالص قطعی:</span>
-                    <span className="text-lg font-black font-sans tracking-tight text-black block whitespace-nowrap">
-                      <span dir="ltr" className="inline-block tabular-nums">{formatWithCommas(s.finalNetPayable)}</span> <span className="text-xs font-sans font-bold text-black">ریال</span>
+                    <span className="text-[9.5px] text-black block text-right font-black">مبلغ خالص قطعی:</span>
+                    <span className="text-xl font-black font-sans tracking-tight text-black block">
+                      {formatWithCommas(s.finalNetPayable)} <span className="text-xs font-sans font-bold text-black">ریال</span>
                     </span>
                   </div>
                 </div>
@@ -4355,14 +4622,14 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black p-2.5 text-[9.5px] leading-relaxed mb-3 bg-white text-justify text-black font-normal print-avoid-break"
+                  className="border-2 border-black p-3 text-[10px] leading-relaxed mb-3.5 bg-white text-justify text-black font-normal"
                 >
                   <div className="flex items-center gap-1.5 font-black text-black mb-1 border-b border-black pb-1">
-                    <FileCheck className="h-3.5 w-3.5 text-black shrink-0" />
+                    <FileCheck className="h-4 w-4 text-black" />
                     <span>اقرارنامه رسمی دریافت مطالبات، اسقاط کافه دعاوی و مفاصاحساب قطعی کارگری:</span>
                   </div>
-                  <p className="mt-1 leading-4.5">
-                    اینجانب <strong>{empName}</strong> با شماره ملی <strong>{toPersianDigits(emp?.nationalId || '-')}</strong> و شماره بیمه <strong>{toPersianDigits(emp?.insuranceCode || '-')}</strong>، بدین‌وسیله با اراده کامل و سلامت عقل اقرار و اعلام می‌دارم که کلیه حقوق، دستمزد پایه، مزایای قانونی، بن خواربار، حق مسکن، حق اولاد، حق تاهل، اضافه کاری، جمعه کاری، تعطیل کاری، عیدی و پاداش سالانه، حق سنوات پایان دوره، مانده مرخصی استحقاقی ذخیره‌شده و مانده طلب حساب از قبل خود در بازه زمانی مورد تسویه تا تاریخ (<span className="font-sans font-bold" dir="ltr">{toPersianDigits(s.endDate)}</span>) را طبق ارقام فوق‌الذکر به طور کامل و صحیح دریافت نموده‌ام و نسبت به دوره تسویه‌شده مذکور هیچ‌گونه ادعا، طلب، حق یا شکایتی تحت هیچ عنوان حقوقی، کیفری یا استخدامی علیه <strong>فروشگاه نان و شیرینی گاتان</strong> و کارفرما نداشته و {(s.settlementType || 'with_departure') === 'without_departure' ? 'این تسویه حساب مربوط به مختومه‌شدن کامل دوره قرارداد فوق بدون قطع ادامه همکاری می‌باشد.' : 'اسقاط کافه خیارات و برائت ذمه قطعی و همه‌جانبه کارفرما را اعلام می‌دارم.'}
+                  <p className="mt-1 leading-5">
+                    اینجانب <strong>{empName}</strong> با شماره ملی <strong>{toPersianDigits(emp?.nationalId || '-')}</strong> و شماره بیمه <strong>{toPersianDigits(emp?.insuranceCode || '-')}</strong>، بدین‌وسیله با اراده کامل و سلامت عقل اقرار و اعلام می‌دارم که کلیه حقوق، دستمزد پایه، مزایای قانونی، بن خواربار، حق مسکن، حق اولاد، حق تاهل، اضافه کاری، جمعه کاری، تعطیل کاری، عیدی و پاداش سالانه، حق سنوات پایان دوره، مانده مرخصی استحقاقی ذخیره‌شده و مانده طلب حساب از قبل خود در بازه زمانی مورد تسویه تا تاریخ (<span className="font-sans font-bold">{toPersianDigits(waiverLastAttendanceDate)}</span>) را طبق ارقام فوق‌الذکر به طور کامل و صحیح دریافت نموده‌ام و نسبت به دوره تسویه‌شده مذکور هیچ‌گونه ادعا، طلب، حق یا شکایتی تحت هیچ عنوان حقوقی، کیفری یا استخدامی علیه <strong>فروشگاه نان و شیرینی گاتان</strong> و کارفرما نداشته و {(s.settlementType || 'with_departure') === 'without_departure' ? 'این تسویه حساب مربوط به مختومه‌شدن کامل دوره قرارداد فوق بدون قطع ادامه همکاری می‌باشد.' : 'اسقاط کافه خیارات و برائت ذمه قطعی و همه‌جانبه کارفرما را اعلام می‌دارم.'}
                   </p>
                 </div>
 
@@ -4371,73 +4638,71 @@ export default function PersonnelSettlementTab({
                 {/* -------------------------------------------------------- */}
                 <div 
                   style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
-                  className="border-2 border-black bg-white mb-2 print-avoid-break"
+                  className="border-2 border-black bg-white mb-2"
                 >
-                  <div className="grid grid-cols-4 divide-x divide-x-reverse divide-black text-center text-[9.5px]">
+                  <div className="grid grid-cols-4 divide-x divide-x-reverse divide-black text-center text-[10px]">
                     {/* کارگر با اثر انگشت */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
+                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10px]">کارگر / گیرنده وجه</span>
-                        <span className="text-[9px] text-black font-bold block mt-0.5">{empName}</span>
+                        <span className="font-black text-black block text-[10.5px]">کارگر / گیرنده وجه</span>
+                        <span className="text-[9.5px] text-black font-bold block mt-0.5">{empName}</span>
                       </div>
                       <div 
                         style={{ backgroundColor: '#ffffff', color: '#000000', borderColor: '#000000' }}
                         className="my-1 border border-dashed border-black bg-white p-1 flex flex-col items-center justify-center"
                       >
-                        <span className="text-[8px] text-black font-bold">محل اثر انگشت و امضا</span>
-                        <div className="w-9 h-9 border border-dashed border-black rounded-full my-0.5"></div>
+                        <span className="text-[8.5px] text-black font-bold">محل اثر انگشت و امضا</span>
+                        <div className="w-10 h-10 border border-dashed border-black rounded-full my-0.5"></div>
                       </div>
-                      <span className="text-[8px] text-black font-bold block">
-                        تاریخ: ____ / ____ / {toPersianDigits((normalizeJalaliDate(s.settlementDate || s.endDate).split('/')[0] || String(currentYear)))}
-                      </span>
+                      <span className="text-[8.5px] text-black font-bold block">تاریخ: ____ / ____ / ۱۴۰۴</span>
                     </div>
 
                     {/* امور اداری و منابع انسانی */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
+                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10px]">امور اداری و کارگزینی</span>
-                        <span className="text-[9px] text-black font-bold block mt-0.5">تایید کارکرد و مرخصی</span>
+                        <span className="font-black text-black block text-[10.5px]">امور اداری و کارگزینی</span>
+                        <span className="text-[9.5px] text-black font-bold block mt-0.5">تایید کارکرد و مرخصی</span>
                       </div>
-                      <div className="h-12 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8px] text-black font-bold block">امضا و تایید: ________________</span>
+                      <div className="h-14 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8.5px] text-black font-bold block">امضا و تایید: ________________</span>
                     </div>
 
                     {/* امور مالی و حسابداری */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
+                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10px]">امور مالی و حسابداری</span>
-                        <span className="text-[9px] text-black font-bold block mt-0.5">بررسی محاسبات و پرداخت</span>
+                        <span className="font-black text-black block text-[10.5px]">امور مالی و حسابداری</span>
+                        <span className="text-[9.5px] text-black font-bold block mt-0.5">بررسی محاسبات و پرداخت</span>
                       </div>
-                      <div className="h-12 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8px] text-black font-bold block">امضا و تایید: ________________</span>
+                      <div className="h-14 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8.5px] text-black font-bold block">امضا و تایید: ________________</span>
                     </div>
 
                     {/* کارفرما / صاحب پروانه کسب */}
                     <div 
                       style={{ backgroundColor: '#ffffff', color: '#000000' }}
-                      className="p-2 bg-white flex flex-col justify-between min-h-[108px] text-black"
+                      className="p-2.5 bg-white flex flex-col justify-between min-h-[120px] text-black"
                     >
                       <div>
-                        <span className="font-black text-black block text-[10px]">کارفرما / صاحب پروانه کسب</span>
-                        <span className="text-[9px] text-black font-bold block mt-0.5">تصویب نهایی و صدور مفاصاحساب</span>
+                        <span className="font-black text-black block text-[10.5px]">کارفرما / صاحب پروانه کسب</span>
+                        <span className="text-[9.5px] text-black font-bold block mt-0.5">تصویب نهایی و صدور مفاصاحساب</span>
                       </div>
-                      <div className="h-12 border-b border-dashed border-black my-1"></div>
-                      <span className="text-[8px] text-black font-bold block">مهر و امضای کارفرما</span>
+                      <div className="h-14 border-b border-dashed border-black my-1"></div>
+                      <span className="text-[8.5px] text-black font-bold block">مهر و امضای کارفرما</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Official Page Footer */}
-                <div className="border-t-2 border-black pt-1.5 flex items-center justify-between text-[8.5px] text-black font-bold font-sans print-avoid-break">
+                <div className="border-t-2 border-black pt-1.5 flex items-center justify-between text-[9px] text-black font-bold font-sans">
                   <span>سامانه مدیریت مالی و حقوق دستمزد - فروشگاه نان و شیرینی گاتان (شخصیت حقیقی)</span>
                   <span>کد پیگیری اصالت سند: {toPersianDigits(s.settlementNo)}-{toPersianDigits(s.employeeCode)}</span>
                   <span>تاریخ و زمان چاپ: {toPersianDigits(getTodayJalali())}</span>

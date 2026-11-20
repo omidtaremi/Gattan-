@@ -3929,7 +3929,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 text-right selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right selection:bg-rose-500 selection:text-white" dir="rtl">
 
       {/* 1. HEADER SECTION */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-5 mb-5 border-b border-slate-800">
@@ -4160,83 +4160,83 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       </div>
 
       {/* 2. NAVIGATION AND INTERACTIVE CONTROLS */}
-      <div className="flex flex-wrap items-center justify-between border-b border-slate-850 pb-4 mb-6 gap-3">
-        <div className="flex p-1 bg-slate-950 rounded-2xl border border-slate-850">
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-850 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
+        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar max-w-full p-1 bg-slate-950 rounded-2xl border border-slate-850 gap-1">
           <button
             onClick={() => setActiveTab('formulas')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'formulas' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <Calculator className="h-4 w-4" />
+            <Calculator className="h-4 w-4 shrink-0" />
             فرمولاسیون و سنجش قیمت تمام‌شده کارگاهی
           </button>
           <button
             onClick={() => setActiveTab('timeline')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'timeline' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <Clock className="h-4 w-4" />
+            <Clock className="h-4 w-4 shrink-0" />
             برنامه‌ریزی تولید و تسهیم زمان‌محور
           </button>
           <button
             onClick={() => setActiveTab('conversions')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'conversions' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <ArrowLeftRight className="h-4 w-4" />
+            <ArrowLeftRight className="h-4 w-4 shrink-0" />
             جدول ضریب تبدیل واحد مواد خام
           </button>
           <button
             onClick={() => setActiveTab('analytics')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'analytics' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <DollarSign className="h-4 w-4" />
+            <DollarSign className="h-4 w-4 shrink-0" />
             گزارش و تحلیل سود و زیان
           </button>
           <button
             onClick={() => setActiveTab('comparison')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'comparison' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <Activity className="h-4 w-4" />
+            <Activity className="h-4 w-4 shrink-0" />
             مقایسه عملکرد دوره
           </button>
           <button
             onClick={() => setActiveTab('pricing')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'pricing' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <TrendingUp className="h-4 w-4" />
+            <TrendingUp className="h-4 w-4 shrink-0" />
             شبیه‌ساز قیمت‌گذاری و سود فروش
           </button>
           <button
             onClick={() => setActiveTab('wip')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'wip' 
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
             }`}
           >
-            <Layers className="h-4 w-4" />
+            <Layers className="h-4 w-4 shrink-0" />
             کالای در جریان ساخت (WIP)
           </button>
         </div>

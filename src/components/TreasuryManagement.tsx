@@ -126,25 +126,25 @@ export default function TreasuryManagement({ db, onUpdateDb, activePeriodId, ask
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header Banner */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none -translate-x-1/2 -translate-y-1/2" />
         <div className="absolute bottom-0 right-0 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none translate-x-1/2 translate-y-1/2" />
         
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400 shadow-inner">
-              <Coins className="w-8 h-8" />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className="p-2.5 sm:p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400 shadow-inner shrink-0">
+              <Coins className="w-6 h-6 sm:w-8 sm:h-8" />
             </div>
             <div>
-              <h2 className="text-xl font-black text-white flex items-center gap-2">
+              <h2 className="text-base sm:text-xl font-black text-white flex items-center gap-2 flex-wrap">
                 مدیریت وجوه نقد و بانک (خزانه‌داری)
-                <span className="text-xs bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded-full border border-emerald-500/20 font-mono">
+                <span className="hidden sm:inline text-xs bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded-full border border-emerald-500/20 font-mono">
                   GATAN TREASURY
                 </span>
               </h2>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="hidden sm:block text-xs text-slate-400 mt-1">
                 کنترل یکپارچه نقدینگی، حساب‌های بانکی، کارتخوان‌ها، صندوق‌داران، اسناد دریافت و پرداخت، تهاتر کالا و تسویه حساب‌های روزانه
               </p>
             </div>
@@ -153,7 +153,7 @@ export default function TreasuryManagement({ db, onUpdateDb, activePeriodId, ask
       </div>
 
       {/* Sub Navigation Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 border-b border-slate-800/80 scrollbar-thin scrollbar-thumb-slate-800">
+      <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar pb-2 border-b border-slate-800/80">
         {subTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeSubTab === tab.id;
@@ -161,13 +161,13 @@ export default function TreasuryManagement({ db, onUpdateDb, activePeriodId, ask
             <button
               key={tab.id}
               onClick={() => setActiveSubTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-bold whitespace-nowrap transition-all duration-200 cursor-pointer ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-3 rounded-xl sm:rounded-2xl text-[11px] sm:text-xs font-bold whitespace-nowrap shrink-0 transition-all duration-200 cursor-pointer ${
                 isActive
                   ? 'bg-slate-800 text-white shadow-lg border border-slate-700'
                   : 'bg-slate-900/60 text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-slate-900'
               }`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? tab.color : 'text-slate-400'}`} />
+              <Icon className={`w-4 h-4 shrink-0 ${isActive ? tab.color : 'text-slate-400'}`} />
               <span>{tab.label}</span>
               {tab.badge !== undefined && tab.badge > 0 && (
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${

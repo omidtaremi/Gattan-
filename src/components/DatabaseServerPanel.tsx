@@ -551,14 +551,14 @@ export default function DatabaseServerPanel({
     : 0;
 
   return (
-    <div className="bg-[#121214] p-6 rounded-3xl border border-zinc-800/80 shadow-2xl text-right space-y-6 animate-fade-in font-sans" dir="rtl">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="bg-[#121214] p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-zinc-800/80 shadow-2xl text-right space-y-4 sm:space-y-6 animate-fade-in font-sans" dir="rtl">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Server className="h-6 w-6 text-emerald-400" />
+          <h2 className="text-base sm:text-xl font-black text-white flex items-center gap-2">
+            <Server className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-400 shrink-0" />
             مدیریت پایگاه داده مشترک (PostgreSQL) و کاربران
           </h2>
-          <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed">
+          <p className="hidden sm:block text-xs text-zinc-400 mt-1.5 leading-relaxed">
             تمامی داده‌های کالا، فروش، فرمولاسیون، حقوق و خزانه به صورت متمرکز در پایگاه داده PostgreSQL روی سرور Ubuntu 24 ذخیره شده و با سطح دسترسی تفکیک‌شده (RBAC) بین تمامی کاربران به اشتراک گذاشته می‌شوند.
           </p>
         </div>

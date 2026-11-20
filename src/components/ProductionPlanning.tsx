@@ -2269,22 +2269,22 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
     <div className="space-y-6 font-sans text-right" dir="rtl">
       
       {/* ================= HEADER CONTROL PANEL ================= */}
-      <div className="bg-[#0d0d0f] p-6 rounded-3xl border border-zinc-800/80 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-4">
+      <div className="bg-[#0d0d0f] p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-zinc-800/80 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
         <div>
-          <h1 className="text-xl font-black text-white flex items-center gap-2">
-            <Sliders className="h-6 w-6 text-emerald-400" />
+          <h1 className="text-base sm:text-xl font-black text-white flex items-center gap-2">
+            <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-400 shrink-0" />
             برنامه‌ریزی تولید و سفارشات کارگاه
           </h1>
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="hidden sm:block text-xs text-zinc-400 mt-1">
             سیستم پیشرفته چیدمان راک‌های تولیدی، زمان‌بندی زنجیره پخت، مدیریت گرمخانه تخمیر و آنالیز تداخل فرها
           </p>
         </div>
 
         {/* Action Controls */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar w-full md:w-auto items-center gap-1.5 sm:gap-2">
           <button
             onClick={() => setActiveTab('planning')}
-            className={`px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'planning' 
                 ? 'bg-emerald-600 text-white shadow-lg' 
                 : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
@@ -2294,18 +2294,18 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
           </button>
           <button
             onClick={() => setActiveTab('optimization')}
-            className={`px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'optimization' 
                 ? 'bg-emerald-600 text-white shadow-lg' 
                 : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
             }`}
           >
-            <Sparkles className="h-3.5 w-3.5 text-amber-400 animate-pulse" />
+            <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
             بهینه‌سازی تولید
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'settings' 
                 ? 'bg-emerald-600 text-white shadow-lg' 
                 : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'

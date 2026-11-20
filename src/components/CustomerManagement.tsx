@@ -565,72 +565,72 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId }: C
       )}
 
       {/* HEADER WITH SUMMARY KPI & TITLE */}
-      <div className="bg-gradient-to-l from-slate-900 via-slate-900/90 to-slate-950 p-6 rounded-3xl border border-slate-800 shadow-xl relative overflow-hidden">
+      <div className="bg-gradient-to-l from-slate-900 via-slate-900/90 to-slate-950 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-800 shadow-xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-0" />
         
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-          <div className="flex items-center gap-3.5">
-            <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl shadow-inner">
-              <Users className="h-7 w-7" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 relative z-10">
+          <div className="flex items-center gap-2.5 sm:gap-3.5">
+            <div className="p-2.5 sm:p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl sm:rounded-2xl shadow-inner shrink-0">
+              <Users className="h-5 w-5 sm:h-7 sm:w-7" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-black text-slate-100 tracking-tight">مدیریت مشتریان و طرف‌های تجاری</h1>
-                <span className="text-[10px] font-mono px-2.5 py-0.5 bg-rose-950/60 border border-rose-500/30 text-rose-400 rounded-full font-bold">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-base sm:text-xl font-black text-slate-100 tracking-tight">مدیریت مشتریان و طرف‌های تجاری</h1>
+                <span className="text-[10px] font-mono px-2 py-0.5 bg-rose-950/60 border border-rose-500/30 text-rose-400 rounded-full font-bold">
                   {toPersianDigits(customers.length)} مشتری
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="hidden sm:block text-xs text-slate-400 mt-1">
                 تعریف پرونده کامل مشتریان حقیقی و حقوقی، گروه‌بندی، سقف اعتبارات مالی، حساب‌های بانکی و شرایط تسویه
               </p>
             </div>
           </div>
 
           {/* Quick Actions Navigation */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 sm:gap-2 pb-0.5 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
             <button
               type="button"
               onClick={() => setActiveSubTab('list')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
                 activeSubTab === 'list'
                   ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
                   : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
               }`}
             >
-              <Users className="h-4 w-4" />
+              <Users className="h-4 w-4 shrink-0" />
               فهرست مشتریان
             </button>
 
             <button
               type="button"
               onClick={handleStartNew}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
                 activeSubTab === 'form'
                   ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
                   : 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
               }`}
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-4 w-4 shrink-0" />
               تعریف مشتری جدید
             </button>
 
             <button
               type="button"
               onClick={() => setActiveSubTab('categories')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
                 activeSubTab === 'categories'
                   ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
                   : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
               }`}
             >
-              <Layers className="h-4 w-4" />
+              <Layers className="h-4 w-4 shrink-0" />
               گروه‌های مشتریان
             </button>
           </div>
         </div>
 
         {/* 4 SUMMARY STATS CARDS */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mt-6 pt-5 border-t border-slate-800/80 relative z-10">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5 mt-4 sm:mt-6 pt-3.5 sm:pt-5 border-t border-slate-800/80 relative z-10">
           <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
             <span className="text-[11px] text-slate-400 block mb-1">کل مشتریان ثبت‌شده</span>
             <div className="flex items-baseline justify-between">

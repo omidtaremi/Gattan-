@@ -962,10 +962,10 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
   }, [ticketList, ticketSearch]);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 text-right space-y-6 animate-fade-in selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-4 sm:space-y-6 animate-fade-in selection:bg-rose-500 selection:text-white" dir="rtl">
       
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-rose-950/30 to-slate-900 p-6 rounded-3xl border border-rose-900/40 shadow-2xl relative overflow-hidden">
+      <div className="bg-gradient-to-r from-slate-900 via-rose-950/30 to-slate-900 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-rose-900/40 shadow-2xl relative overflow-hidden">
         <div className="absolute -left-10 -top-10 w-40 h-40 bg-rose-600/10 rounded-full blur-3xl pointer-events-none" />
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 relative z-10">
           <div className="flex items-center gap-3.5">
@@ -1034,100 +1034,100 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex flex-wrap items-center gap-2 bg-slate-950 p-2 rounded-2xl border border-slate-800/80 shadow-lg">
+      <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 sm:gap-2 bg-slate-950 p-1.5 sm:p-2 rounded-2xl border border-slate-800/80 shadow-lg">
         <button
           onClick={() => setActiveTab('config')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'config'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <Settings className="h-4 w-4" />
+          <Settings className="h-4 w-4 shrink-0" />
           تنظیمات شبکه و پورت‌های RX / TX
         </button>
 
         <button
           onClick={() => setActiveTab('plus')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'plus'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <Tag className="h-4 w-4" />
+          <Tag className="h-4 w-4 shrink-0" />
           مدیریت کالاها و حافظه PLU ({toPersianDigits(pluList.length)})
         </button>
 
         <button
           onClick={() => setActiveTab('keypad')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'keypad'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <Grid3x3 className="h-4 w-4" />
+          <Grid3x3 className="h-4 w-4 shrink-0" />
           کلیدهای مستقیم کیپد (Preset Keys 1-70)
         </button>
 
         <button
           onClick={() => setActiveTab('tickets')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'tickets'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <FileText className="h-4 w-4" />
+          <FileText className="h-4 w-4 shrink-0" />
           قبوض وزن‌کشی ({toPersianDigits(ticketList.length)})
         </button>
 
         <button
           onClick={() => setActiveTab('reports')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'reports'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <BarChart3 className="h-4 w-4 text-emerald-400" />
+          <BarChart3 className="h-4 w-4 text-emerald-400 shrink-0" />
           گزارشات فروش و آمار ترازو (Sales Reports)
         </button>
 
         <button
           onClick={() => setActiveTab('label_design')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'label_design'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <Printer className="h-4 w-4" />
+          <Printer className="h-4 w-4 shrink-0" />
           طراحی قالب چاپ و لیبل (Label Designer)
         </button>
 
         <button
           onClick={() => setActiveTab('terminal')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'terminal'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
           }`}
         >
-          <Terminal className="h-4 w-4" />
+          <Terminal className="h-4 w-4 shrink-0" />
           ترمینال دستورات و بازرس پروتکل
         </button>
 
         <button
           onClick={() => setActiveTab('manual')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'manual'
               ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
               : 'text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 border border-amber-500/30'
           }`}
         >
-          <BookOpen className="h-4 w-4 text-amber-400 animate-pulse" />
+          <BookOpen className="h-4 w-4 text-amber-400 shrink-0" />
           آموزش و دفترچه راهنمای Dibal 500-SW
         </button>
       </div>

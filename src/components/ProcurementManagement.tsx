@@ -704,30 +704,30 @@ export default function ProcurementManagement({ db, onUpdateDb, activePeriodId }
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 animate-fade-in text-right selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right selection:bg-rose-500 selection:text-white" dir="rtl">
       
       {/* Dynamic Header */}
-      <div className="flex flex-col border-b border-slate-800 pb-5 mb-6 gap-5">
+      <div className="flex flex-col border-b border-slate-800 pb-3 sm:pb-5 mb-4 sm:mb-6 gap-3 sm:gap-5">
         <div className="flex items-center gap-3">
-          <div className="bg-rose-500/10 text-rose-400 p-2.5 rounded-2xl border border-rose-500/15">
-            <ShoppingCart className="h-6 w-6 text-rose-500 animate-pulse" />
+          <div className="bg-rose-500/10 text-rose-400 p-2 sm:p-2.5 rounded-2xl border border-rose-500/15 shrink-0">
+            <ShoppingCart className="h-5 w-5 sm:h-6 sm:w-6 text-rose-500" />
           </div>
           <div>
-            <h2 className="text-xl font-black text-white">
+            <h2 className="text-base sm:text-xl font-black text-white">
               سیستم هوشمند سفارش و تأمین کالا (سفارش کالا)
             </h2>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="hidden sm:block text-xs text-slate-400 mt-1">
               صدور فاکتور و پیگیری فعال تحویل اقلام و کالاها (مواد اولیه یا محصول خریداری شده) با تعیین بهینه گام‌های تأمین کالا
             </p>
           </div>
         </div>
 
-        {/* Tab Controls - Full Width and Grid-responsive to prevent horizontal scroll entirely */}
-        <div className="grid grid-cols-1 md:grid-cols-3 bg-slate-950 p-1.5 rounded-2xl border border-slate-850 w-full gap-1">
+        {/* Tab Controls - Single-row horizontal scroll on mobile, 3-column grid on md+ */}
+        <div className="flex flex-nowrap overflow-x-auto no-scrollbar md:grid md:grid-cols-3 bg-slate-950 p-1 sm:p-1.5 rounded-2xl border border-slate-850 w-full gap-1">
           <button
             type="button"
             onClick={() => setActiveTab('create')}
-            className={`px-4 py-2.5 text-xs font-bold rounded-xl transition-all text-center cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 sm:py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'create' ? 'bg-gradient-to-r from-rose-600 to-rose-500 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
@@ -737,7 +737,7 @@ export default function ProcurementManagement({ db, onUpdateDb, activePeriodId }
           <button
             type="button"
             onClick={() => setActiveTab('report')}
-            className={`px-4 py-2.5 text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 ${
+            className={`px-3 sm:px-4 py-2 sm:py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'report' ? 'bg-gradient-to-r from-rose-600 to-rose-500 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >
@@ -752,7 +752,7 @@ export default function ProcurementManagement({ db, onUpdateDb, activePeriodId }
           <button
             type="button"
             onClick={() => setActiveTab('history')}
-            className={`px-4 py-2.5 text-xs font-bold rounded-xl transition-all text-center cursor-pointer ${
+            className={`px-3 sm:px-4 py-2 sm:py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'history' ? 'bg-gradient-to-r from-rose-600 to-rose-500 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
             }`}
           >

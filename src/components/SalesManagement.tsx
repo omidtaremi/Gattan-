@@ -2450,10 +2450,10 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 text-right" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right" dir="rtl">
       
       {/* Global Sales Module Header & 12-Month Selector */}
-      <div className="bg-slate-950 border border-slate-850 rounded-3xl p-5 shadow-xl space-y-4 mb-6" dir="rtl">
+      <div className="bg-slate-950 border border-slate-850 rounded-2xl sm:rounded-3xl p-3.5 sm:p-5 shadow-xl space-y-3 sm:space-y-4 mb-4 sm:mb-6" dir="rtl">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-850/80 pb-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-rose-500/10 text-rose-500 rounded-2xl shrink-0">
@@ -2586,10 +2586,10 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       </div>
 
       {/* Sub Tabs */}
-      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-4 mb-6">
+      <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar gap-1.5 sm:gap-2 border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 -mx-1 px-1 sm:mx-0 sm:px-0">
         <button
           onClick={() => setActiveTab('products')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'products' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
           }`}
         >
@@ -2597,7 +2597,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </button>
         <button
           onClick={() => setActiveTab('categories')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
             activeTab === 'categories' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
           }`}
         >
@@ -2610,7 +2610,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </button>
         <button
           onClick={() => setActiveTab('packaging')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'packaging' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
           }`}
         >
@@ -2618,7 +2618,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </button>
         <button
           onClick={() => setActiveTab('barcodes')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
             activeTab === 'barcodes' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25 ring-2 ring-indigo-400/30' : 'bg-slate-950 text-slate-300 hover:text-white hover:bg-slate-800'
           }`}
         >
@@ -2627,7 +2627,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </button>
         <button
           onClick={() => setActiveTab('records')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'records' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
           }`}
         >
@@ -2635,7 +2635,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </button>
         <button
           onClick={() => setActiveTab('analysis')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
             activeTab === 'analysis' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
           }`}
         >

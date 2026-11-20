@@ -181,15 +181,15 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
 
 
   return (
-    <div className="bg-[#0d0d0f] border border-zinc-850 text-zinc-100 rounded-3xl min-h-[600px] shadow-2xl font-sans p-6 animate-fade-in text-right" dir="rtl">
+    <div className="bg-[#0d0d0f] border border-zinc-850 text-zinc-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right" dir="rtl">
       
-      <div className="flex flex-col sm:flex-row items-center justify-between border-b border-zinc-800/80 pb-4 mb-6 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-800/80 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <DollarSign className="h-5.5 w-5.5 text-rose-500" />
+          <h2 className="text-base sm:text-xl font-black text-white flex items-center gap-2">
+            <DollarSign className="h-5 w-5 sm:h-5.5 sm:w-5.5 text-rose-500 shrink-0" />
             کنترل هزینه‌ها، مخارج و سربارهای کارگاه
           </h2>
-          <p className="text-xs text-zinc-400 mt-1">حق بهره‌وری اداری، هزینه‌های بازاریابی/فروش، کارمزد شبکه شتاب بانکی و فاکتورهای پرداختی متفرقه</p>
+          <p className="hidden sm:block text-xs text-zinc-400 mt-1">حق بهره‌وری اداری، هزینه‌های بازاریابی/فروش، کارمزد شبکه شتاب بانکی و فاکتورهای پرداختی متفرقه</p>
         </div>
 
         <div className="flex gap-2">

@@ -200,6 +200,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     categoryId: r.categoryId,
     unit: r.unit,
     barcode: r.barcode,
+    systemBarcode: r.systemBarcode || '',
     packageType: r.packageType,
     qtyPerPackage: r.qtyPerPackage,
     weightPerPackage: r.weightPerPackage,
@@ -801,7 +802,8 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     taxableAmount: r.taxableAmount,
     overtimeHourlyRate: r.overtimeHourlyRate,
     fridayWorkHourlyRate: r.fridayWorkHourlyRate ?? Math.round(((r.dailyBaseSalary || 0) * 0.40) / 7.33),
-    holidayWorkHourlyRate: r.holidayWorkHourlyRate ?? 0
+    holidayWorkHourlyRate: r.holidayWorkHourlyRate ?? 0,
+    monthlyLeaveHours: r.monthlyLeaveHours || '15:53'
   }));
   addSheet(salaryBaseRatesExport, "Salary_Base_Rates");
 
@@ -868,6 +870,17 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     endDate: item.endDate || ''
   }));
   addSheet(insuredSalaryItemsExport, "Insured_Salary_Items");
+
+  // 29b. Leave Buyout Salary Items
+  const leaveBuyoutSalaryItemsExport = (db.leaveBuyoutSalaryItems || []).map(item => ({
+    id: item.id,
+    periodId: item.periodId || '',
+    itemKey: item.itemKey,
+    itemName: item.itemName,
+    startDate: item.startDate || '',
+    endDate: item.endDate || ''
+  }));
+  addSheet(leaveBuyoutSalaryItemsExport, "Leave_Buyout_Salary_Items");
 
   // 30. Personnel Categories
   const personnelCategoriesExport = (db.personnelCategories || []).map(cat => ({
@@ -1556,6 +1569,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
       categoryId: String(r.categoryId || ''),
       unit: (r.unit === 'عددی' ? 'عددی' : 'کیلویی') as any,
       barcode: String(r.barcode || ''),
+      systemBarcode: r.systemBarcode ? String(r.systemBarcode).trim() : undefined,
       packageType: (r.packageType || 'کارتن') as any,
       qtyPerPackage: parseNumber(r.qtyPerPackage) || 1,
       weightPerPackage: parseNumber(r.weightPerPackage) || 1,
@@ -2104,7 +2118,8 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         taxableAmount: parseNumber(r.taxableAmount),
         overtimeHourlyRate: parseNumber(r.overtimeHourlyRate),
         fridayWorkHourlyRate: r.fridayWorkHourlyRate !== undefined ? parseNumber(r.fridayWorkHourlyRate) : Math.round((dailyBase * 0.40) / 7.33),
-        holidayWorkHourlyRate: r.holidayWorkHourlyRate !== undefined ? parseNumber(r.holidayWorkHourlyRate) : 0
+        holidayWorkHourlyRate: r.holidayWorkHourlyRate !== undefined ? parseNumber(r.holidayWorkHourlyRate) : 0,
+        monthlyLeaveHours: r.monthlyLeaveHours ? String(r.monthlyLeaveHours).trim() : '15:53'
       };
     }).filter(x => x.id);
   } else {
@@ -2202,6 +2217,21 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
     })).filter(x => x.id);
   } else {
     result.insuredSalaryItems = currentDb.insuredSalaryItems || [];
+  }
+
+  // 29b. Leave Buyout Salary Items
+  const leaveBuyoutSalaryItemsRows = getSheetData("Leave_Buyout_Salary_Items");
+  if (leaveBuyoutSalaryItemsRows) {
+    result.leaveBuyoutSalaryItems = leaveBuyoutSalaryItemsRows.map(r => ({
+      id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
+      itemKey: String(r.itemKey || ''),
+      itemName: String(r.itemName || ''),
+      startDate: r.startDate ? String(r.startDate) : undefined,
+      endDate: r.endDate ? String(r.endDate) : undefined,
+    })).filter(x => x.id);
+  } else {
+    result.leaveBuyoutSalaryItems = currentDb.leaveBuyoutSalaryItems || [];
   }
 
   // 30. Personnel Categories
@@ -3431,7 +3461,8 @@ export function exportSalaryBaseRatesToExcel(rates: any[]) {
     'حق جمعه کاری ساعتی': (r.fridayWorkHourlyRate && r.fridayWorkHourlyRate > ((r.dailyBaseSalary || 0) * 0.15))
       ? Math.round(r.fridayWorkHourlyRate / 7.33)
       : (r.fridayWorkHourlyRate ?? Math.round(((r.dailyBaseSalary || 0) * 0.40) / 7.33)),
-    'حق تعطیل کاری ساعتی': r.holidayWorkHourlyRate ?? 0
+    'حق تعطیل کاری ساعتی': r.holidayWorkHourlyRate ?? 0,
+    'مرخصی ساعتی ماهانه': r.monthlyLeaveHours || '15:53'
   }));
 
   const safeData = safeExportData(excelData);

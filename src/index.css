@@ -175,6 +175,24 @@ option {
   background: #2e3042;
 }
 
+/* Compact mobile header select override (overrides global select padding) */
+select.mobile-compact-select {
+  padding: 0.2rem 0.5rem !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+  min-height: 28px !important;
+}
+
+/* Hide scrollbar on horizontal swipe tab bars while preserving smooth touch scroll */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Nice glow items */
 .shadow-neon-glow {
   box-shadow: 0 0 15px rgba(16, 185, 129, 0.08);
@@ -251,6 +269,14 @@ option {
   margin: 0 !important;
 }
 
+.official-print-sheet tr {
+  border-bottom: 1px solid #000000 !important;
+}
+
+.official-print-sheet tr:hover {
+  background-color: #ffffff !important;
+}
+
 .official-print-sheet th {
   background-color: #ffffff !important;
   color: #000000 !important;
@@ -279,7 +305,8 @@ option {
   color: #000000 !important;
 }
 
-.official-print-sheet tr.total-row td {
+.official-print-sheet tr.total-row td,
+.official-print-sheet tfoot.total-row td {
   background-color: #ffffff !important;
   color: #000000 !important;
   font-weight: 900 !important;
@@ -450,7 +477,7 @@ option {
   
   @page {
     size: A4 portrait;
-    margin: 8mm 6mm 10mm 6mm;
+    margin: 8mm 5mm 10mm 5mm;
   }
 }
 

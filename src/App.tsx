@@ -47,7 +47,7 @@ import {
   Database, RefreshCw, LogOut, ChevronDown, CheckCircle, AlertTriangle, 
   Settings, FolderKanban, ShieldAlert, Wifi, WifiOff, FileJson, Upload, LayoutDashboard,
   Boxes, Users2, LineChart, Banknote, FileCheck, Landmark, GraduationCap, Coins, Download, Cloud, Check,
-  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy
+  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X
 } from 'lucide-react';
 import {
   toPersianDigits,
@@ -100,6 +100,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('items');
   const [isOnline, setIsOnline] = useState(true);
   const [googleSheetsSyncStatus, setGoogleSheetsSyncStatus] = useState<'synced' | 'pending' | 'failed'>('synced');
+  const [mobileHasSelectedForm, setMobileHasSelectedForm] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   // Modals
   const [showBackupPanel, setShowBackupPanel] = useState(false);
@@ -667,6 +669,8 @@ export default function App() {
 
   const handleLoginSuccess = async (user: User) => {
     setCurrentUser(user);
+    setMobileHasSelectedForm(false);
+    setIsMobileMenuOpen(false);
     if (!canAccessTab(user, activeTab as SystemTabId)) {
       setActiveTab(getFirstAllowedTab(user));
     }
@@ -674,6 +678,22 @@ export default function App() {
       await hydrateFromPostgres(user);
     }
   };
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const prevOverflow = document.body.style.overflow;
+    if (window.innerWidth < 1024) {
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isMobileMenuOpen]);
 
   // 1. Initial database loading on boot with IndexedDB + PostgreSQL detection
   useEffect(() => {
@@ -1706,12 +1726,167 @@ export default function App() {
   }
 
 
+  const navItems: Array<{
+    id: SystemTabId;
+    label: string;
+    shortLabel: string;
+    icon: React.ReactNode;
+  }> = [
+    { id: 'items', label: 'مدیریت کالا و انبارگردانی', shortLabel: 'کالا و انبارگردانی', icon: <Boxes className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'suppliers', label: 'تامین کنندگان', shortLabel: 'تامین‌کنندگان', icon: <Users2 className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'customers', label: 'مشتریان', shortLabel: 'مشتریان', icon: <Users className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
+    { id: 'sales', label: 'فروش', shortLabel: 'فروش', icon: <LineChart className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'cogs', label: 'بهای قیمت تمام شده (COGS)', shortLabel: 'بهای تمام‌شده', icon: <Coins className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'production_planning', label: 'برنامه‌ریزی تولید و سفارشات', shortLabel: 'برنامه‌ریزی تولید', icon: <Calendar className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
+    { id: 'procurement', label: 'سفارش کالا', shortLabel: 'سفارش کالا', icon: <FileCheck className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'treasury', label: 'وجوه نقد و بانک (خزانه)', shortLabel: 'خزانه‌داری', icon: <Coins className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
+    { id: 'payroll', label: 'حقوق و دستمزد', shortLabel: 'حقوق و دستمزد', icon: <GraduationCap className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'expenses', label: 'هزینه‌ها و مخارج سربار', shortLabel: 'هزینه‌ها و سربار', icon: <Landmark className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'dibal_scale', label: 'مدیریت ترازوی دیبال (Dibal M-525)', shortLabel: 'ترازوی دیبال', icon: <Scale className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'cloud_sync', label: 'دیتابیس، کاربران و PostgreSQL', shortLabel: 'دیتابیس و کاربران', icon: <Server className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
+  ];
+
+  const accessibleNavItems = navItems.filter((item) => canAccessTab(currentUser, item.id));
+  const activeNavItem = navItems.find((item) => item.id === activeTab);
+
+  const handleSelectNavTab = (tabId: SystemTabId) => {
+    setActiveTab(tabId);
+    setMobileHasSelectedForm(true);
+    setIsMobileMenuOpen(false);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleLogoutClick = () => {
+    setIsMobileMenuOpen(false);
+    askConfirm(
+      'خروج از حساب کاربری',
+      'آیا مایل به خروج از سامانه گاتان هستید؟ برای ورود مجدد نیاز به نام کاربری و رمز عبور خواهد بود.',
+      async () => {
+        if (serverMode === 'postgres') {
+          await logoutFromPostgres();
+        }
+        lastSyncedDbRef.current = null;
+        collectionVersionsRef.current = {};
+        setMobileHasSelectedForm(false);
+        setIsMobileMenuOpen(false);
+        setCurrentUser(null);
+      }
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#09090b] text-[#fafafa] font-sans flex flex-col" dir="rtl">
       
       {/* ================= HEADER TOP BAR ================= */}
-      <header className="bg-[#0d0d0f] text-white shadow-xl px-6 py-4 sticky top-0 z-40 border-b border-zinc-800/80">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+      <header className="bg-[#0d0d0f]/95 backdrop-blur-md text-white shadow-xl px-2.5 py-1.5 lg:px-6 lg:py-4 sticky top-0 z-40 border-b border-zinc-800/80">
+        
+        {/* COMPACT MOBILE & TABLET HEADER (< lg) */}
+        <div className="lg:hidden flex flex-col gap-1">
+          {/* Primary Compact Row: 3-dot Menu + Active Form Title + DB Status Icon */}
+          <div className="flex items-center justify-between gap-2 min-h-[36px]">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!mobileHasSelectedForm) {
+                    setMobileHasSelectedForm(true);
+                  } else {
+                    setIsMobileMenuOpen((prev) => !prev);
+                  }
+                }}
+                aria-label="منوی بخش‌های سامانه"
+                aria-expanded={isMobileMenuOpen || !mobileHasSelectedForm}
+                className={`h-9 w-9 -mr-1 rounded-xl flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
+                  isMobileMenuOpen
+                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                    : 'text-zinc-200 hover:bg-zinc-800/80 active:bg-zinc-800'
+                }`}
+              >
+                {isMobileMenuOpen ? <X className="h-5 w-5" /> : <MoreVertical className="h-5 w-5" />}
+              </button>
+
+              <div className="h-6 w-6 rounded-lg bg-emerald-600/90 flex items-center justify-center shrink-0">
+                <Boxes className="h-3.5 w-3.5 text-white" />
+              </div>
+
+              <h1 className="text-[13px] font-black tracking-tight text-white truncate">
+                {mobileHasSelectedForm ? (activeNavItem?.label || 'سامانه گاتان') : 'سامانه جامع گاتان'}
+              </h1>
+            </div>
+
+            {/* Compact DB Status Icon + Label */}
+            <button
+              type="button"
+              onClick={() => {
+                if (canAccessTab(currentUser, 'cloud_sync')) {
+                  handleSelectNavTab('cloud_sync');
+                }
+              }}
+              className={`h-8 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-bold shrink-0 transition-colors cursor-pointer ${
+                serverMode === 'postgres'
+                  ? pgSyncState === 'error'
+                    ? 'bg-rose-950/50 text-rose-300 border-rose-500/30'
+                    : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/30'
+                  : 'bg-zinc-900 text-amber-300 border-zinc-800'
+              }`}
+              title={
+                serverMode === 'postgres'
+                  ? (lastPgSyncTime ? `PostgreSQL متصل — آخرین همگام‌سازی: ${lastPgSyncTime}` : 'PostgreSQL متصل')
+                  : 'ذخیره محلی (آفلاین)'
+              }
+            >
+              {serverMode === 'postgres' ? (
+                <>
+                  <Server className={`h-3.5 w-3.5 shrink-0 ${pgSyncState === 'syncing' ? 'animate-spin text-sky-400' : 'text-emerald-400'}`} />
+                  <span className="whitespace-nowrap">{pgSyncState === 'syncing' ? 'همگام‌سازی' : 'متصل'}</span>
+                </>
+              ) : (
+                <>
+                  <HardDrive className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                  <span className="whitespace-nowrap">محلی</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Slim Secondary Meta Row: Period Selector + User Name + Logout */}
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-800/70 text-[11px]">
+            <div className="flex items-center gap-1 min-w-0">
+              <Calendar className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+              <select
+                aria-label="دوره کاری"
+                className="mobile-compact-select bg-zinc-900 text-zinc-100 font-bold max-w-[165px] truncate outline-none"
+                value={activePeriodId}
+                onChange={(e) => setActivePeriodId(e.target.value)}
+              >
+                {db.periods.map(p => (
+                  <option key={p.id} value={p.id} className="bg-zinc-950 text-zinc-100">{p.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+              <span className="text-[11px] font-bold text-emerald-400 truncate max-w-[110px]">
+                {currentUser.fullName || currentUser.name || currentUser.username}
+              </span>
+              <span className="text-zinc-700 select-none" aria-hidden="true">·</span>
+              <button
+                type="button"
+                onClick={handleLogoutClick}
+                className="h-7 w-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-rose-400 hover:bg-zinc-800/70 transition-colors cursor-pointer shrink-0"
+                title="خروج از حساب"
+                aria-label="خروج از حساب"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* FULL DESKTOP HEADER (>= lg) */}
+        <div className="hidden lg:flex max-w-7xl mx-auto flex-row items-center justify-between gap-4">
           
           {/* Logo Title */}
           <div className="flex items-center gap-3">
@@ -1805,20 +1980,7 @@ export default function App() {
                 <span className="text-[11px] font-bold text-emerald-400">{currentUser.fullName || currentUser.name || currentUser.username}</span>
               </div>
               <button
-                onClick={() => {
-                  askConfirm(
-                    'خروج از حساب کاربری',
-                    'آیا مایل به خروج از سامانه گاتان هستید؟ برای ورود مجدد نیاز به نام کاربری و رمز عبور خواهد بود.',
-                    async () => {
-                      if (serverMode === 'postgres') {
-                        await logoutFromPostgres();
-                      }
-                      lastSyncedDbRef.current = null;
-                      collectionVersionsRef.current = {};
-                      setCurrentUser(null);
-                    }
-                  );
-                }}
+                onClick={handleLogoutClick}
                 className="p-1 border border-zinc-805 hover:border-emerald-500 hover:bg-emerald-950/30 text-zinc-400 hover:text-white rounded-lg cursor-pointer transition-all"
                 title="خروج از حساب"
               >
@@ -1831,9 +1993,126 @@ export default function App() {
         </div>
       </header>
 
+      {/* ================= MOBILE SLIDE-OVER MENU DRAWER (3-DOT TRIGGERED) ================= */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex justify-start" dir="rtl">
+          <div
+            className="fixed inset-0 bg-black/70 backdrop-blur-xs transition-opacity"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+          <aside className="relative z-10 w-[84vw] max-w-[310px] h-full bg-[#0d0d0f] border-l border-zinc-800 shadow-2xl flex flex-col animate-fadeIn">
+            {/* Drawer Header */}
+            <div className="px-4 py-3 border-b border-zinc-800/80 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="h-8 w-8 rounded-xl bg-emerald-600 flex items-center justify-center shrink-0">
+                  <Boxes className="h-4.5 w-4.5 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-white truncate">بخش‌های مدیریتی سامانه</div>
+                  <div className="text-[10px] text-zinc-400 truncate">
+                    {currentUser.fullName || currentUser.name || currentUser.username} · {currentUser.role}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="h-9 w-9 rounded-xl flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer shrink-0"
+                aria-label="بستن منو"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Scrollable Module List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-1 text-xs font-extrabold">
+              {accessibleNavItems.map((item) => {
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleSelectNavTab(item.id)}
+                    className={`w-full text-right px-3 py-2.5 min-h-[44px] rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-emerald-500/12 text-emerald-400 font-bold border border-emerald-500/25'
+                        : 'text-zinc-300 hover:bg-zinc-800/50 hover:text-white'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Drawer Footer Utilities */}
+            <div className="p-3 border-t border-zinc-800/80 bg-zinc-950/60 space-y-2 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    setShowBackupPanel(true);
+                  }}
+                  className="px-2.5 py-2 min-h-[40px] bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer relative"
+                >
+                  <Database className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <span>پشتیبان‌گیری</span>
+                  {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
+                    <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  )}
+                </button>
+
+                {isAdminUser(currentUser) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      setShowPeriodManager(true);
+                    }}
+                    className="px-2.5 py-2 min-h-[40px] bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+                  >
+                    <FolderKanban className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                    <span>مدیریت دوره‌ها</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleLogoutClick}
+                    className="px-2.5 py-2 min-h-[40px] bg-rose-950/40 border border-rose-500/25 hover:bg-rose-950/70 rounded-xl text-rose-300 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+                  >
+                    <LogOut className="h-3.5 w-3.5 shrink-0" />
+                    <span>خروج</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between text-[10px] text-zinc-500 px-1 pt-0.5">
+                <span className="truncate">
+                  {serverMode === 'postgres'
+                    ? (lastPgSyncTime ? `PostgreSQL متصل · ${lastPgSyncTime}` : 'PostgreSQL متصل')
+                    : 'ذخیره محلی (آفلاین)'}
+                </span>
+                {isAdminUser(currentUser) && (
+                  <button
+                    type="button"
+                    onClick={handleLogoutClick}
+                    className="text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1 cursor-pointer shrink-0 mr-2"
+                  >
+                    <LogOut className="h-3 w-3" />
+                    <span>خروج</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* First-Time Migration / Sync Conflict / Daily Backup Folder Permission Banner */}
       {(showLocalMigrationBanner || syncNotice || (pendingBackupFolderPrompt && isAdminUser(currentUser))) && (
-        <div className="max-w-7xl w-full mx-auto px-4 md:px-6 lg:px-8 pt-4 space-y-2">
+        <div className="max-w-7xl w-full mx-auto px-2.5 sm:px-4 md:px-6 lg:px-8 pt-3 lg:pt-4 space-y-2">
           {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
             <div className="p-3.5 rounded-2xl bg-amber-950/35 border border-amber-700/45 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
               <div className="text-amber-100 leading-relaxed">
@@ -1899,175 +2178,61 @@ export default function App() {
 
 
       {/* ================= MAIN DASHBOARD BOARD ================= */}
-      <main className="flex-grow max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <main className="flex-grow max-w-7xl w-full mx-auto p-2 sm:p-4 md:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-4 gap-3 lg:gap-6">
         
-        {/* LEFT COMPACT MOBILE NAVIGATION SIDEBAR */}
-        <nav className="lg:col-span-1 bg-[#0d0d0f] p-5 rounded-3xl border border-zinc-800/80 shadow-2xl h-fit space-y-1 select-none flex flex-col justify-between">
+        {/* NAVIGATION SIDEBAR: Always visible on desktop; on mobile starts open until user selects a form, then collapses behind the 3-dot button */}
+        <nav
+          className={`${
+            mobileHasSelectedForm ? 'hidden lg:flex' : 'flex'
+          } lg:col-span-1 bg-[#0d0d0f] p-3.5 sm:p-5 rounded-2xl lg:rounded-3xl border border-zinc-800/80 shadow-2xl h-fit space-y-1 select-none flex-col justify-between`}
+        >
           <div>
-            <div className="pb-3 mb-4 border-b border-zinc-800/80">
-              <h3 className="text-xs font-black text-zinc-500 uppercase tracking-wider">بخش‌های مدیریتی سامانه</h3>
+            <div className="pb-2.5 lg:pb-3 mb-3 lg:mb-4 border-b border-zinc-800/80 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-black text-zinc-400 lg:text-zinc-500 tracking-wider">بخش‌های مدیریتی سامانه</h3>
+              <span className="lg:hidden text-[10px] text-zinc-500 font-medium">یک بخش را انتخاب کنید</span>
             </div>
 
             <div className="space-y-1.5 text-xs font-extrabold font-sans">
-              {canAccessTab(currentUser, 'items') && (
+              {accessibleNavItems.map((item) => (
                 <button
-                  onClick={() => setActiveTab('items')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'items' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectNavTab(item.id)}
+                  className={`w-full text-right p-3 min-h-[44px] rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
+                    activeTab === item.id
+                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500'
                       : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
                   }`}
                 >
-                  <Boxes className="h-4.5 w-4.5" /> مدیریت کالا و انبارگردانی
+                  {item.icon} {item.label}
                 </button>
-              )}
-
-              {canAccessTab(currentUser, 'suppliers') && (
-                <button
-                  onClick={() => setActiveTab('suppliers')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'suppliers' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Users2 className="h-4.5 w-4.5" /> تامین کنندگان
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'customers') && (
-                <button
-                  onClick={() => setActiveTab('customers')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'customers' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Users className="h-4.5 w-4.5 text-emerald-400" /> مشتریان
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'sales') && (
-                <button
-                  onClick={() => setActiveTab('sales')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'sales' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <LineChart className="h-4.5 w-4.5" /> فروش
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'cogs') && (
-                <button
-                  onClick={() => setActiveTab('cogs')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'cogs' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Coins className="h-4.5 w-4.5" /> بهای قیمت تمام شده (COGS)
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'production_planning') && (
-                <button
-                  onClick={() => setActiveTab('production_planning')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'production_planning' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Calendar className="h-4.5 w-4.5 text-emerald-400" /> برنامه‌ریزی تولید و سفارشات
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'procurement') && (
-                <button
-                  onClick={() => setActiveTab('procurement')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'procurement' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <FileCheck className="h-4.5 w-4.5" /> سفارش کالا
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'treasury') && (
-                <button
-                  onClick={() => setActiveTab('treasury')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'treasury' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Coins className="h-4.5 w-4.5 text-emerald-400" /> وجوه نقد و بانک (خزانه)
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'payroll') && (
-                <button
-                  onClick={() => setActiveTab('payroll')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'payroll' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <GraduationCap className="h-4.5 w-4.5" /> حقوق و دستمزد
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'expenses') && (
-                <button
-                  onClick={() => setActiveTab('expenses')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'expenses' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Landmark className="h-4.5 w-4.5" /> هزینه‌ها و مخارج سربار
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'dibal_scale') && (
-                <button
-                  onClick={() => setActiveTab('dibal_scale')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'dibal_scale' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Scale className="h-4.5 w-4.5" /> مدیریت ترازوی دیبال (Dibal M-525)
-                </button>
-              )}
-
-              {canAccessTab(currentUser, 'cloud_sync') && (
-                <button
-                  onClick={() => setActiveTab('cloud_sync')}
-                  className={`w-full text-right p-3 rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
-                    activeTab === 'cloud_sync' 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500' 
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
-                  }`}
-                >
-                  <Server className="h-4.5 w-4.5 text-emerald-400" /> دیتابیس، کاربران و PostgreSQL
-                </button>
-              )}
+              ))}
             </div>
           </div>
 
-          <div className="mt-8 border-t border-zinc-850 pt-4 space-y-2 text-[10px] text-zinc-500 font-normal leading-normal select-none">
+          {/* Mobile Quick Actions on Initial Menu View */}
+          <div className="lg:hidden mt-4 pt-3 border-t border-zinc-800/80 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setShowBackupPanel(true)}
+              className="px-3 py-2.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+            >
+              <Database className="h-3.5 w-3.5 text-emerald-400" />
+              <span>پشتیبان و بازیابی</span>
+            </button>
+            {isAdminUser(currentUser) && (
+              <button
+                type="button"
+                onClick={() => setShowPeriodManager(true)}
+                className="px-3 py-2.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+              >
+                <FolderKanban className="h-3.5 w-3.5 text-emerald-400" />
+                <span>مدیریت دوره‌ها</span>
+              </button>
+            )}
+          </div>
+
+          <div className="hidden lg:block mt-8 border-t border-zinc-850 pt-4 space-y-2 text-[10px] text-zinc-500 font-normal leading-normal select-none">
             <div>فعال در بازه مالی: <strong className="text-emerald-400 block mt-0.5">{db.periods.find(p => p.id === activePeriodId)?.name}</strong></div>
             <div>
               {serverMode === 'postgres'
@@ -2079,7 +2244,7 @@ export default function App() {
 
 
         {/* RIGHT FLEXIBLE VIEWPORT CONTAINER */}
-        <section className="lg:col-span-3 space-y-6">
+        <section className={`${mobileHasSelectedForm ? 'block' : 'hidden lg:block'} lg:col-span-3 space-y-4 lg:space-y-6 min-w-0`}>
           
           {/* Item Management View */}
           {activeTab === 'items' && (

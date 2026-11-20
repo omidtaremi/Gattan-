@@ -213,6 +213,7 @@ export const COLLECTION_WRITE_PERMISSIONS: Record<string, string[]> = {
   personnelContracts: ['payroll'],
   seniorityRateRules: ['payroll'],
   insuredSalaryItems: ['payroll'],
+  leaveBuyoutSalaryItems: ['payroll'],
   attendanceRecords: ['payroll'],
   monthlyWorkdaySettings: ['payroll'],
   payrollSettings: ['payroll'],

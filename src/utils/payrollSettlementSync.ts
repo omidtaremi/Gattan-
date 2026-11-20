@@ -20,8 +20,164 @@ import {
   normalizeJalaliDate,
   parseEffectiveDepartureLastWorkYM,
   parseShamsiYearMonth,
-  toEnglishDigits
+  toEnglishDigits,
+  toPersianDigits
 } from './persianUtils';
+
+export const DEFAULT_MONTHLY_LEAVE_HM = '15:53';
+export const DEFAULT_MONTHLY_LEAVE_MINUTES = 15 * 60 + 53; // 953 دقیقه (۱۵ ساعت و ۵۳ دقیقه)
+export const DEFAULT_LEAVE_BUYOUT_ITEM_KEYS = [
+  'dailyBaseSalary',
+  'baseYearsRate',
+  'foodAllowance',
+  'housingAllowance',
+  'marriageAllowance'
+] as const;
+
+export function parseMonthlyLeaveMinutes(value?: string | number | null): number {
+  if (value === null || value === undefined) return DEFAULT_MONTHLY_LEAVE_MINUTES;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? Math.round(value * 60) : DEFAULT_MONTHLY_LEAVE_MINUTES;
+  }
+  const raw = toEnglishDigits(String(value)).trim();
+  if (!raw) return DEFAULT_MONTHLY_LEAVE_MINUTES;
+  const hmMatch = raw.match(/^(\d+)\s*:\s*(\d{1,2})$/);
+  if (hmMatch) {
+    const hrs = parseInt(hmMatch[1], 10);
+    const mins = Math.min(59, parseInt(hmMatch[2], 10));
+    if (Number.isFinite(hrs) && Number.isFinite(mins)) {
+      return Math.max(0, hrs * 60 + mins);
+    }
+  }
+  const numeric = parseFloat(raw.replace(/٫/g, '.'));
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    return Math.round(numeric * 60);
+  }
+  return DEFAULT_MONTHLY_LEAVE_MINUTES;
+}
+
+export function formatMonthlyLeaveHM(minutes: number, persian = false): string {
+  const safe = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  const formatted = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return persian ? toPersianDigits(formatted) : formatted;
+}
+
+export function normalizeMonthlyLeaveHMInput(value?: string | null): string {
+  const raw = toEnglishDigits(String(value ?? '')).trim();
+  if (!raw) return DEFAULT_MONTHLY_LEAVE_HM;
+  return formatMonthlyLeaveHM(parseMonthlyLeaveMinutes(raw), false);
+}
+
+export function getMonthlyLeaveMinutesForYearMonth(
+  db: AppDatabase,
+  year: number | string,
+  activePeriodId?: string
+): number {
+  const rates = db.salaryBaseRates || [];
+  const yearStr = toEnglishDigits(String(year || '')).trim();
+  let matched: SalaryBaseRate | undefined;
+  if (yearStr) {
+    matched =
+      rates.find(r => toEnglishDigits(String(r.year || '')).trim() === yearStr && (!activePeriodId || r.periodId === activePeriodId)) ||
+      rates.find(r => toEnglishDigits(String(r.year || '')).trim() === yearStr);
+  }
+  if (!matched && activePeriodId) {
+    matched = rates.find(r => r.periodId === activePeriodId);
+  }
+  if (matched && matched.monthlyLeaveHours && String(matched.monthlyLeaveHours).trim() !== '') {
+    return parseMonthlyLeaveMinutes(matched.monthlyLeaveHours);
+  }
+  return DEFAULT_MONTHLY_LEAVE_MINUTES;
+}
+
+export function getLeaveBuyoutSalaryItemsForContract(
+  c: any,
+  emp: any,
+  db: AppDatabase,
+  fallbackPeriodId: string
+): { periodId: string; items: any[]; isConfigured: boolean } {
+  const allItems = db.leaveBuyoutSalaryItems || [];
+  if (allItems.length === 0) {
+    return { periodId: fallbackPeriodId, items: [], isConfigured: false };
+  }
+
+  const getYear4 = (d?: string): string => {
+    if (!d) return '';
+    const m = toEnglishDigits(String(d)).match(/^(\d{4})/);
+    return m ? m[1] : '';
+  };
+
+  const conStartRaw = c?.contractStartDate || emp?.contractStartDate || emp?.entryDate || c?.date || c?.monthDate || '';
+  const conEndRaw = c?.contractEndDate || emp?.contractEndDate || '';
+  const monthDateRaw = c?.monthDate || c?.date || '';
+
+  const cleanConStart = conStartRaw ? normalizeJalaliDate(toEnglishDigits(String(conStartRaw))) : '';
+  const cleanConEnd = conEndRaw ? normalizeJalaliDate(toEnglishDigits(String(conEndRaw))) : '';
+  const cleanMonthDate = monthDateRaw ? normalizeJalaliDate(toEnglishDigits(String(monthDateRaw))) : '';
+
+  // 1. Direct date range match / overlap
+  if (cleanMonthDate || cleanConStart) {
+    const matchedByRange = allItems.filter((item: any) => {
+      const iStart = item.startDate
+        ? normalizeJalaliDate(toEnglishDigits(String(item.startDate)))
+        : (item.periodId ? `${String(item.periodId).substring(0, 4)}/01/01` : '');
+      const iEnd = item.endDate
+        ? normalizeJalaliDate(toEnglishDigits(String(item.endDate)))
+        : (item.periodId ? `${String(item.periodId).substring(0, 4)}/12/29` : '');
+
+      if (iStart && iEnd) {
+        if (cleanMonthDate) {
+          return cleanMonthDate >= iStart && cleanMonthDate <= iEnd;
+        }
+        if (cleanConStart && cleanConEnd) {
+          return cleanConStart <= iEnd && cleanConEnd >= iStart;
+        }
+        if (cleanConStart) {
+          return cleanConStart >= iStart && cleanConStart <= iEnd;
+        }
+      } else if (iStart && !iEnd) {
+        if (cleanMonthDate) return cleanMonthDate >= iStart;
+        if (cleanConEnd) return cleanConEnd >= iStart;
+        if (cleanConStart) return cleanConStart >= iStart;
+      } else if (!iStart && iEnd) {
+        if (cleanMonthDate) return cleanMonthDate <= iEnd;
+        if (cleanConStart) return cleanConStart <= iEnd;
+      }
+      return false;
+    });
+
+    if (matchedByRange.length > 0) {
+      return {
+        periodId: matchedByRange[0].periodId || fallbackPeriodId,
+        items: matchedByRange,
+        isConfigured: true
+      };
+    }
+  }
+
+  // 2. Match by target year (strictly scoped so an unregistered year falls back to default items)
+  const year = getYear4(cleanMonthDate || cleanConStart) || getYear4(fallbackPeriodId);
+  if (year) {
+    const yearItems = allItems.filter((item: any) => {
+      if (item.startDate && getYear4(item.startDate) === year) return true;
+      if (item.endDate && getYear4(item.endDate) === year) return true;
+      if (item.periodId && toEnglishDigits(String(item.periodId)).startsWith(year)) return true;
+      return false;
+    });
+    if (yearItems.length > 0) {
+      return {
+        periodId: yearItems[0].periodId || fallbackPeriodId,
+        items: yearItems,
+        isConfigured: true
+      };
+    }
+  }
+
+  // 3. No configured rule for this year/range -> caller applies legal default items
+  return { periodId: fallbackPeriodId, items: [], isConfigured: false };
+}
 
 export interface PayrollMonthSnapshot {
   year: number;
@@ -404,6 +560,7 @@ export interface DepartedMonthPerfInput {
   presenceDaysCount: number;
   prevLeaveMinutes: number;
   totalDaysInMonth: number;
+  monthlyLeaveMinutes?: number;
 }
 
 export interface DepartedMonthPerfOutput {
@@ -439,9 +596,13 @@ export function resolveDepartedMonthAttendancePerf(
   const presenceDaysCount = Math.max(0, Number(input.presenceDaysCount) || 0);
   const prevLeaveMinutes = Math.max(0, Number(input.prevLeaveMinutes) || 0);
   const totalDaysInMonth = Math.max(1, Number(input.totalDaysInMonth) || 30);
+  const monthlyLeaveCapMinutes =
+    input.monthlyLeaveMinutes !== undefined && Number.isFinite(Number(input.monthlyLeaveMinutes))
+      ? Math.max(0, Number(input.monthlyLeaveMinutes))
+      : DEFAULT_MONTHLY_LEAVE_MINUTES;
 
   if (requiredMinutes > 0 && netNormalOnlyMinutes >= requiredMinutes) {
-    const allocatedLeaveMinutes = 20 * 60;
+    const allocatedLeaveMinutes = monthlyLeaveCapMinutes;
     const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
     const finalWorkedMinutes = requiredMinutes;
     const finalOtMinutes = mandatoryOtMinutes + Math.max(0, netNormalOnlyMinutes - requiredMinutes);
@@ -493,9 +654,9 @@ export function resolveDepartedMonthAttendancePerf(
   let allocatedLeaveMinutes = 0;
   if (requiredMinutes > 0) {
     if (currentWorkedMinutes >= requiredMinutes) {
-      allocatedLeaveMinutes = 20 * 60;
+      allocatedLeaveMinutes = monthlyLeaveCapMinutes;
     } else {
-      allocatedLeaveMinutes = Math.round((currentWorkedMinutes / requiredMinutes) * 20 * 60);
+      allocatedLeaveMinutes = Math.round((currentWorkedMinutes / requiredMinutes) * monthlyLeaveCapMinutes);
     }
   }
   const totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
@@ -1374,6 +1535,8 @@ function computeAttendancePerfForMonth(
   let attendanceDaysWorked = 0;
   let daysWorkedCount = 0;
 
+  const monthlyLeaveCapMinutes = getMonthlyLeaveMinutesForYearMonth(db, targetYear, activePeriodId);
+
   if (skipLeaveInjection) {
     const depPerf = resolveDepartedMonthAttendancePerf({
       netNormalOnlyMinutes,
@@ -1382,7 +1545,8 @@ function computeAttendancePerfForMonth(
       requiredMinutes: reqMinutes,
       presenceDaysCount,
       prevLeaveMinutes,
-      totalDaysInMonth
+      totalDaysInMonth,
+      monthlyLeaveMinutes: monthlyLeaveCapMinutes
     });
     allocatedLeaveMinutes = depPerf.allocatedLeaveMinutes;
     totalLeaveMinutes = depPerf.totalLeaveMinutes;
@@ -1394,8 +1558,8 @@ function computeAttendancePerfForMonth(
     attendanceDaysWorked = depPerf.attendanceDaysWorked;
     daysWorkedCount = depPerf.daysWorkedCount;
   } else {
-    if (netWorkMinutes >= reqMinutes) allocatedLeaveMinutes = 20 * 60;
-    else if (reqMinutes > 0) allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * 20 * 60);
+    if (netWorkMinutes >= reqMinutes) allocatedLeaveMinutes = monthlyLeaveCapMinutes;
+    else if (reqMinutes > 0) allocatedLeaveMinutes = Math.round((netWorkMinutes / reqMinutes) * monthlyLeaveCapMinutes);
 
     totalLeaveMinutes = prevLeaveMinutes + allocatedLeaveMinutes;
     const extraRequiredMinutes = Math.max(0, netWorkMinutes - reqMinutes);
