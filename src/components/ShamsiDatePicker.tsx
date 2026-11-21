@@ -129,8 +129,8 @@ export default function ShamsiDatePicker({
   value,
   onChange,
   placeholder = 'انتخاب تاریخ از تقویم شمسی...',
-  labelClassName = 'block text-xs font-extrabold text-slate-200 font-sans',
-  buttonClassName = 'w-full flex items-center justify-between px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-900 text-white font-extrabold cursor-pointer shadow-sm hover:bg-slate-800 transition-all focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none',
+  labelClassName = 'block text-xs font-extrabold text-slate-700 dark:text-slate-200 font-sans',
+  buttonClassName = 'w-full flex items-center justify-between px-3.5 py-2.5 border border-slate-300 dark:border-slate-800 rounded-xl text-xs bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-extrabold cursor-pointer shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-all focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none',
   popoverAlign = 'right',
   defaultYear,
   disabled = false
@@ -258,7 +258,7 @@ export default function ShamsiDatePicker({
 
         {isOpen && (
           <div
-            className={`absolute z-50 mt-2 w-[300px] sm:w-[320px] max-w-[92vw] bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-2xl space-y-3.5 text-right ${
+            className={`absolute z-50 mt-2 w-[300px] sm:w-[320px] max-w-[92vw] bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl space-y-3.5 text-right ${
               popoverAlign === 'left' ? 'left-0' : 'right-0'
             }`}
             dir="rtl"
@@ -268,7 +268,7 @@ export default function ShamsiDatePicker({
               <button
                 type="button"
                 onClick={prevMonth}
-                className="p-1 px-3 border border-slate-800 rounded-lg text-slate-200 bg-slate-800 hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
+                className="p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
                 title="ماه قبل"
               >
                 ◀
@@ -276,7 +276,7 @@ export default function ShamsiDatePicker({
 
               <div className="flex items-center gap-1.5">
                 <select
-                  className="p-1 px-1.5 text-xs border border-slate-700 rounded-lg bg-slate-800 text-white font-bold cursor-pointer focus:outline-none focus:border-rose-500"
+                  className="p-1 px-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold cursor-pointer focus:outline-none focus:border-rose-500"
                   value={pickerMonth}
                   onChange={(e) => setPickerMonth(Number(e.target.value))}
                 >
@@ -288,7 +288,7 @@ export default function ShamsiDatePicker({
                 </select>
 
                 <select
-                  className="p-1 px-1.5 text-xs border border-slate-700 rounded-lg bg-slate-800 text-white font-mono font-bold cursor-pointer focus:outline-none focus:border-rose-500"
+                  className="p-1 px-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold cursor-pointer focus:outline-none focus:border-rose-500"
                   value={pickerYear}
                   onChange={(e) => setPickerYear(Number(e.target.value))}
                 >
@@ -303,7 +303,7 @@ export default function ShamsiDatePicker({
               <button
                 type="button"
                 onClick={nextMonth}
-                className="p-1 px-3 border border-slate-800 rounded-lg text-slate-200 bg-slate-800 hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
+                className="p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
                 title="ماه بعد"
               >
                 ▶
@@ -311,7 +311,7 @@ export default function ShamsiDatePicker({
             </div>
 
             {/* Weekday headers */}
-            <div className="grid grid-cols-7 gap-1 text-center font-extrabold text-[10.5px] text-slate-400 border-b border-slate-800 pb-1.5">
+            <div className="grid grid-cols-7 gap-1 text-center font-extrabold text-[10.5px] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 pb-1.5">
               {WEEKDAYS_ABBR.map(w => (
                 <div key={w} className="py-0.5">
                   {w}
@@ -339,7 +339,7 @@ export default function ShamsiDatePicker({
                     className={`h-7 w-7 mx-auto text-xs flex items-center justify-center rounded-lg font-mono font-black transition-colors cursor-pointer ${
                       isSelected
                         ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
-                        : 'bg-slate-800 hover:bg-slate-700 hover:text-white text-slate-200'
+                        : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200'
                     }`}
                   >
                     {toPersianDigits(String(day))}
@@ -349,11 +349,11 @@ export default function ShamsiDatePicker({
             </div>
 
             {/* Footer today / clear buttons */}
-            <div className="flex items-center justify-between border-t border-slate-800 pt-2 text-[11px] font-black">
+            <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 pt-2 text-[11px] font-black">
               <button
                 type="button"
                 onClick={handleSelectToday}
-                className="text-rose-500 hover:text-rose-400 font-black cursor-pointer transition-colors"
+                className="text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 font-black cursor-pointer transition-colors"
               >
                 انتخاب امروز
               </button>
@@ -363,7 +363,7 @@ export default function ShamsiDatePicker({
                   onChange('');
                   setIsOpen(false);
                 }}
-                className="text-slate-400 hover:text-slate-200 font-bold cursor-pointer transition-colors"
+                className="text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 font-bold cursor-pointer transition-colors"
               >
                 پاک کردن
               </button>

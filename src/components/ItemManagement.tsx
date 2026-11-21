@@ -2308,6 +2308,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     setCountShelfLocation('');
     setCountNotes('');
     setBarcodeScanValue('');
+    setBarcodeScanFeedback(null);
     focusBarcodeScannerInput();
   };
 
@@ -5708,15 +5709,15 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
                       {/* Submit and Action Buttons */}
                       <div className="sm:col-span-2 lg:col-span-4 flex justify-end items-center gap-2 pt-2 border-t border-zinc-850/60">
-                        {editingCountId && (
-                          <button
-                            type="button"
-                            onClick={handleCancelEditCount}
-                            className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
-                          >
-                            انصراف
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={handleCancelEditCount}
+                          className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                          title="انصراف و پاکسازی فرم شمارش کالا"
+                        >
+                          <X className="h-4 w-4" />
+                          <span>انصراف</span>
+                        </button>
                         <button
                           type="submit"
                           className={`px-5 py-2.5 text-white text-xs font-bold rounded-xl shadow-lg transition-all cursor-pointer flex items-center gap-1.5 ${

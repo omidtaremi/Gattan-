@@ -48,7 +48,7 @@ import {
   Database, RefreshCw, LogOut, ChevronDown, CheckCircle, AlertTriangle, 
   Settings, FolderKanban, ShieldAlert, Wifi, WifiOff, FileJson, Upload, LayoutDashboard,
   Boxes, Users2, LineChart, Banknote, FileCheck, Landmark, GraduationCap, Coins, Download, Cloud, Check,
-  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X
+  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X, Sun, Moon
 } from 'lucide-react';
 import {
   toPersianDigits,
@@ -57,9 +57,11 @@ import {
   getProductFormulaKey,
   getMaterialFormulaKey
 } from './utils/persianUtils';
+import { useTheme } from './utils/theme';
 
 
 export default function App() {
+  const { isDark, toggleTheme } = useTheme();
   const [db, setDb] = useState<AppDatabase | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
@@ -1810,10 +1812,10 @@ export default function App() {
   // Wait for db retrieval
   if (!db) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center font-sans" dir="rtl">
+      <div className="min-h-screen bg-slate-100 dark:bg-slate-900 flex items-center justify-center font-sans" dir="rtl">
         <div className="text-center space-y-3">
           <RefreshCw className="h-10 w-10 text-rose-500 animate-spin mx-auto" />
-          <p className="text-sm font-bold text-slate-300">در حال راه‌اندازی و بررسی بارگذار سامانه گاتان...</p>
+          <p className="text-sm font-bold text-slate-700 dark:text-slate-300">در حال راه‌اندازی و بررسی بارگذار سامانه گاتان...</p>
         </div>
       </div>
     );
@@ -1883,14 +1885,14 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-[#fafafa] font-sans flex flex-col" dir="rtl">
+    <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] font-sans flex flex-col" dir="rtl">
       
       {/* ================= HEADER TOP BAR ================= */}
-      <header className="bg-[#0d0d0f]/95 backdrop-blur-md text-white shadow-xl px-2.5 py-1.5 lg:px-6 lg:py-4 sticky top-0 z-40 border-b border-zinc-800/80">
+      <header className="bg-white/95 dark:bg-[#0d0d0f]/95 backdrop-blur-md text-slate-900 dark:text-white shadow-sm dark:shadow-xl px-2.5 py-1.5 lg:px-6 lg:py-4 sticky top-0 z-40 border-b border-slate-200 dark:border-zinc-800/80">
         
         {/* COMPACT MOBILE & TABLET HEADER (< lg) */}
         <div className="lg:hidden flex flex-col gap-1">
-          {/* Primary Compact Row: 3-dot Menu + Active Form Title + DB Status Icon */}
+          {/* Primary Compact Row: 3-dot Menu + Active Form Title + Theme Toggle + DB Status Icon */}
           <div className="flex items-center justify-between gap-2 min-h-[36px]">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <button
@@ -1906,8 +1908,8 @@ export default function App() {
                 aria-expanded={isMobileMenuOpen || !mobileHasSelectedForm}
                 className={`h-9 w-9 -mr-1 rounded-xl flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
                   isMobileMenuOpen
-                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                    : 'text-zinc-200 hover:bg-zinc-800/80 active:bg-zinc-800'
+                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                    : 'text-slate-700 dark:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800/80 active:bg-slate-200 dark:active:bg-zinc-800'
                 }`}
               >
                 {isMobileMenuOpen ? <X className="h-5 w-5" /> : <MoreVertical className="h-5 w-5" />}
@@ -1917,44 +1919,57 @@ export default function App() {
                 <Boxes className="h-3.5 w-3.5 text-white" />
               </div>
 
-              <h1 className="text-[13px] font-black tracking-tight text-white truncate">
+              <h1 className="text-[13px] font-black tracking-tight text-slate-900 dark:text-white truncate">
                 {mobileHasSelectedForm ? (activeNavItem?.label || 'سامانه گاتان') : 'سامانه جامع گاتان'}
               </h1>
             </div>
 
-            {/* Compact DB Status Icon + Label */}
-            <button
-              type="button"
-              onClick={() => {
-                if (canAccessTab(currentUser, 'cloud_sync')) {
-                  handleSelectNavTab('cloud_sync');
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Mobile Compact Theme Switcher */}
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="h-8 w-8 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 hover:bg-slate-100 dark:hover:bg-zinc-800 flex items-center justify-center shrink-0 transition-colors cursor-pointer"
+                title={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+                aria-label={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+              >
+                {isDark ? <Sun className="h-3.5 w-3.5 text-amber-400" /> : <Moon className="h-3.5 w-3.5 text-indigo-600" />}
+              </button>
+
+              {/* Compact DB Status Icon + Label */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (canAccessTab(currentUser, 'cloud_sync')) {
+                    handleSelectNavTab('cloud_sync');
+                  }
+                }}
+                className={`h-8 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-bold shrink-0 transition-colors cursor-pointer ${
+                  serverMode === 'postgres'
+                    ? pgSyncState === 'error'
+                      ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30'
+                      : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30'
+                    : 'bg-amber-50 dark:bg-zinc-900 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-zinc-800'
+                }`}
+                title={
+                  serverMode === 'postgres'
+                    ? (lastPgSyncTime ? `PostgreSQL متصل — آخرین همگام‌سازی: ${lastPgSyncTime}` : 'PostgreSQL متصل')
+                    : 'ذخیره محلی (آفلاین)'
                 }
-              }}
-              className={`h-8 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-bold shrink-0 transition-colors cursor-pointer ${
-                serverMode === 'postgres'
-                  ? pgSyncState === 'error'
-                    ? 'bg-rose-950/50 text-rose-300 border-rose-500/30'
-                    : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/30'
-                  : 'bg-zinc-900 text-amber-300 border-zinc-800'
-              }`}
-              title={
-                serverMode === 'postgres'
-                  ? (lastPgSyncTime ? `PostgreSQL متصل — آخرین همگام‌سازی: ${lastPgSyncTime}` : 'PostgreSQL متصل')
-                  : 'ذخیره محلی (آفلاین)'
-              }
-            >
-              {serverMode === 'postgres' ? (
-                <>
-                  <Server className={`h-3.5 w-3.5 shrink-0 ${pgSyncState === 'syncing' ? 'animate-spin text-sky-400' : 'text-emerald-400'}`} />
-                  <span className="whitespace-nowrap">{pgSyncState === 'syncing' ? 'همگام‌سازی' : 'متصل'}</span>
-                </>
-              ) : (
-                <>
-                  <HardDrive className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                  <span className="whitespace-nowrap">محلی</span>
-                </>
-              )}
-            </button>
+              >
+                {serverMode === 'postgres' ? (
+                  <>
+                    <Server className={`h-3.5 w-3.5 shrink-0 ${pgSyncState === 'syncing' ? 'animate-spin text-sky-500 dark:text-sky-400' : 'text-emerald-600 dark:text-emerald-400'}`} />
+                    <span className="whitespace-nowrap">{pgSyncState === 'syncing' ? 'همگام‌سازی' : 'متصل'}</span>
+                  </>
+                ) : (
+                  <>
+                    <HardDrive className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span className="whitespace-nowrap">محلی</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Slim Secondary Meta Row: Period Selector + User Name + Logout */}
@@ -2000,39 +2015,51 @@ export default function App() {
               <Boxes className="h-6 w-6 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-1.5 font-sans">
+              <h1 className="text-lg font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5 font-sans">
                 سامانه جامع و یکپارچه گاتان
-                <span className="text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2 py-0.5 rounded-full">نسخه ۱.۴</span>
+                <span className="text-[10px] font-bold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25 px-2 py-0.5 rounded-full">نسخه ۱.۴</span>
               </h1>
-              <p className="text-[10.5px] text-zinc-400 mt-0.5 font-medium">پلتفرم پیشرفته کارگاهی انبارداری، حسابداری، خرید و بهای قیمت تمام شده محصول</p>
+              <p className="text-[10.5px] text-slate-500 dark:text-zinc-400 mt-0.5 font-medium">پلتفرم پیشرفته کارگاهی انبارداری، حسابداری، خرید و بهای قیمت تمام شده محصول</p>
             </div>
           </div>
 
           {/* Quick status trackers */}
-          <div className="flex flex-wrap items-center gap-3 text-xs font-semibold">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs font-semibold">
             
+            {/* Light / Dark Theme Switcher */}
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="p-2 px-3 bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              title={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+              aria-label={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+            >
+              {isDark ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-indigo-600" />}
+              <span>{isDark ? 'تم روشن' : 'تم تیره'}</span>
+            </button>
+
             {/* PostgreSQL / Local Mode Status Indicator */}
             <button
               onClick={() => {
                 if (canAccessTab(currentUser, 'cloud_sync')) setActiveTab('cloud_sync');
               }}
-              className={`p-2 px-3 rounded-xl border flex items-center gap-1.5 transition-all shadow-sm cursor-pointer ${
+              className={`p-2 px-3 rounded-xl border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
                 serverMode === 'postgres'
                   ? pgSyncState === 'error'
-                    ? 'bg-rose-950/40 text-rose-300 border-rose-500/30'
-                    : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/30 hover:bg-emerald-950/60'
-                  : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800'
+                    ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30'
+                    : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-950/60'
+                  : 'bg-slate-100 dark:bg-zinc-900 text-slate-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-800'
               }`}
               title={lastPgSyncTime ? `آخرین همگام‌سازی: ${lastPgSyncTime}` : 'وضعیت پایگاه داده'}
             >
               {serverMode === 'postgres' ? (
                 <>
-                  <Server className={`h-4 w-4 ${pgSyncState === 'syncing' ? 'animate-spin text-sky-400' : 'text-emerald-400'}`} />
+                  <Server className={`h-4 w-4 ${pgSyncState === 'syncing' ? 'animate-spin text-sky-500 dark:text-sky-400' : 'text-emerald-600 dark:text-emerald-400'}`} />
                   <span>{pgSyncState === 'syncing' ? 'در حال همگام‌سازی...' : 'PostgreSQL متصل'}</span>
                 </>
               ) : (
                 <>
-                  <HardDrive className="h-4 w-4 text-amber-400" />
+                  <HardDrive className="h-4 w-4 text-amber-600 dark:text-amber-400" />
                   <span>ذخیره محلی (آفلاین)</span>
                 </>
               )}
@@ -2041,10 +2068,10 @@ export default function App() {
             {/* General Backup trigger */}
             <button
               onClick={() => setShowBackupPanel(true)}
-              className="p-2 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors relative"
+              className="p-2 px-3 bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors relative"
               title="پشتیبان‌گیری روزانه، خروجی و بازیابی کامل دیتابیس"
             >
-              <Database className="h-4 w-4 text-emerald-400" />
+              <Database className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
               <span>پشتیبان و بازیابی</span>
               {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
                 <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
@@ -2052,27 +2079,27 @@ export default function App() {
             </button>
 
             {/* Active Switcher for Period validation */}
-            <div className="h-9 w-[1px] bg-zinc-800 hidden md:block" />
+            <div className="h-9 w-[1px] bg-slate-200 dark:bg-zinc-800 hidden md:block" />
 
             <div className="flex items-center gap-1">
-              <span className="text-zinc-500 hidden md:inline ml-1">دوره کاری:</span>
+              <span className="text-slate-500 dark:text-zinc-500 hidden md:inline ml-1">دوره کاری:</span>
               <select
                 id="active-period-selector"
-                className="bg-zinc-900 text-zinc-150 p-1.5 px-2.5 rounded-lg border border-zinc-800 text-xs font-bold focus:border-emerald-500 outline-none"
+                className="bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-150 p-1.5 px-2.5 rounded-lg border border-slate-300 dark:border-zinc-800 text-xs font-bold focus:border-emerald-500 outline-none"
                 value={activePeriodId}
                 onChange={(e) => {
                   setActivePeriodId(e.target.value);
                 }}
               >
                 {db.periods.map(p => (
-                  <option key={p.id} value={p.id} className="bg-zinc-950 text-zinc-100">{p.name}</option>
+                  <option key={p.id} value={p.id} className="bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100">{p.name}</option>
                 ))}
               </select>
               {isAdminUser(currentUser) && (
                 <button
                   type="button"
                   onClick={() => setShowPeriodManager(true)}
-                  className="p-1.5 px-2.5 bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-750 hover:text-white rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                  className="p-1.5 px-2.5 bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-750 hover:text-slate-900 dark:hover:text-white rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
                 >
                   + جدید
                 </button>
@@ -2080,14 +2107,14 @@ export default function App() {
             </div>
 
             {/* Current user & logout */}
-            <div className="flex items-center gap-2 p-1.5 px-3 bg-zinc-900 border border-zinc-850 rounded-xl">
+            <div className="flex items-center gap-2 p-1.5 px-3 bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-850 rounded-xl">
               <div>
-                <span className="block text-[9.5px] text-zinc-500">{currentUser.role}</span>
-                <span className="text-[11px] font-bold text-emerald-400">{currentUser.fullName || currentUser.name || currentUser.username}</span>
+                <span className="block text-[9.5px] text-slate-500 dark:text-zinc-500">{currentUser.role}</span>
+                <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">{currentUser.fullName || currentUser.name || currentUser.username}</span>
               </div>
               <button
                 onClick={handleLogoutClick}
-                className="p-1 border border-zinc-805 hover:border-emerald-500 hover:bg-emerald-950/30 text-zinc-400 hover:text-white rounded-lg cursor-pointer transition-all"
+                className="p-1 border border-slate-300 dark:border-zinc-805 hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white rounded-lg cursor-pointer transition-all"
                 title="خروج از حساب"
               >
                 <LogOut className="h-4 w-4" />
@@ -2106,16 +2133,16 @@ export default function App() {
             className="fixed inset-0 bg-black/70 backdrop-blur-xs transition-opacity"
             onClick={() => setIsMobileMenuOpen(false)}
           />
-          <aside className="relative z-10 w-[84vw] max-w-[310px] h-full bg-[#0d0d0f] border-l border-zinc-800 shadow-2xl flex flex-col animate-fadeIn">
+          <aside className="relative z-10 w-[84vw] max-w-[310px] h-full bg-white dark:bg-[#0d0d0f] border-l border-slate-200 dark:border-zinc-800 shadow-2xl flex flex-col animate-fadeIn">
             {/* Drawer Header */}
-            <div className="px-4 py-3 border-b border-zinc-800/80 flex items-center justify-between gap-2">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-zinc-800/80 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="h-8 w-8 rounded-xl bg-emerald-600 flex items-center justify-center shrink-0">
                   <Boxes className="h-4.5 w-4.5 text-white" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-xs font-black text-white truncate">بخش‌های مدیریتی سامانه</div>
-                  <div className="text-[10px] text-zinc-400 truncate">
+                  <div className="text-xs font-black text-slate-900 dark:text-white truncate">بخش‌های مدیریتی سامانه</div>
+                  <div className="text-[10px] text-slate-500 dark:text-zinc-400 truncate">
                     {currentUser.fullName || currentUser.name || currentUser.username} · {currentUser.role}
                   </div>
                 </div>
@@ -2123,7 +2150,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="h-9 w-9 rounded-xl flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer shrink-0"
+                className="h-9 w-9 rounded-xl flex items-center justify-center text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer shrink-0"
                 aria-label="بستن منو"
               >
                 <X className="h-5 w-5" />
@@ -2141,8 +2168,8 @@ export default function App() {
                     onClick={() => handleSelectNavTab(item.id)}
                     className={`w-full text-right px-3 py-2.5 min-h-[44px] rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
                       isActive
-                        ? 'bg-emerald-500/12 text-emerald-400 font-bold border border-emerald-500/25'
-                        : 'text-zinc-300 hover:bg-zinc-800/50 hover:text-white'
+                        ? 'bg-emerald-50 dark:bg-emerald-500/12 text-emerald-700 dark:text-emerald-400 font-bold border border-emerald-200 dark:border-emerald-500/25'
+                        : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800/50 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
                     {item.icon}
@@ -2153,7 +2180,16 @@ export default function App() {
             </div>
 
             {/* Drawer Footer Utilities */}
-            <div className="p-3 border-t border-zinc-800/80 bg-zinc-950/60 space-y-2 text-xs">
+            <div className="p-3 border-t border-slate-200 dark:border-zinc-800/80 bg-slate-50 dark:bg-zinc-950/60 space-y-2 text-xs">
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="w-full px-3 py-2 min-h-[40px] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-xl text-slate-800 dark:text-zinc-200 flex items-center justify-center gap-2 text-[11px] font-bold cursor-pointer transition-colors"
+              >
+                {isDark ? <Sun className="h-4 w-4 text-amber-400 shrink-0" /> : <Moon className="h-4 w-4 text-indigo-600 shrink-0" />}
+                <span>{isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}</span>
+              </button>
+
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -2161,9 +2197,9 @@ export default function App() {
                     setIsMobileMenuOpen(false);
                     setShowBackupPanel(true);
                   }}
-                  className="px-2.5 py-2 min-h-[40px] bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer relative"
+                  className="px-2.5 py-2 min-h-[40px] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer relative"
                 >
-                  <Database className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <Database className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                   <span>پشتیبان‌گیری</span>
                   {pendingBackupFolderPrompt && isAdminUser(currentUser) && (
                     <span className="h-2 w-2 rounded-full bg-amber-400" />
@@ -2177,16 +2213,16 @@ export default function App() {
                       setIsMobileMenuOpen(false);
                       setShowPeriodManager(true);
                     }}
-                    className="px-2.5 py-2 min-h-[40px] bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+                    className="px-2.5 py-2 min-h-[40px] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
                   >
-                    <FolderKanban className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                    <FolderKanban className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                     <span>مدیریت دوره‌ها</span>
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={handleLogoutClick}
-                    className="px-2.5 py-2 min-h-[40px] bg-rose-950/40 border border-rose-500/25 hover:bg-rose-950/70 rounded-xl text-rose-300 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+                    className="px-2.5 py-2 min-h-[40px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-500/25 hover:bg-rose-100 dark:hover:bg-rose-950/70 rounded-xl text-rose-700 dark:text-rose-300 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
                   >
                     <LogOut className="h-3.5 w-3.5 shrink-0" />
                     <span>خروج</span>
@@ -2194,7 +2230,7 @@ export default function App() {
                 )}
               </div>
 
-              <div className="flex items-center justify-between text-[10px] text-zinc-500 px-1 pt-0.5">
+              <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-zinc-500 px-1 pt-0.5">
                 <span className="truncate">
                   {serverMode === 'postgres'
                     ? (lastPgSyncTime ? `PostgreSQL متصل · ${lastPgSyncTime}` : 'PostgreSQL متصل')
@@ -2204,7 +2240,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleLogoutClick}
-                    className="text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1 cursor-pointer shrink-0 mr-2"
+                    className="text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 font-bold flex items-center gap-1 cursor-pointer shrink-0 mr-2"
                   >
                     <LogOut className="h-3 w-3" />
                     <span>خروج</span>
@@ -2290,12 +2326,12 @@ export default function App() {
         <nav
           className={`${
             mobileHasSelectedForm ? 'hidden lg:flex' : 'flex'
-          } lg:col-span-1 bg-[#0d0d0f] p-3.5 sm:p-5 rounded-2xl lg:rounded-3xl border border-zinc-800/80 shadow-2xl h-fit space-y-1 select-none flex-col justify-between`}
+          } lg:col-span-1 bg-white dark:bg-[#0d0d0f] p-3.5 sm:p-5 rounded-2xl lg:rounded-3xl border border-slate-200 dark:border-zinc-800/80 shadow-sm dark:shadow-2xl h-fit space-y-1 select-none flex-col justify-between`}
         >
           <div>
-            <div className="pb-2.5 lg:pb-3 mb-3 lg:mb-4 border-b border-zinc-800/80 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-black text-zinc-400 lg:text-zinc-500 tracking-wider">بخش‌های مدیریتی سامانه</h3>
-              <span className="lg:hidden text-[10px] text-zinc-500 font-medium">یک بخش را انتخاب کنید</span>
+            <div className="pb-2.5 lg:pb-3 mb-3 lg:mb-4 border-b border-slate-200 dark:border-zinc-800/80 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-black text-slate-600 dark:text-zinc-500 tracking-wider">بخش‌های مدیریتی سامانه</h3>
+              <span className="lg:hidden text-[10px] text-slate-500 dark:text-zinc-500 font-medium">یک بخش را انتخاب کنید</span>
             </div>
 
             <div className="space-y-1.5 text-xs font-extrabold font-sans">
@@ -2306,8 +2342,8 @@ export default function App() {
                   onClick={() => handleSelectNavTab(item.id)}
                   className={`w-full text-right p-3 min-h-[44px] rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
                     activeTab === item.id
-                      ? 'bg-emerald-500/10 text-emerald-400 font-bold border-r-2 border-emerald-500'
-                      : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200'
+                      ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-bold border-r-2 border-emerald-500'
+                      : 'text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800/40 hover:text-slate-900 dark:hover:text-zinc-200'
                   }`}
                 >
                   {item.icon} {item.label}
@@ -2317,29 +2353,29 @@ export default function App() {
           </div>
 
           {/* Mobile Quick Actions on Initial Menu View */}
-          <div className="lg:hidden mt-4 pt-3 border-t border-zinc-800/80 grid grid-cols-2 gap-2">
+          <div className="lg:hidden mt-4 pt-3 border-t border-slate-200 dark:border-zinc-800/80 grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => setShowBackupPanel(true)}
-              className="px-3 py-2.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+              className="px-3 py-2.5 bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
             >
-              <Database className="h-3.5 w-3.5 text-emerald-400" />
+              <Database className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>پشتیبان و بازیابی</span>
             </button>
             {isAdminUser(currentUser) && (
               <button
                 type="button"
                 onClick={() => setShowPeriodManager(true)}
-                className="px-3 py-2.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-xl text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
+                className="px-3 py-2.5 bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-xl text-slate-700 dark:text-zinc-200 flex items-center justify-center gap-1.5 text-[11px] font-bold cursor-pointer"
               >
-                <FolderKanban className="h-3.5 w-3.5 text-emerald-400" />
+                <FolderKanban className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span>مدیریت دوره‌ها</span>
               </button>
             )}
           </div>
 
-          <div className="hidden lg:block mt-8 border-t border-zinc-850 pt-4 space-y-2 text-[10px] text-zinc-500 font-normal leading-normal select-none">
-            <div>فعال در بازه مالی: <strong className="text-emerald-400 block mt-0.5">{db.periods.find(p => p.id === activePeriodId)?.name}</strong></div>
+          <div className="hidden lg:block mt-8 border-t border-slate-200 dark:border-zinc-850 pt-4 space-y-2 text-[10px] text-slate-500 dark:text-zinc-500 font-normal leading-normal select-none">
+            <div>فعال در بازه مالی: <strong className="text-emerald-700 dark:text-emerald-400 block mt-0.5">{db.periods.find(p => p.id === activePeriodId)?.name}</strong></div>
             <div>
               {serverMode === 'postgres'
                 ? 'اتصال مشترک چندکاربره با پایگاه داده PostgreSQL برقرار است.'

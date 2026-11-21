@@ -6,8 +6,9 @@
 import React, { useState, useEffect } from 'react';
 import bcrypt from 'bcryptjs';
 import { User } from '../types';
-import { KeyRound, ShieldAlert, UserCheck, Smartphone, RefreshCw, LogIn, Server } from 'lucide-react';
+import { KeyRound, ShieldAlert, UserCheck, Smartphone, RefreshCw, LogIn, Server, Sun, Moon } from 'lucide-react';
 import { toPersianDigits } from '../utils/persianUtils';
+import { useTheme } from '../utils/theme';
 import {
   loginWithPostgres,
   type PublicUserSummary,
@@ -26,6 +27,7 @@ export default function LoginScreen({
   publicUsers,
   onLoginSuccess,
 }: LoginScreenProps) {
+  const { isDark, toggleTheme } = useTheme();
   const selectableUsers =
     serverMode === 'postgres' && publicUsers && publicUsers.length > 0
       ? publicUsers
@@ -151,14 +153,27 @@ export default function LoginScreen({
 
   if (showRecovery) {
     return (
-      <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans" dir="rtl">
+      <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
+        <div className="absolute top-4 left-4">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-800 shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+            title={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+            aria-label={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+          >
+            {isDark ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-indigo-600" />}
+            <span>{isDark ? 'تم روشن' : 'تم تیره'}</span>
+          </button>
+        </div>
+
         <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
-          <div className="flex justify-center text-emerald-500 font-bold text-3xl">سامانه جامع گاتان</div>
-          <h2 className="mt-6 text-center text-xl font-bold text-zinc-100 tracking-tight">بازیابی رمز عبور و دسترسی دو مرحله‌ای</h2>
+          <div className="flex justify-center text-emerald-600 dark:text-emerald-500 font-bold text-3xl">سامانه جامع گاتان</div>
+          <h2 className="mt-6 text-center text-xl font-bold text-slate-900 dark:text-zinc-100 tracking-tight">بازیابی رمز عبور و دسترسی دو مرحله‌ای</h2>
         </div>
 
         <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-          <div className="glass-card py-8 px-6 shadow-2xl rounded-3xl sm:px-10">
+          <div className="glass-card py-8 px-6 shadow-xl dark:shadow-2xl rounded-3xl sm:px-10">
             <form onSubmit={handleRecovery} className="space-y-6">
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 mb-2">نام کاربری متقاضی را وارد کنید</label>
@@ -206,9 +221,22 @@ export default function LoginScreen({
   }
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans" dir="rtl">
+    <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
+      <div className="absolute top-4 left-4">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-800 shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+          title={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+          aria-label={isDark ? 'تغییر به تم روشن' : 'تغییر به تم تیره'}
+        >
+          {isDark ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-indigo-600" />}
+          <span>{isDark ? 'تم روشن' : 'تم تیره'}</span>
+        </button>
+      </div>
+
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 mb-4 font-mono select-none">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25 mb-4 font-mono select-none">
           {serverMode === 'postgres' ? (
             <>
               <Server className="h-3 w-3" /> ● POSTGRESQL_SHARED_SERVER
@@ -217,14 +245,14 @@ export default function LoginScreen({
             '● SYSTEM_LOCAL_OFFLINE_ACTIVE'
           )}
         </span>
-        <h1 className="text-3xl font-extrabold text-[#fafafa] tracking-tight">سامانه جامع گاتان</h1>
-        <p className="mt-2 text-xs text-zinc-400">
+        <h1 className="text-3xl font-extrabold text-slate-900 dark:text-[#fafafa] tracking-tight">سامانه جامع گاتان</h1>
+        <p className="mt-2 text-xs text-slate-600 dark:text-zinc-400">
           پنل پرسنلی یکپارچه انبارداری، مدیریت قیمت تمام شده، خرید و سفارش کالا
         </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="glass-card py-8 px-6 shadow-2xl rounded-3xl sm:px-10">
+        <div className="glass-card py-8 px-6 shadow-xl dark:shadow-2xl rounded-3xl sm:px-10">
           {step === 'credentials' ? (
             <form onSubmit={handleCredentialsSubmit} className="space-y-5">
               <div>
@@ -370,10 +398,10 @@ export default function LoginScreen({
           )}
 
           {/* Quick Info Box */}
-          <div className="mt-8 pt-5 border-t border-zinc-800/80 text-[10.5px] text-zinc-400 text-center space-y-1 bg-zinc-950/40 -mx-6 -mb-8 px-6 py-4 rounded-b-3xl">
-            <div className="text-zinc-500">کاربران پیش‌فرض اولیه سیستم:</div>
-            <div className="font-semibold text-zinc-300">مدیر اصلی: admin | حسابدار: acc | انباردار: store</div>
-            <div>رمز اولیه همگی: <span className="font-mono bg-zinc-850 px-1.5 py-0.5 rounded text-emerald-400 font-bold">123</span></div>
+          <div className="mt-8 pt-5 border-t border-slate-200 dark:border-zinc-800/80 text-[10.5px] text-slate-600 dark:text-zinc-400 text-center space-y-1 bg-slate-50 dark:bg-zinc-950/40 -mx-6 -mb-8 px-6 py-4 rounded-b-3xl">
+            <div className="text-slate-500 dark:text-zinc-500">کاربران پیش‌فرض اولیه سیستم:</div>
+            <div className="font-semibold text-slate-800 dark:text-zinc-300">مدیر اصلی: admin | حسابدار: acc | انباردار: store</div>
+            <div>رمز اولیه همگی: <span className="font-mono bg-emerald-50 dark:bg-zinc-850 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-400 font-bold border border-emerald-200 dark:border-transparent">123</span></div>
           </div>
         </div>
       </div>
