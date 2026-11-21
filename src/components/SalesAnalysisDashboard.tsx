@@ -555,6 +555,8 @@ export default function SalesAnalysisDashboard({
     });
   };
   const [activeAnalysisTab, setActiveAnalysisTab] = useState<'overview' | 'daily' | 'weekly' | 'hourly' | 'heatmap' | 'peakHours' | 'transactionsList'>('overview');
+  const [selectedDailyDay, setSelectedDailyDay] = useState<number | null>(null);
+  const [selectedHourlyHour, setSelectedHourlyHour] = useState<number | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [selectedProductIdFilter, setSelectedProductIdFilter] = useState<string>('ALL');
 
@@ -2612,75 +2614,265 @@ export default function SalesAnalysisDashboard({
             <div className="space-y-6">
 
               {/* 31 days month bar visual inline preview (فروش بر حسب روزهای ماه) */}
-              <div className="bg-slate-950/40 border border-slate-800/85 p-5 rounded-3xl shadow-lg">
-                <div className="flex items-center justify-between border-b border-slate-800/60 pb-3 mb-4">
-                  <h3 className="text-xs font-black text-slate-100 flex items-center gap-1.5">
-                    <Calendar className="h-4.5 w-4.5 text-rose-500" />
-                    روند توزیع و تغییرات درآمد روزانه در ۳۱ روز ماه جاری
-                  </h3>
-                  <span className="text-[10px] text-slate-400 font-mono">ریال</span>
-                </div>
+              {(() => {
+                const peakDayObj = dailyChartData.reduce(
+                  (best, cur) => (cur.amount > best.amount ? cur : best),
+                  dailyChartData[0] || { day: 1, amount: 0 }
+                );
+                const activeDayObj = selectedDailyDay !== null
+                  ? dailyChartData.find(d => d.day === selectedDailyDay) || null
+                  : null;
+                const hasAnyDailyRevenue = peakDayObj && peakDayObj.amount > 0;
 
-                <div className="h-[130px] flex items-end justify-between gap-[3px] pt-4 pr-1">
-                  {dailyChartData.map((d) => {
-                    const pct = d.amount > 0 ? (d.amount / maxDailyAmount) * 100 : 2;
-                    return (
-                      <div key={d.day} className="flex-1 flex flex-col items-center group h-full justify-end relative">
-                        {/* Hover tooltip */}
-                        <div className="absolute opacity-0 group-hover:opacity-100 bg-slate-950 text-[9px] px-2.5 py-1 border border-slate-800 rounded-lg -translate-y-12 transition-all font-bold pointer-events-none z-10 w-24 text-center">
-                          روز {toPersianDigits(d.day)} ماه<br/>
-                          {formatWithCommas(d.amount)} ریال
-                        </div>
-                        <div 
-                          style={{ height: `${pct}%` }}
-                          className={`w-full rounded-t-[2px] transition-all group-hover:from-rose-400 group-hover:to-amber-400 bg-gradient-to-t ${
-                            d.amount === maxDailyAmount ? 'from-amber-500 to-rose-500' : 'from-slate-800 to-slate-700/80'
-                          }`}
-                        />
-                        <span className="text-[8px] font-bold text-slate-500 mt-1.5 group-hover:text-rose-450 font-mono">{toPersianDigits(d.day)}</span>
+                return (
+                  <div className="bg-slate-950/40 border border-slate-800/85 p-3.5 sm:p-5 rounded-2xl sm:rounded-3xl shadow-lg">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/60 pb-3 mb-3">
+                      <h3 className="text-xs font-black text-slate-100 flex items-center gap-1.5 leading-relaxed">
+                        <Calendar className="h-4 w-4 sm:h-4.5 sm:w-4.5 text-rose-500 shrink-0" />
+                        <span>روند توزیع و تغییرات درآمد روزانه در ۳۱ روز ماه جاری</span>
+                      </h3>
+                      <div className="flex items-center justify-between sm:justify-end gap-2">
+                        <span className="sm:hidden text-[10px] text-slate-400">
+                          برای مشاهده همه روزها به چپ/راست بکشید
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono px-2 py-0.5 rounded-lg bg-slate-900/60 border border-slate-800/70 shrink-0">
+                          واحد: ریال
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                    </div>
+
+                    {/* Active / Peak Day Readout Bar (Touch-friendly on Mobile, Instant Readout on Desktop) */}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/70 text-[11px]">
+                      {activeDayObj ? (
+                        <>
+                          <div className="flex items-center gap-2 font-bold text-slate-200">
+                            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                            <span>روز {toPersianDigits(activeDayObj.day)} ماه:</span>
+                            <strong className="text-emerald-400 font-mono font-black">
+                              {toPersianDigits(formatWithCommas(activeDayObj.amount))} ریال
+                            </strong>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedDailyDay(null)}
+                            className="text-[10px] text-slate-400 hover:text-rose-400 font-bold cursor-pointer"
+                          >
+                            پاک کردن انتخاب
+                          </button>
+                        </>
+                      ) : hasAnyDailyRevenue ? (
+                        <>
+                          <div className="flex items-center gap-2 font-bold text-slate-300">
+                            <span className="inline-block w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+                            <span>بیشترین فروش: روز {toPersianDigits(peakDayObj.day)} ماه</span>
+                            <strong className="text-rose-400 font-mono font-black">
+                              {toPersianDigits(formatWithCommas(peakDayObj.amount))} ریال
+                            </strong>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            روی هر ستون لمس یا کلیک کنید
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 font-medium">
+                          تراکنش فروشی برای نمایش در نمودار ماه جاری ثبت نشده است.
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Responsive Scrollable Bar Plot on Mobile, Full-Width on Tablet/Desktop */}
+                    <div className="overflow-x-auto pb-2 -mx-1 px-1">
+                      <div className="min-w-[660px] md:min-w-0 relative pt-2">
+                        {/* Subtle horizontal guide lines */}
+                        <div className="pointer-events-none absolute inset-x-0 top-2 bottom-6 flex flex-col justify-between">
+                          <div className="border-t border-dashed border-slate-700/40 w-full" />
+                          <div className="border-t border-dashed border-slate-700/30 w-full" />
+                          <div className="border-t border-slate-700/50 w-full" />
+                        </div>
+
+                        <div className="flex items-end justify-between gap-1 sm:gap-[3px] relative z-10">
+                          {dailyChartData.map((d) => {
+                            const hasVal = d.amount > 0;
+                            const pct = hasVal ? Math.max(6, (d.amount / maxDailyAmount) * 100) : 0;
+                            const isPeak = hasVal && d.amount === maxDailyAmount;
+                            const isSelected = selectedDailyDay === d.day;
+
+                            return (
+                              <button
+                                key={d.day}
+                                type="button"
+                                onClick={() => setSelectedDailyDay(prev => (prev === d.day ? null : d.day))}
+                                onMouseEnter={() => setSelectedDailyDay(d.day)}
+                                title={`روز ${toPersianDigits(d.day)} ماه: ${formatWithCommas(d.amount)} ریال`}
+                                className="flex-1 min-w-[16px] md:min-w-0 flex flex-col items-center group bg-transparent border-0 p-0 cursor-pointer focus:outline-none"
+                              >
+                                {/* Explicit-height Bar Track so % height works identically on iOS Safari, Android & Desktop */}
+                                <div className="w-full h-[145px] sm:h-[135px] flex items-end justify-center px-[1px]">
+                                  <div
+                                    style={{ height: hasVal ? `${pct}%` : '4px' }}
+                                    className={`w-full rounded-t-md transition-all duration-200 ${
+                                      isSelected
+                                        ? 'bg-emerald-500 dark:bg-emerald-400 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-400/50'
+                                        : isPeak
+                                        ? 'bg-gradient-to-t from-rose-600 to-amber-500 shadow-sm shadow-rose-500/25'
+                                        : hasVal
+                                        ? 'bg-slate-400 dark:bg-slate-600 group-hover:bg-rose-500 dark:group-hover:bg-rose-400'
+                                        : 'bg-slate-200 dark:bg-slate-800/70'
+                                    }`}
+                                  />
+                                </div>
+                                <span
+                                  className={`text-[10px] md:text-[9px] font-bold mt-1.5 font-mono shrink-0 leading-none transition-colors ${
+                                    isSelected
+                                      ? 'text-emerald-500 dark:text-emerald-400 font-black'
+                                      : isPeak
+                                      ? 'text-rose-500 font-black'
+                                      : 'text-slate-500 group-hover:text-rose-500'
+                                  }`}
+                                >
+                                  {toPersianDigits(d.day)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* DYNAMIC HOURLY DISTRIBUTION OF VALUE (فروش بر حسب ساعت) */}
-              <div className="bg-slate-950/40 border border-slate-800/85 p-5 rounded-3xl shadow-lg">
-                <div className="flex items-center justify-between border-b border-slate-800/60 pb-3 mb-4">
-                  <h3 className="text-xs font-black text-slate-150 flex items-center gap-1.5">
-                    <Clock className="h-4.5 w-4.5 text-sky-400" />
-                    نمودار توزیع زمانی فروش بر حسب ساعت تراکنش (ساعات ۰ الی ۲۳)
-                  </h3>
-                  <span className="text-[10px] text-slate-400 font-mono">تعداد واحد کالا</span>
-                </div>
+              {(() => {
+                const maxHourlyQty = Math.max(...hourlyChartData.map(ho => ho.qty)) || 1;
+                const activeHourObj = selectedHourlyHour !== null
+                  ? hourlyChartData.find(h => h.hour === selectedHourlyHour) || null
+                  : null;
+                const peakHourObj = hourlyChartData.reduce(
+                  (best, cur) => (cur.qty > best.qty ? cur : best),
+                  hourlyChartData[0] || { hour: 0, qty: 0, amount: 0 }
+                );
 
-                <div className="h-[140px] flex items-end justify-between gap-1 pt-6 px-1 relative">
-                  {hourlyChartData.map((h) => {
-                    const maxHourlyQty = Math.max(...hourlyChartData.map(ho => ho.qty)) || 1;
-                    const pct = h.qty > 0 ? (h.qty / maxHourlyQty) * 100 : 3;
-                    const isSpike = h.hour === stats.peakHour;
-
-                    return (
-                      <div key={h.hour} className="flex-1 flex flex-col items-center group h-full justify-end relative">
-                        <div className="absolute opacity-0 group-hover:opacity-100 bg-slate-950 text-[9px] px-2 py-1.5 border border-slate-800 rounded-lg -translate-y-16 transition-all font-bold pointer-events-none z-10 w-28 text-center">
-                          ساعت {toPersianDigits(h.hour)}:۰۰<br/>
-                          فروش: {toPersianDigits(h.qty)} عدد<br/>
-                          {formatWithCommas(h.amount)} ریال
-                        </div>
-                        <div 
-                          style={{ height: `${pct}%` }} 
-                          className={`w-full rounded-t-[3px] transition-all ${
-                            isSpike 
-                              ? 'bg-gradient-to-t from-sky-600 to-sky-400 shadow-lg shadow-sky-500/20' 
-                              : 'bg-slate-800 group-hover:bg-slate-650'
-                          }`}
-                        />
-                        <span className="text-[8.5px] font-bold text-slate-500 mt-1.5 group-hover:text-sky-400 font-mono">{toPersianDigits(h.hour)}</span>
+                return (
+                  <div className="bg-slate-950/40 border border-slate-800/85 p-3.5 sm:p-5 rounded-2xl sm:rounded-3xl shadow-lg">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/60 pb-3 mb-3">
+                      <h3 className="text-xs font-black text-slate-150 flex items-center gap-1.5 leading-relaxed">
+                        <Clock className="h-4 w-4 sm:h-4.5 sm:w-4.5 text-sky-400 shrink-0" />
+                        <span>نمودار توزیع زمانی فروش بر حسب ساعت تراکنش (ساعات ۰ الی ۲۳)</span>
+                      </h3>
+                      <div className="flex items-center justify-between sm:justify-end gap-2">
+                        <span className="sm:hidden text-[10px] text-slate-400">
+                          برای مشاهده همه ساعات به چپ/راست بکشید
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono px-2 py-0.5 rounded-lg bg-slate-900/60 border border-slate-800/70 shrink-0">
+                          تعداد واحد کالا
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                    </div>
+
+                    {/* Active / Peak Hour Readout Bar */}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800/70 text-[11px]">
+                      {activeHourObj ? (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 font-bold text-slate-200">
+                            <span className="inline-block w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                            <span>ساعت {toPersianDigits(activeHourObj.hour)}:۰۰</span>
+                            <strong className="text-sky-400 font-mono font-black">
+                              {toPersianDigits(activeHourObj.qty)} عدد
+                            </strong>
+                            <span className="text-slate-400 font-mono">
+                              ({toPersianDigits(formatWithCommas(activeHourObj.amount))} ریال)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedHourlyHour(null)}
+                            className="text-[10px] text-slate-400 hover:text-sky-400 font-bold cursor-pointer"
+                          >
+                            پاک کردن انتخاب
+                          </button>
+                        </>
+                      ) : peakHourObj.qty > 0 ? (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 font-bold text-slate-300">
+                            <span className="inline-block w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                            <span>ساعت اوج فروش: {toPersianDigits(peakHourObj.hour)}:۰۰</span>
+                            <strong className="text-sky-400 font-mono font-black">
+                              {toPersianDigits(peakHourObj.qty)} عدد
+                            </strong>
+                            <span className="text-slate-400 font-mono">
+                              ({toPersianDigits(formatWithCommas(peakHourObj.amount))} ریال)
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            روی هر ساعت لمس یا کلیک کنید
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 font-medium">
+                          داده ساعتی برای نمایش ثبت نشده است.
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="overflow-x-auto pb-2 -mx-1 px-1">
+                      <div className="min-w-[560px] md:min-w-0 relative pt-2">
+                        <div className="pointer-events-none absolute inset-x-0 top-2 bottom-6 flex flex-col justify-between">
+                          <div className="border-t border-dashed border-slate-700/40 w-full" />
+                          <div className="border-t border-dashed border-slate-700/30 w-full" />
+                          <div className="border-t border-slate-700/50 w-full" />
+                        </div>
+
+                        <div className="flex items-end justify-between gap-1 relative z-10">
+                          {hourlyChartData.map((h) => {
+                            const hasVal = h.qty > 0;
+                            const pct = hasVal ? Math.max(6, (h.qty / maxHourlyQty) * 100) : 0;
+                            const isSpike = hasVal && h.hour === stats.peakHour;
+                            const isSelected = selectedHourlyHour === h.hour;
+
+                            return (
+                              <button
+                                key={h.hour}
+                                type="button"
+                                onClick={() => setSelectedHourlyHour(prev => (prev === h.hour ? null : h.hour))}
+                                onMouseEnter={() => setSelectedHourlyHour(h.hour)}
+                                title={`ساعت ${toPersianDigits(h.hour)}:۰۰ — ${toPersianDigits(h.qty)} عدد (${formatWithCommas(h.amount)} ریال)`}
+                                className="flex-1 min-w-[18px] md:min-w-0 flex flex-col items-center group bg-transparent border-0 p-0 cursor-pointer focus:outline-none"
+                              >
+                                <div className="w-full h-[145px] sm:h-[135px] flex items-end justify-center px-[1px]">
+                                  <div
+                                    style={{ height: hasVal ? `${pct}%` : '4px' }}
+                                    className={`w-full rounded-t-md transition-all duration-200 ${
+                                      isSelected
+                                        ? 'bg-emerald-500 dark:bg-emerald-400 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-400/50'
+                                        : isSpike
+                                        ? 'bg-gradient-to-t from-sky-600 to-sky-400 shadow-sm shadow-sky-500/25'
+                                        : hasVal
+                                        ? 'bg-slate-400 dark:bg-slate-600 group-hover:bg-sky-500 dark:group-hover:bg-sky-400'
+                                        : 'bg-slate-200 dark:bg-slate-800/70'
+                                    }`}
+                                  />
+                                </div>
+                                <span
+                                  className={`text-[10px] md:text-[9px] font-bold mt-1.5 font-mono shrink-0 leading-none transition-colors ${
+                                    isSelected
+                                      ? 'text-emerald-500 dark:text-emerald-400 font-black'
+                                      : isSpike
+                                      ? 'text-sky-500 font-black'
+                                      : 'text-slate-500 group-hover:text-sky-400'
+                                  }`}
+                                >
+                                  {toPersianDigits(h.hour)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
             </div>
           )}

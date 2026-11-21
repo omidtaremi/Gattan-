@@ -4241,23 +4241,23 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           </button>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-stretch sm:items-center gap-2 w-full sm:w-auto">
           {activeTab === 'formulas' && (
             <>
               <button
                 onClick={exportFormulasCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="دانلود کل فرمولاسیون‌های دوره فعال به فایل اکسل/CSV"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                ارسال فرمول‌ها به اکسل
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                <span>ارسال فرمول‌ها به اکسل</span>
               </button>
 
               <label
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="بارگذاری فرمولاسیون‌های کاتالوگ از فایل اکسل/CSV"
               >
-                <ArrowUpRight className="h-3.5 w-3.5" />
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
                 <span>دریافت فرمول‌ها از اکسل</span>
                 <input
                   type="file"
@@ -4269,19 +4269,19 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
               <button
                 onClick={handleCopyFormulasFromPriorPeriod}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-850 border border-slate-850 hover:bg-slate-800 hover:border-slate-700 text-slate-350 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-slate-850 border border-slate-850 hover:bg-slate-800 hover:border-slate-700 text-slate-350 hover:text-white rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
               >
-                <Copy className="h-3.5 w-3.5" />
-                کپی فرمول ساخت از دوره‌های پیشین
+                <Copy className="h-3.5 w-3.5 shrink-0" />
+                <span>کپی فرمول ساخت از دوره‌های پیشین</span>
               </button>
 
               <button
                 onClick={applyCogsPricesToProductCatalog}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 border border-rose-500 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md shadow-rose-900/10"
+                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-rose-600 border border-rose-500 hover:bg-rose-700 text-white rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-md shadow-rose-900/10 text-center"
                 title="ثبت بهای تمام شده محاسبه شده بر اساس فرمول در کاتالوگ (کالاهای بدون فرمول بهای صفر می‌گیرند)"
               >
-                <Save className="h-3.5 w-3.5" />
-                ثبت نهایی بهای تمام شده در کاتالوگ
+                <Save className="h-3.5 w-3.5 shrink-0" />
+                <span>ثبت نهایی بهای تمام شده در کاتالوگ</span>
               </button>
             </>
           )}
@@ -4290,18 +4290,18 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             <>
               <button
                 onClick={exportTimelineCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="دانلود اطلاعات تولید زمان‌محور کل دوره به فایل اکسل"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                ارسال برنامه تولید به اکسل
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                <span>ارسال برنامه تولید به اکسل</span>
               </button>
 
               <label
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="بارگذاری اطلاعات تولید از فایل اکسل"
               >
-                <ArrowUpRight className="h-3.5 w-3.5" />
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
                 <span>دریافت برنامه تولید از اکسل</span>
                 <input
                   type="file"
@@ -4317,18 +4317,18 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             <>
               <button
                 onClick={exportConversionsCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="دانلود ضرایب تبدیل واحد کالاها به فایل اکسل"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                ارسال ضرایب تبدیل به اکسل
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                <span>ارسال ضرایب تبدیل به اکسل</span>
               </button>
 
               <label
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="بارگذاری ضرایب تبدیل واحد از فایل اکسل"
               >
-                <ArrowUpRight className="h-3.5 w-3.5" />
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
                 <span>دریافت ضرایب تبدیل از اکسل</span>
                 <input
                   type="file"
@@ -4344,20 +4344,20 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             <>
               <button
                 onClick={exportPricingToExcel}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-emerald-500/5"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-lg shadow-emerald-500/5 text-center"
                 title="دانلود گزارش جامع قیمت‌گذاری و سود حاصله به اکسل"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                ارسال گزارش به اکسل
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                <span>ارسال گزارش به اکسل</span>
               </button>
 
               <button
                 onClick={printPricingReport}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/5"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/5 text-center"
                 title="چاپ برگه رسمی قیمت مصوب جدید"
               >
-                <Printer className="h-3.5 w-3.5" />
-                چاپ برگه تغییر قیمت
+                <Printer className="h-3.5 w-3.5 shrink-0" />
+                <span>چاپ برگه تغییر قیمت</span>
               </button>
             </>
           )}
@@ -4366,18 +4366,18 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             <>
               <button
                 onClick={exportWipToCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="دانلود محصولات نیمه‌ساخته فعال به فایل اکسل/CSV"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                ارسال نیمه‌ساخته‌ها به اکسل
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                <span>ارسال نیمه‌ساخته‌ها به اکسل</span>
               </button>
 
               <label
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
                 title="بارگذاری محصولات نیمه‌ساخته از فایل اکسل/CSV"
               >
-                <ArrowUpRight className="h-3.5 w-3.5" />
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
                 <span>دریافت نیمه‌ساخته‌ها از اکسل</span>
                 <input
                   type="file"
@@ -4654,23 +4654,23 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-2 w-full sm:w-auto">
                         {activeFormulaData && activeFormulaData.ingredients.length > 0 && (
                           <button
                             type="button"
                             onClick={printFormulationReport}
-                            className="px-4 py-2 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white border border-slate-800 hover:border-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                            className="w-full sm:w-auto px-3.5 sm:px-4 py-2 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white border border-slate-800 hover:border-slate-700 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            <Printer className="h-4 w-4 text-emerald-450" />
-                            چاپ گزارش حرفه‌ای بها و فرمولاسیون
+                            <Printer className="h-4 w-4 text-emerald-450 shrink-0" />
+                            <span>چاپ گزارش حرفه‌ای بها و فرمولاسیون</span>
                           </button>
                         )}
                         <button
                           onClick={applyCogsPricesToProductCatalog}
-                          className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-600/10 hover:shadow-rose-600/20 flex items-center gap-1.5 cursor-pointer"
+                          className="w-full sm:w-auto px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-[11px] sm:text-xs font-bold transition-all shadow-md shadow-rose-600/10 hover:shadow-rose-600/20 flex items-center justify-center gap-1.5 cursor-pointer"
                         >
-                          <CheckCircle className="h-4 w-4" />
-                          ثبت نهایی بهای تمام شده در کاتالوگ
+                          <CheckCircle className="h-4 w-4 shrink-0" />
+                          <span>ثبت نهایی بهای تمام شده در کاتالوگ</span>
                         </button>
                       </div>
                     </div>
