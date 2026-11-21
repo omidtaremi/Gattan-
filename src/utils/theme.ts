@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 export type ThemeMode = 'dark' | 'light';
 
 export const THEME_STORAGE_KEY = 'gatan_theme';
-const THEME_CHANGE_EVENT = 'gatan-theme-change';
+
+const listeners = new Set<() => void>();
 
 export function getStoredTheme(): ThemeMode {
   if (typeof window === 'undefined') return 'dark';
@@ -20,6 +21,8 @@ export function getStoredTheme(): ThemeMode {
   }
 }
 
+let currentTheme: ThemeMode = getStoredTheme();
+
 export function applyThemeToDocument(theme: ThemeMode): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
@@ -29,7 +32,12 @@ export function applyThemeToDocument(theme: ThemeMode): void {
   root.style.colorScheme = theme;
 }
 
+function notifyListeners(): void {
+  listeners.forEach((listener) => listener());
+}
+
 export function setAppTheme(theme: ThemeMode): void {
+  currentTheme = theme;
   applyThemeToDocument(theme);
   if (typeof window !== 'undefined') {
     try {
@@ -37,52 +45,57 @@ export function setAppTheme(theme: ThemeMode): void {
     } catch {
       // Ignore storage quota / private mode errors
     }
-    window.dispatchEvent(new CustomEvent<ThemeMode>(THEME_CHANGE_EVENT, { detail: theme }));
   }
+  notifyListeners();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+
+  const handleStorage = (e: StorageEvent) => {
+    if (e.key === THEME_STORAGE_KEY) {
+      const next: ThemeMode = e.newValue === 'light' ? 'light' : 'dark';
+      if (next !== currentTheme) {
+        currentTheme = next;
+        applyThemeToDocument(next);
+        notifyListeners();
+      }
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handleStorage);
+  }
+
+  return () => {
+    listeners.delete(listener);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', handleStorage);
+    }
+  };
+}
+
+function getSnapshot(): ThemeMode {
+  return currentTheme;
+}
+
+function getServerSnapshot(): ThemeMode {
+  return 'dark';
 }
 
 export function useTheme() {
-  const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme());
+  const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   useEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 
-  useEffect(() => {
-    const handleCustomChange = (e: Event) => {
-      const next = (e as CustomEvent<ThemeMode>).detail;
-      if (next === 'dark' || next === 'light') {
-        setThemeState(next);
-      }
-    };
-
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === THEME_STORAGE_KEY) {
-        const next: ThemeMode = e.newValue === 'light' ? 'light' : 'dark';
-        applyThemeToDocument(next);
-        setThemeState(next);
-      }
-    };
-
-    window.addEventListener(THEME_CHANGE_EVENT, handleCustomChange);
-    window.addEventListener('storage', handleStorage);
-    return () => {
-      window.removeEventListener(THEME_CHANGE_EVENT, handleCustomChange);
-      window.removeEventListener('storage', handleStorage);
-    };
-  }, []);
-
   const setTheme = useCallback((next: ThemeMode) => {
     setAppTheme(next);
-    setThemeState(next);
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setThemeState((prev) => {
-      const next: ThemeMode = prev === 'dark' ? 'light' : 'dark';
-      setAppTheme(next);
-      return next;
-    });
+    setAppTheme(currentTheme === 'dark' ? 'light' : 'dark');
   }, []);
 
   return {

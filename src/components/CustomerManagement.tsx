@@ -565,8 +565,8 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId }: C
       )}
 
       {/* HEADER WITH SUMMARY KPI & TITLE */}
-      <div className="bg-gradient-to-l from-slate-900 via-slate-900/90 to-slate-950 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-800 shadow-xl relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-0" />
+      <div className="bg-white dark:bg-slate-900 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl relative overflow-hidden">
+        <div className="hidden dark:block absolute top-0 left-0 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-0" />
         
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 relative z-10">
           <div className="flex items-center gap-2.5 sm:gap-3.5">

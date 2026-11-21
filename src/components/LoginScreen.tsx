@@ -153,7 +153,7 @@ export default function LoginScreen({
 
   if (showRecovery) {
     return (
-      <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
+      <div className="min-h-screen bg-[#e8eef5] dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
         <div className="absolute top-4 left-4">
           <button
             type="button"
@@ -221,7 +221,7 @@ export default function LoginScreen({
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
+    <div className="min-h-screen bg-[#e8eef5] dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans relative" dir="rtl">
       <div className="absolute top-4 left-4">
         <button
           type="button"

@@ -11942,15 +11942,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         {/* Selected Month Status & Action Banner */}
         <div className={`rounded-3xl p-5 border transition-all shadow-lg ${
           isRegistered
-            ? 'bg-gradient-to-r from-emerald-950/40 via-slate-900/90 to-slate-900/90 border-emerald-500/40'
-            : 'bg-slate-900/90 border-slate-800'
+            ? 'bg-white dark:bg-slate-900 border-emerald-300 dark:border-emerald-500/40 border-r-4 border-r-emerald-600 dark:border-r-emerald-500'
+            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
         }`} dir="rtl">
           <div className="space-y-4">
             {/* Top Info Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800/80">
               <div className="flex items-start sm:items-center gap-3.5">
                 <div className={`p-3 rounded-2xl shrink-0 mt-0.5 sm:mt-0 shadow-md ${
-                  isRegistered ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-400 border border-emerald-500/30'
+                  isRegistered ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
                 }`}>
                   {isRegistered ? <CheckCircle className="h-6 w-6" /> : <Clock className="h-6 w-6" />}
                 </div>
@@ -13980,7 +13980,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             <div className="space-y-6 animate-fade-in text-slate-100 font-sans" dir="rtl">
               
               {/* Monthly Isolation Banner for Shifts */}
-              <div className="bg-gradient-to-l from-rose-950/30 via-slate-950 to-slate-950 border border-rose-500/25 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/25 border-r-4 border-r-rose-500 dark:border-r-rose-500/70 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
                   <span className="p-2 rounded-xl bg-rose-500/15 text-rose-400 border border-rose-500/20">
                     <Calendar className="h-4 w-4" />

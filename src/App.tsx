@@ -1885,10 +1885,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] font-sans flex flex-col" dir="rtl">
+    <div className="min-h-screen bg-[#e8eef5] dark:bg-[#09090b] text-slate-900 dark:text-[#fafafa] font-sans flex flex-col" dir="rtl">
       
       {/* ================= HEADER TOP BAR ================= */}
-      <header className="bg-white/95 dark:bg-[#0d0d0f]/95 backdrop-blur-md text-slate-900 dark:text-white shadow-sm dark:shadow-xl px-2.5 py-1.5 lg:px-6 lg:py-4 sticky top-0 z-40 border-b border-slate-200 dark:border-zinc-800/80">
+      <header className="bg-white/95 dark:bg-[#0d0d0f]/95 backdrop-blur-md text-slate-900 dark:text-white shadow-[0_2px_14px_-4px_rgba(15,23,42,0.09)] dark:shadow-xl px-2.5 py-1.5 lg:px-6 lg:py-4 sticky top-0 z-40 border-b border-slate-300/80 dark:border-zinc-800/80">
         
         {/* COMPACT MOBILE & TABLET HEADER (< lg) */}
         <div className="lg:hidden flex flex-col gap-1">
@@ -2326,11 +2326,11 @@ export default function App() {
         <nav
           className={`${
             mobileHasSelectedForm ? 'hidden lg:flex' : 'flex'
-          } lg:col-span-1 bg-white dark:bg-[#0d0d0f] p-3.5 sm:p-5 rounded-2xl lg:rounded-3xl border border-slate-200 dark:border-zinc-800/80 shadow-sm dark:shadow-2xl h-fit space-y-1 select-none flex-col justify-between`}
+          } lg:col-span-1 bg-white dark:bg-[#0d0d0f] p-3.5 sm:p-5 rounded-2xl lg:rounded-3xl border border-slate-300/75 dark:border-zinc-800/80 shadow-md dark:shadow-2xl h-fit space-y-1 select-none flex-col justify-between`}
         >
           <div>
             <div className="pb-2.5 lg:pb-3 mb-3 lg:mb-4 border-b border-slate-200 dark:border-zinc-800/80 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-black text-slate-600 dark:text-zinc-500 tracking-wider">بخش‌های مدیریتی سامانه</h3>
+              <h3 className="text-xs font-black text-slate-700 dark:text-zinc-500 tracking-wider">بخش‌های مدیریتی سامانه</h3>
               <span className="lg:hidden text-[10px] text-slate-500 dark:text-zinc-500 font-medium">یک بخش را انتخاب کنید</span>
             </div>
 
@@ -2342,8 +2342,8 @@ export default function App() {
                   onClick={() => handleSelectNavTab(item.id)}
                   className={`w-full text-right p-3 min-h-[44px] rounded-xl flex items-center gap-2.5 transition-all cursor-pointer ${
                     activeTab === item.id
-                      ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-bold border-r-2 border-emerald-500'
-                      : 'text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800/40 hover:text-slate-900 dark:hover:text-zinc-200'
+                      ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-400 font-black border-r-[3px] border-emerald-600 dark:border-emerald-500 shadow-xs'
+                      : 'text-slate-700 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800/40 hover:text-slate-950 dark:hover:text-zinc-200'
                   }`}
                 >
                   {item.icon} {item.label}
