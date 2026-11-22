@@ -2439,6 +2439,7 @@ export default function App() {
               db={db}
               onUpdateDb={handleUpdateDatabase}
               activePeriodId={activePeriodId}
+              currentUserName={currentUser?.fullName || currentUser?.name || currentUser?.username || ''}
             />
           )}
 
@@ -2447,7 +2448,8 @@ export default function App() {
             <ProcurementManagement 
               db={db} 
               onUpdateDb={handleUpdateDatabase} 
-              activePeriodId={activePeriodId} 
+              activePeriodId={activePeriodId}
+              currentUserName={currentUser?.fullName || currentUser?.name || currentUser?.username || ''}
             />
           )}
 

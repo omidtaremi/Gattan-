@@ -393,6 +393,206 @@ export function printElement(titleOrElementId: string, htmlContent?: string) {
 }
 
 /**
+ * Dedicated thermal receipt printer helper (80mm / 58mm POS thermal rolls).
+ * Prints cleanly via an isolated hidden iframe (no popup blocker issues, no A4 treasury wrappers).
+ */
+export function printThermalReceipt(title: string, bodyHtml: string, paperWidthMm: 80 | 58 = 80) {
+  const safeContentWidth = paperWidthMm === 58 ? '50mm' : '72mm';
+
+  const thermalStyles = `
+    @page {
+      size: ${paperWidthMm}mm auto;
+      margin: 0mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: ${paperWidthMm}mm;
+      background: #ffffff;
+      color: #000000;
+      font-family: 'Vazirmatn', Tahoma, 'B Nazanin', Arial, sans-serif;
+      direction: rtl;
+      text-align: right;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .thermal-sheet {
+      width: ${safeContentWidth};
+      max-width: ${safeContentWidth};
+      margin: 0 auto;
+      padding: 2.5mm 1mm 6mm 1mm;
+      color: #000000;
+    }
+    .t-center { text-align: center; }
+    .t-left { text-align: left; }
+    .t-mono { font-family: ui-monospace, 'Cascadia Mono', 'Courier New', monospace; }
+    .t-divider-solid { border-top: 1.5px solid #000000; margin: 6px 0; }
+    .t-divider-double { border-top: 3px double #000000; margin: 7px 0; }
+    .t-divider-dashed { border-top: 1px dashed #000000; margin: 6px 0; }
+    .t-bar {
+      background: #000000;
+      color: #ffffff;
+      text-align: center;
+      font-weight: 900;
+      padding: 5px 6px;
+      border-radius: 3px;
+      letter-spacing: -0.2px;
+    }
+    .t-kv {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 6px;
+      margin: 2.5px 0;
+    }
+    .t-box {
+      border: 1.5px solid #000000;
+      border-radius: 4px;
+      padding: 6px 7px;
+      margin: 6px 0;
+    }
+    .t-box-double {
+      border: 2.5px double #000000;
+      border-radius: 4px;
+      padding: 6px 7px;
+      margin: 6px 0;
+    }
+    .t-box-dashed {
+      border: 1px dashed #000000;
+      border-radius: 4px;
+      padding: 5px 7px;
+      margin: 5px 0;
+    }
+    table.t-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 4px 0;
+      font-size: 10px;
+    }
+    table.t-table th {
+      border-top: 1.5px solid #000000;
+      border-bottom: 1.5px solid #000000;
+      padding: 4px 2px;
+      font-weight: 900;
+      text-align: right;
+    }
+    table.t-table td {
+      border-bottom: 1px dashed #000000;
+      padding: 5px 2px;
+      vertical-align: top;
+    }
+    table.t-table tr:last-child td {
+      border-bottom: 1.5px solid #000000;
+    }
+    .t-photo {
+      display: block;
+      width: 100%;
+      max-height: 58mm;
+      object-fit: contain;
+      border: 1px solid #000000;
+      border-radius: 3px;
+      padding: 2px;
+      margin-top: 4px;
+      background: #ffffff;
+      filter: grayscale(100%) contrast(1.18);
+    }
+    @media print {
+      html, body {
+        width: ${paperWidthMm}mm;
+      }
+      .t-avoid-break {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+    }
+  `;
+
+  const fullHtml = `<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>${thermalStyles}</style>
+</head>
+<body>
+  <div class="thermal-sheet">${bodyHtml}</div>
+</body>
+</html>`;
+
+  // Use a hidden iframe so thermal printing never depends on window.open popups
+  const existing = document.getElementById('gatan-thermal-print-frame');
+  if (existing && existing.parentNode) {
+    existing.parentNode.removeChild(existing);
+  }
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'gatan-thermal-print-frame';
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.style.visibility = 'hidden';
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentWindow?.document;
+  if (!doc || !iframe.contentWindow) return;
+
+  doc.open();
+  doc.write(fullHtml);
+  doc.close();
+
+  const triggerPrint = () => {
+    const win = iframe.contentWindow;
+    if (!win) return;
+    try {
+      win.focus();
+      win.print();
+    } catch (err) {
+      console.error('Thermal print failed:', err);
+    } finally {
+      setTimeout(() => {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 2500);
+    }
+  };
+
+  // Wait for fonts and all sample images inside the receipt to finish loading
+  const waitForAssets = () => {
+    const imgs = Array.from(doc.images || []);
+    const imgPromises = imgs.map(img =>
+      img.complete
+        ? Promise.resolve()
+        : new Promise<void>(res => {
+            img.onload = () => res();
+            img.onerror = () => res();
+          })
+    );
+    const fontPromise =
+      doc.fonts && doc.fonts.ready ? doc.fonts.ready.catch(() => undefined) : Promise.resolve();
+
+    Promise.all([fontPromise, ...imgPromises]).then(() => {
+      setTimeout(triggerPrint, 250);
+    });
+  };
+
+  if (doc.readyState === 'complete') {
+    waitForAssets();
+  } else {
+    iframe.onload = waitForAssets;
+  }
+}
+
+/**
  * Normalizes Persian and Arabic text for reliable, case-insensitive, character-agnostic searching.
  * Standardizes Arabic 'ك' and 'ي/ى' to Persian 'ک' and 'ی'.
  * Converts all numbers (Persian/Arabic) to English digits.

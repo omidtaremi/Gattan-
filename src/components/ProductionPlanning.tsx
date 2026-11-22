@@ -4,20 +4,26 @@ import {
   Plus, Trash2, Edit, Save, ArrowUp, ArrowDown, Settings, Clock, 
   Layers, Info, AlertTriangle, CheckCircle, RefreshCcw, HelpCircle, 
   Play, Calendar, HelpCircle as HelpIcon, Flame, Thermometer, Wind,
-  Sliders, Shuffle, Sparkles, Printer, FileSpreadsheet, ChevronDown, Check, X, Search
+  Sliders, Shuffle, Sparkles, Printer, FileSpreadsheet, ChevronDown, Check, X, Search, ChefHat
 } from 'lucide-react';
 import { AppDatabase, Product, ProductionOven, ProductionTray, ProductTrayAssignment, ProductionPlanningSettings, ProductionPlanningOrder, ProductionRackDefinition } from '../types';
 import { toPersianDigits, formatWithCommas, getTodayJalali, printElement } from '../utils/persianUtils';
 import * as XLSX from 'xlsx';
+import CustomerProductionOrders from './CustomerProductionOrders';
 
 interface ProductionPlanningProps {
   db: AppDatabase;
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
+  currentUserName?: string;
 }
 
-export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: ProductionPlanningProps) {
-  const [activeTab, setActiveTab] = useState<'planning' | 'settings' | 'optimization'>('planning');
+export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, currentUserName }: ProductionPlanningProps) {
+  const [activeTab, setActiveTab] = useState<'customer_orders' | 'planning' | 'settings' | 'optimization'>('planning');
+  const activeCustomerOrdersCount = useMemo(() => {
+    const list = db.customerProductionOrders || [];
+    return list.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length;
+  }, [db.customerProductionOrders]);
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     // Default to a representative date in the active period
     const yearPart = activePeriodId.split('-')[0] || '1405';
@@ -2283,6 +2289,26 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
         {/* Action Controls */}
         <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar w-full md:w-auto items-center gap-1.5 sm:gap-2">
           <button
+            onClick={() => setActiveTab('customer_orders')}
+            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTab === 'customer_orders'
+                ? 'bg-emerald-600 text-white shadow-lg'
+                : 'bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white'
+            }`}
+          >
+            <ChefHat className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            ثبت سفارش تولید
+            {activeCustomerOrdersCount > 0 && (
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
+                activeTab === 'customer_orders'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-emerald-500/20 text-emerald-300'
+              }`}>
+                {toPersianDigits(activeCustomerOrdersCount)}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setActiveTab('planning')}
             className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'planning' 
@@ -2318,7 +2344,21 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
 
       {/* ================= MAIN CONTENT VIEWPORT ================= */}
       <AnimatePresence mode="wait">
-        {activeTab === 'planning' ? (
+        {activeTab === 'customer_orders' ? (
+          <motion.div
+            key="customer-orders-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+          >
+            <CustomerProductionOrders
+              db={db}
+              onUpdateDb={onUpdateDb}
+              activePeriodId={activePeriodId}
+              currentUserName={currentUserName}
+            />
+          </motion.div>
+        ) : activeTab === 'planning' ? (
           <motion.div
             key="planning-tab"
             initial={{ opacity: 0, y: 10 }}

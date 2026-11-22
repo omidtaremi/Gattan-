@@ -617,15 +617,63 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   const ordersExport = (db.procurementOrders || []).map(o => ({
     id: o.id,
     periodId: o.periodId,
-    supplierId: o.supplierId,
+    title: o.title || '',
+    requestedBy: o.requestedBy || '',
+    supplierId: o.supplierId || '',
     orderDate: o.orderDate,
     expectedDeliveryDate: o.expectedDeliveryDate,
     items: JSON.stringify(o.items || []),
     totalBill: o.totalBill,
     status: o.status,
-    notes: o.notes
+    notes: o.notes || '',
+    isActive: o.isActive === undefined ? '' : o.isActive ? 'true' : 'false',
+    deactivatedAt: o.deactivatedAt || '',
+    deactivationReason: o.deactivationReason || '',
+    createdAt: o.createdAt || '',
+    updatedAt: o.updatedAt || ''
   }));
   addSheet(ordersExport, "Procurement_Orders");
+
+  // 16b. Customer Production Orders
+  const customerProdOrdersExport = (db.customerProductionOrders || []).map(o => {
+    // Keep cell within Excel 32k char limit by stripping oversized image payloads only in Excel sheet
+    const itemsSerialized = JSON.stringify(o.items || []);
+    const safeItemsJson =
+      itemsSerialized.length > 30000
+        ? JSON.stringify((o.items || []).map(it => ({ ...it, sampleImages: [] })))
+        : itemsSerialized;
+    return {
+      id: o.id,
+      orderNumber: o.orderNumber,
+      periodId: o.periodId,
+      customerId: o.customerId || '',
+      customerName: o.customerName,
+      customerPhone: o.customerPhone,
+      customerCategoryId: o.customerCategoryId || '',
+      customerCategoryName: o.customerCategoryName || '',
+      orderDate: o.orderDate,
+      deliveryDate: o.deliveryDate,
+      deliveryTime: o.deliveryTime,
+      deliveryType: o.deliveryType,
+      deliveryAddress: o.deliveryAddress || '',
+      recipientName: o.recipientName || '',
+      recipientPhone: o.recipientPhone || '',
+      deliveryFee: o.deliveryFee || 0,
+      items: safeItemsJson,
+      totalAmount: o.totalAmount,
+      prepaymentAmount: o.prepaymentAmount,
+      remainingAmount: o.remainingAmount,
+      prepaymentMethod: o.prepaymentMethod || '',
+      treasuryReceiptId: o.treasuryReceiptId || '',
+      treasuryReceiptNo: o.treasuryReceiptNo || '',
+      status: o.status,
+      notes: o.notes || '',
+      registeredBy: o.registeredBy || '',
+      createdAt: o.createdAt || '',
+      updatedAt: o.updatedAt || ''
+    };
+  });
+  addSheet(customerProdOrdersExport, "Customer_Production_Orders");
 
   // 17. Stock Audits
   const auditsExport = (db.stockCountAudits || []).map(s => ({
@@ -1904,13 +1952,61 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
     result.procurementOrders = ordersRows.map(r => ({
       id: String(r.id || ''),
       periodId: String(r.periodId || ''),
-      supplierId: String(r.supplierId || ''),
+      title: r.title ? String(r.title) : undefined,
+      requestedBy: r.requestedBy ? String(r.requestedBy) : undefined,
+      supplierId: r.supplierId ? String(r.supplierId) : undefined,
       orderDate: String(r.orderDate || ''),
       expectedDeliveryDate: String(r.expectedDeliveryDate || ''),
       items: parseJSON(r.items, []),
       totalBill: parseNumber(r.totalBill),
       status: String(r.status || ''),
       notes: r.notes ? String(r.notes) : undefined,
+      isActive:
+        r.isActive === '' || r.isActive === undefined
+          ? undefined
+          : String(r.isActive).toLowerCase() === 'true' || r.isActive === true,
+      deactivatedAt: r.deactivatedAt ? String(r.deactivatedAt) : undefined,
+      deactivationReason:
+        r.deactivationReason === 'new_order' || r.deactivationReason === 'deadline_passed'
+          ? r.deactivationReason
+          : undefined,
+      createdAt: r.createdAt ? String(r.createdAt) : undefined,
+      updatedAt: r.updatedAt ? String(r.updatedAt) : undefined,
+    })).filter(x => x.id);
+  }
+
+  // 16b. Customer Production Orders
+  const customerProdOrdersRows = getSheetData("Customer_Production_Orders");
+  if (customerProdOrdersRows) {
+    result.customerProductionOrders = customerProdOrdersRows.map(r => ({
+      id: String(r.id || ''),
+      orderNumber: String(r.orderNumber || ''),
+      periodId: String(r.periodId || ''),
+      customerId: r.customerId ? String(r.customerId) : undefined,
+      customerName: String(r.customerName || ''),
+      customerPhone: String(r.customerPhone || ''),
+      customerCategoryId: r.customerCategoryId ? String(r.customerCategoryId) : undefined,
+      customerCategoryName: r.customerCategoryName ? String(r.customerCategoryName) : undefined,
+      orderDate: String(r.orderDate || ''),
+      deliveryDate: String(r.deliveryDate || ''),
+      deliveryTime: String(r.deliveryTime || '12:00'),
+      deliveryType: (r.deliveryType === 'delivery' ? 'delivery' : 'pickup') as 'pickup' | 'delivery',
+      deliveryAddress: r.deliveryAddress ? String(r.deliveryAddress) : undefined,
+      recipientName: r.recipientName ? String(r.recipientName) : undefined,
+      recipientPhone: r.recipientPhone ? String(r.recipientPhone) : undefined,
+      deliveryFee: parseNumber(r.deliveryFee),
+      items: parseJSON(r.items, []),
+      totalAmount: parseNumber(r.totalAmount),
+      prepaymentAmount: parseNumber(r.prepaymentAmount),
+      remainingAmount: parseNumber(r.remainingAmount),
+      prepaymentMethod: r.prepaymentMethod ? (String(r.prepaymentMethod) as any) : undefined,
+      treasuryReceiptId: r.treasuryReceiptId ? String(r.treasuryReceiptId) : undefined,
+      treasuryReceiptNo: r.treasuryReceiptNo ? String(r.treasuryReceiptNo) : undefined,
+      status: (String(r.status || 'registered') as any),
+      notes: r.notes ? String(r.notes) : undefined,
+      registeredBy: r.registeredBy ? String(r.registeredBy) : undefined,
+      createdAt: String(r.createdAt || new Date().toISOString()),
+      updatedAt: String(r.updatedAt || new Date().toISOString()),
     })).filter(x => x.id);
   }
 

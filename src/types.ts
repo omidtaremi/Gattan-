@@ -693,6 +693,7 @@ export interface AppDatabase {
   }[];
   productionPlanningSettings?: any;
   productionPlanningOrders?: any[];
+  customerProductionOrders?: CustomerProductionOrder[];
   dibalScales?: DibalScaleConfig[];
   dibalPLUs?: DibalPLUMapping[];
   dibalTickets?: DibalWeighingTicket[];
@@ -813,25 +814,110 @@ export interface AttendanceRecord {
   };
 }
 
+export type ProcurementItemStatus = 'pending' | 'purchased' | 'received' | 'carried_over';
+
 export interface ProcurementOrderItem {
+  lineId?: string;
   rawMaterialId?: string;
   productId?: string;
+  supplierId?: string; // تامین‌کننده اختصاصی این ردیف کالا
   qtyProposed: number;
   estimatedCostPerUnit: number;
   totalEstimatedCost: number;
-  isReceived?: boolean;
+  lastPurchasePrice?: number;
+  lastPurchasePriceSource?: 'invoice' | 'catalog';
+  lastPurchaseDate?: string;
+  itemStatus?: ProcurementItemStatus;
+  isReceived?: boolean; // سازگاری با سفارش‌های قبلی (همگام با itemStatus === 'received')
+  purchasedAt?: string;
+  purchasedBy?: string;
+  receivedQty?: number; // مقدار واقعی تحویل‌گرفته‌شده توسط پرسنل
+  receivedBy?: string; // نام تحویل‌گیرنده
+  receivedAt?: string; // تاریخ تایید دریافت
+  receiptNotes?: string; // یادداشت تحویل یا علت مغایرت
+  carriedOverFromOrderId?: string; // شناسه سفارش قبلی در صورت انتقال از جاماندگان
+  carriedOverFromLineId?: string;
+  carriedOverFromTitle?: string;
+  carriedOverToOrderId?: string; // شناسه سفارش جدید در صورت انتقال به هفته بعد
+  rowNotes?: string;
 }
 
 export interface ProcurementOrder {
   id: string;
   periodId: string;
-  supplierId?: string; // Optional: orders can be registered without a supplier
+  title?: string; // عنوان درخواست هفتگی (مثلاً سفارش هفته دوم اردیبهشت)
+  requestedBy?: string; // نام پرسنل یا سرپرست درخواست‌کننده
+  supplierId?: string; // اختیاری (برای سازگاری با سفارش‌های قبلی تک‌تامین‌کننده‌ای)
   orderDate: string;
   expectedDeliveryDate: string;
   items: ProcurementOrderItem[];
   totalBill: number;
   status: string;
   notes?: string;
+  isActive?: boolean; // فعال یا غیرفعال (پس از پایان مهلت تحویل یا ثبت درخواست هفتگی جدید غیرفعال می‌شود)
+  deactivatedAt?: string;
+  deactivationReason?: 'new_order' | 'deadline_passed';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type CustomerProductionOrderStatus =
+  | 'registered'
+  | 'in_production'
+  | 'ready'
+  | 'delivered'
+  | 'cancelled';
+
+export interface CustomerProductionOrderItem {
+  lineId: string;
+  productId?: string; // شناسه محصول از کاتالوگ (در صورت انتخاب از لیست)
+  productName: string; // عنوان محصول (از کاتالوگ یا ورود دستی سفارشی)
+  productCategoryName?: string; // نوع محصول / دسته‌بندی
+  departmentId: string; // شناسه دپارتمان تولید
+  departmentName: string; // نام دپارتمان تولید
+  quantity: number; // تعداد سفارش
+  unit: string; // واحد (عدد، کیلو، سینی، جعبه، بسته)
+  weightOrSize?: string; // وزن، سایز یا تعداد نفر (مثلاً ۲ کیلو / ۱۲ نفره)
+  flavorOrFilling?: string; // طعم، فیلینگ، مغز یا حساسیت غذایی
+  needsInscription: boolean; // آیا مشتری نیاز به نوشتن جمله خاص روی محصول دارد؟
+  inscriptionText?: string; // متن دقیق جمله روی محصول
+  inscriptionStyle?: string; // رنگ یا مدل نوشتار/تزئین اختیاری
+  sampleImages: string[]; // تصاویر نمونه درخواستی مشتری (فشرده‌شده Base64 DataURL)
+  estimatedUnitPrice: number; // قیمت واحد برآوردی (ریال)
+  totalPrice: number; // جمع ردیف (ریال)
+  itemStatus: CustomerProductionOrderStatus; // وضعیت تولید این ردیف در دپارتمان مربوطه
+  itemNotes?: string; // توضیحات فنی کارگاه برای این ردیف
+}
+
+export interface CustomerProductionOrder {
+  id: string;
+  orderNumber: string; // کد پیگیری سفارش تولید (مثلاً PO-1405-001)
+  periodId: string;
+  customerId?: string; // شناسه مشتری در سیستم
+  customerName: string;
+  customerPhone: string;
+  customerCategoryId?: string;
+  customerCategoryName?: string;
+  orderDate: string; // تاریخ ثبت شمسی
+  deliveryDate: string; // تاریخ تحویل شمسی
+  deliveryTime: string; // ساعت تحویل (مثلاً 17:30)
+  deliveryType: 'pickup' | 'delivery'; // تحویل حضوری یا ارسال با پیک
+  deliveryAddress?: string; // نشانی تحویل در صورت ارسال با پیک
+  recipientName?: string; // نام تحویل‌گیرنده سفارش
+  recipientPhone?: string; // تلفن همراه تحویل‌گیرنده سفارش
+  deliveryFee?: number; // هزینه ارسال (قدیمی - اختیاری)
+  items: CustomerProductionOrderItem[]; // ردیف‌های سفارش (هر ردیف با دپارتمان مجزا)
+  totalAmount: number; // مبلغ کل سفارش (شامل هزینه ارسال)
+  prepaymentAmount: number; // مبلغ پیش‌پرداخت (بیعانه)
+  remainingAmount: number; // مانده قابل پرداخت هنگام تحویل
+  prepaymentMethod?: 'cash' | 'pos' | 'bank_transfer' | 'cheque';
+  treasuryReceiptId?: string; // شناسه سند دریافت خزانه‌داری (در صورت ثبت اختیاری)
+  treasuryReceiptNo?: string; // شماره سند خزانه‌داری
+  status: CustomerProductionOrderStatus; // وضعیت کلی سفارش
+  notes?: string; // توضیحات کلی سفارش
+  registeredBy?: string; // کاربر ثبت‌کننده
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type { UserRoleDefinition } from './shared/rbac';
