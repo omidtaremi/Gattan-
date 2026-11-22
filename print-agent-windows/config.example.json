@@ -1,0 +1,7 @@
+{
+  "serverUrl": "https://YOUR-GATAN-DOMAIN.COM",
+  "apiKey": "PASTE_KEY_FROM_GATAN_ERP_HERE",
+  "printerName": "auto",
+  "stationId": "cashier-main",
+  "pollIntervalMs": 2000
+}

@@ -19,9 +19,16 @@ import {
   formatWithCommas,
   parseNumber,
   printThermalReceipt,
+  buildThermalReceiptDocumentHtml,
   matchPersianString,
   getTodayJalali
 } from '../utils/persianUtils';
+import {
+  enqueuePosPrintJob,
+  fetchPrintQueueState,
+  type PrintStationStatus
+} from '../services/printQueueService';
+import PrintQueueModal from './PrintQueueModal';
 import ShamsiDatePicker from './ShamsiDatePicker';
 import {
   Plus,
@@ -54,7 +61,12 @@ import {
   Ban,
   Eye,
   Check,
-  ChevronDown
+  ChevronDown,
+  Tag,
+  Settings2,
+  RotateCcw,
+  Monitor,
+  Loader2
 } from 'lucide-react';
 
 interface CustomerProductionOrdersProps {
@@ -62,7 +74,17 @@ interface CustomerProductionOrdersProps {
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
   currentUserName?: string;
+  mode?: 'full' | 'workshop_only';
 }
+
+const DEFAULT_ORDER_PURPOSES: string[] = [
+  'تولد دوستم',
+  'تولد پدر یا مادر',
+  'تولد خواهر یا برادر',
+  'سالگرد ازدواج',
+  'مهمانی و دورهمی',
+  'جلسه و پذیرایی سازمانی'
+];
 
 const DEFAULT_WORKSHOP_DEPARTMENTS = [
   { id: 'dept-pastry', name: 'قنادی و کیک سفارشی' },
@@ -432,19 +454,46 @@ export default function CustomerProductionOrders({
   db,
   onUpdateDb,
   activePeriodId,
-  currentUserName = ''
+  currentUserName = '',
+  mode = 'full'
 }: CustomerProductionOrdersProps) {
+  const isWorkshopOnly = mode === 'workshop_only';
   const todayJalali = useMemo(() => getTodayJalali(), []);
   const tomorrowJalali = useMemo(() => addDaysToJalaliSimple(todayJalali, 1), [todayJalali]);
   const next7DaysJalali = useMemo(() => addDaysToJalaliSimple(todayJalali, 7), [todayJalali]);
 
-  // Sub-view mode: 'board' (Department Workbench) or 'form' (Create / Edit Order)
+  // Sub-view mode: 'board' (Orders & Department Workbench) or 'form' (Create / Edit Order)
   const [viewMode, setViewMode] = useState<'board' | 'form'>('board');
 
   // Inline toast notification (zero window.alert)
   const [toast, setToast] = useState<{ type: 'success' | 'warning' | 'info'; message: string } | null>(null);
   const showToast = useCallback((type: 'success' | 'warning' | 'info', message: string) => {
     setToast({ type, message });
+  }, []);
+
+  // POS Print Queue state (Windows 10 + Sewoo 100 USB)
+  const [isPrintQueueOpen, setIsPrintQueueOpen] = useState(false);
+  const [printStation, setPrintStation] = useState<PrintStationStatus | null>(null);
+  const [sendingPrintKey, setSendingPrintKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const pollStatus = async () => {
+      try {
+        const res = await fetchPrintQueueState(1);
+        if (active && res.station) {
+          setPrintStation(res.station);
+        }
+      } catch {
+        // Silent background check; user sees details inside PrintQueueModal
+      }
+    };
+    pollStatus();
+    const timer = setInterval(pollStatus, 15_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, []);
 
   // ==================== MASTER DATA ====================
@@ -556,7 +605,7 @@ export default function CustomerProductionOrders({
   const [quickCustCategoryId, setQuickCustCategoryId] = useState('');
   const [quickCustAddress, setQuickCustAddress] = useState('');
 
-  // Delivery & Recipient fields
+  // Delivery, Recipient & Order Purpose (Occasion) fields
   const [orderDate, setOrderDate] = useState(todayJalali);
   const [deliveryDate, setDeliveryDate] = useState(tomorrowJalali);
   const [deliveryTime, setDeliveryTime] = useState('17:00');
@@ -564,6 +613,85 @@ export default function CustomerProductionOrders({
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientPhone, setRecipientPhone] = useState('');
+  const [orderPurpose, setOrderPurpose] = useState('');
+
+  // Order Purpose (Occasion) CRUD Manager state
+  const [showPurposeManager, setShowPurposeManager] = useState(false);
+  const [newPurposeInput, setNewPurposeInput] = useState('');
+  const [editingPurposeIdx, setEditingPurposeIdx] = useState<number | null>(null);
+  const [editingPurposeValue, setEditingPurposeValue] = useState('');
+
+  const orderPurposeOptions = useMemo(() => {
+    if (Array.isArray(db.customerOrderPurposes)) {
+      return db.customerOrderPurposes;
+    }
+    return DEFAULT_ORDER_PURPOSES;
+  }, [db.customerOrderPurposes]);
+
+  const saveOrderPurposeOptions = (nextList: string[]) => {
+    onUpdateDb({
+      ...db,
+      customerOrderPurposes: nextList
+    });
+  };
+
+  const handleAddOrderPurpose = () => {
+    const clean = newPurposeInput.trim();
+    if (!clean) {
+      showToast('warning', 'لطفاً عنوان هدف سفارش را وارد نمایید.');
+      return;
+    }
+    if (orderPurposeOptions.some(p => p.trim() === clean)) {
+      showToast('warning', 'این عنوان قبلاً در لیست اهداف سفارش ثبت شده است.');
+      return;
+    }
+    const nextList = [...orderPurposeOptions, clean];
+    saveOrderPurposeOptions(nextList);
+    setOrderPurpose(clean);
+    setNewPurposeInput('');
+    showToast('success', `هدف «${clean}» اضافه و انتخاب شد.`);
+  };
+
+  const handleSaveEditPurpose = (idx: number) => {
+    const clean = editingPurposeValue.trim();
+    if (!clean) {
+      showToast('warning', 'عنوان هدف سفارش نمی‌تواند خالی باشد.');
+      return;
+    }
+    const oldVal = orderPurposeOptions[idx];
+    if (orderPurposeOptions.some((p, i) => i !== idx && p.trim() === clean)) {
+      showToast('warning', 'عنوان مشابهی در لیست وجود دارد.');
+      return;
+    }
+    const nextList = orderPurposeOptions.map((p, i) => (i === idx ? clean : p));
+    saveOrderPurposeOptions(nextList);
+    if (orderPurpose === oldVal) {
+      setOrderPurpose(clean);
+    }
+    setEditingPurposeIdx(null);
+    setEditingPurposeValue('');
+    showToast('success', 'عنوان هدف سفارش ویرایش شد.');
+  };
+
+  const handleDeleteOrderPurpose = (idx: number) => {
+    const removed = orderPurposeOptions[idx];
+    const nextList = orderPurposeOptions.filter((_, i) => i !== idx);
+    saveOrderPurposeOptions(nextList);
+    if (orderPurpose === removed) {
+      setOrderPurpose('');
+    }
+    if (editingPurposeIdx === idx) {
+      setEditingPurposeIdx(null);
+      setEditingPurposeValue('');
+    }
+    showToast('info', `هدف «${removed}» از لیست حذف شد.`);
+  };
+
+  const handleRestoreDefaultPurposes = () => {
+    const merged = Array.from(new Set([...orderPurposeOptions, ...DEFAULT_ORDER_PURPOSES]));
+    saveOrderPurposeOptions(merged);
+    showToast('success', 'اهداف پیش‌فرض به لیست اضافه شدند.');
+  };
 
   // Order lines
   const [orderItems, setOrderItems] = useState<CustomerProductionOrderItem[]>(() => [
@@ -607,6 +735,8 @@ export default function CustomerProductionOrders({
     setDeliveryAddress('');
     setRecipientName('');
     setRecipientPhone('');
+    setOrderPurpose('');
+    setShowPurposeManager(false);
     setOrderItems([createEmptyOrderLine(defaultDepartment)]);
     setPrepaymentAmount(0);
     setPrepaymentMethod('pos');
@@ -641,6 +771,8 @@ export default function CustomerProductionOrders({
     setDeliveryAddress(order.deliveryAddress || '');
     setRecipientName(order.recipientName || '');
     setRecipientPhone(order.recipientPhone || '');
+    setOrderPurpose(order.orderPurpose || '');
+    setShowPurposeManager(false);
     setOrderItems(
       (order.items || []).length > 0
         ? order.items.map(it => ({ ...it, sampleImages: [...(it.sampleImages || [])] }))
@@ -937,6 +1069,7 @@ export default function CustomerProductionOrders({
       deliveryAddress: deliveryType === 'delivery' ? deliveryAddress.trim() || undefined : undefined,
       recipientName: recipientName.trim() || undefined,
       recipientPhone: recipientPhone.trim() ? toEnglishDigits(recipientPhone.trim()) : undefined,
+      orderPurpose: orderPurpose.trim() || undefined,
       items: sanitizedItems,
       totalAmount: grandTotalAmount,
       prepaymentAmount: Number(prepaymentAmount) || 0,
@@ -1081,6 +1214,7 @@ export default function CustomerProductionOrders({
         matchPersianString(order.customerPhone, boardSearch) ||
         matchPersianString(order.recipientName || '', boardSearch) ||
         matchPersianString(order.recipientPhone || '', boardSearch) ||
+        matchPersianString(order.orderPurpose || '', boardSearch) ||
         matchPersianString(order.notes || '', boardSearch) ||
         (order.items || []).some(
           it =>
@@ -1093,9 +1227,13 @@ export default function CustomerProductionOrders({
     });
   }, [periodOrders, selectedStatusFilter, selectedDepartmentFilter, selectedDateRange, boardSearch, todayNorm, tomorrowNorm, next7Norm]);
 
-  // ==================== 80mm THERMAL RECEIPT TEMPLATES ====================
-  // 1. Workshop Production Ticket (ZERO customer/recipient info, high-contrast 80mm thermal POS format)
-  const printProductionTicket = (order: CustomerProductionOrder, onlyDeptId?: string) => {
+  // ==================== 72mm THERMAL RECEIPT TEMPLATES ====================
+  // 1. Workshop Production Ticket (ZERO customer/recipient info; text-only for POS queue per Sewoo 100 preference)
+  const buildProductionTicketBodyHtml = (
+    order: CustomerProductionOrder,
+    onlyDeptId?: string,
+    includeSampleImages = false
+  ) => {
     const itemsToPrint =
       onlyDeptId && onlyDeptId !== 'ALL'
         ? (order.items || []).filter(it => it.departmentId === onlyDeptId)
@@ -1166,17 +1304,21 @@ export default function CustomerProductionOrders({
 
           ${
             (it.sampleImages || []).length > 0
-              ? `<div style="margin-top: 7px; padding-top: 5px; border-top: 1px dashed #000000;">
-                  <div style="font-size: 9.5px; font-weight: 900; margin-bottom: 3px;">تصویر نمونه درخواستی (${toPersianDigits(it.sampleImages.length)} مورد):</div>
-                  ${it.sampleImages
-                    .map(
-                      (src, imgIdx) => `
-                    <div style="margin-bottom: 4px;">
-                      <img src="${src}" alt="نمونه ${toPersianDigits(imgIdx + 1)}" class="t-photo" />
-                    </div>`
-                    )
-                    .join('')}
-                </div>`
+              ? includeSampleImages
+                ? `<div style="margin-top: 7px; padding-top: 5px; border-top: 1px dashed #000000;">
+                    <div style="font-size: 9.5px; font-weight: 900; margin-bottom: 3px;">تصویر نمونه درخواستی (${toPersianDigits(it.sampleImages.length)} مورد):</div>
+                    ${it.sampleImages
+                      .map(
+                        (src, imgIdx) => `
+                      <div style="margin-bottom: 4px;">
+                        <img src="${src}" alt="نمونه ${toPersianDigits(imgIdx + 1)}" class="t-photo" />
+                      </div>`
+                      )
+                      .join('')}
+                  </div>`
+                : `<div style="margin-top: 6px; padding-top: 4px; border-top: 1px dashed #000000; font-size: 9.5px; font-weight: 800;">
+                    توجه: ${toPersianDigits(it.sampleImages.length)} تصویر نمونه در کارتابل سیستم ثبت شده است.
+                  </div>`
               : ''
           }
         </div>
@@ -1185,7 +1327,7 @@ export default function CustomerProductionOrders({
       )
       .join('');
 
-    const html = `
+    return `
       <div class="t-center" style="margin-bottom: 6px;">
         <div style="font-size: 15px; font-weight: 900; letter-spacing: -0.3px;">کارگاه تولید گاتان</div>
         <div class="t-bar" style="font-size: 12px; margin-top: 4px;">برگه دستور تولید کارگاه</div>
@@ -1236,12 +1378,10 @@ export default function CustomerProductionOrders({
         <span>چاپ: ${printTimestamp}</span>
       </div>
     `;
-
-    printThermalReceipt(`برگه_کارگاه_${order.orderNumber}`, html, 80);
   };
 
-  // 2. Customer Receipt (Professional 80mm thermal POS format — NO remaining balance displayed)
-  const printCustomerReceipt = (order: CustomerProductionOrder) => {
+  // 2. Customer Receipt (72mm thermal POS format — NO item prices, NO total amount, NO remaining balance)
+  const buildCustomerReceiptBodyHtml = (order: CustomerProductionOrder) => {
     const printTimestamp = `${toPersianDigits(getTodayJalali())} — ${toPersianDigits(
       new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })
     )}`;
@@ -1250,7 +1390,7 @@ export default function CustomerProductionOrders({
       .map(
         (it, idx) => `
       <tr>
-        <td style="width: 56%;">
+        <td style="width: 72%;">
           <div style="font-weight: 900; font-size: 10.5px;">${toPersianDigits(idx + 1)}. ${escapeHtml(it.productName)}</div>
           ${
             it.weightOrSize || it.flavorOrFilling
@@ -1268,11 +1408,8 @@ export default function CustomerProductionOrders({
               : ''
           }
         </td>
-        <td style="width: 18%; text-align: center; font-weight: 800; white-space: nowrap;">
+        <td style="width: 28%; text-align: left; font-weight: 900; white-space: nowrap;">
           ${toPersianDigits(it.quantity)} ${escapeHtml(it.unit)}
-        </td>
-        <td class="t-mono t-left" style="width: 26%; font-weight: 900; white-space: nowrap;">
-          ${toPersianDigits(formatWithCommas(it.totalPrice))}
         </td>
       </tr>
     `
@@ -1282,7 +1419,7 @@ export default function CustomerProductionOrders({
     const hasRecipient = Boolean(order.recipientName || order.recipientPhone);
     const paymentMethodText = order.prepaymentMethod ? PAYMENT_METHOD_LABELS[order.prepaymentMethod] : '';
 
-    const html = `
+    return `
       <div class="t-center" style="padding-bottom: 4px;">
         <div style="font-size: 18px; font-weight: 900; letter-spacing: -0.5px; line-height: 1.2;">گـاتـان</div>
         <div style="font-size: 9.5px; font-weight: 800; margin-top: 2px;">نان · شیرینی · فینگرفود · کافه</div>
@@ -1349,9 +1486,8 @@ export default function CustomerProductionOrders({
       <table class="t-table" style="margin-top: 6px;">
         <thead>
           <tr>
-            <th>شرح سفارش</th>
-            <th style="text-align: center;">تعداد</th>
-            <th style="text-align: left;">مبلغ (ریال)</th>
+            <th style="width: 72%;">شرح سفارش</th>
+            <th style="width: 28%; text-align: left;">مقدار / تعداد</th>
           </tr>
         </thead>
         <tbody>
@@ -1360,11 +1496,6 @@ export default function CustomerProductionOrders({
       </table>
 
       <div class="t-box" style="margin-top: 7px; padding: 6px 8px;">
-        <div class="t-kv" style="font-size: 11px;">
-          <span style="font-weight: 800;">جمع کل سفارش:</span>
-          <strong class="t-mono" style="font-size: 12px; font-weight: 900;">${toPersianDigits(formatWithCommas(order.totalAmount))} ریال</strong>
-        </div>
-        <div class="t-divider-dashed"></div>
         <div class="t-kv" style="font-size: 11px;">
           <span style="font-weight: 800;">پیش‌پرداخت (بیعانه):</span>
           <strong class="t-mono" style="font-size: 12px; font-weight: 900;">${toPersianDigits(formatWithCommas(order.prepaymentAmount))} ریال</strong>
@@ -1377,6 +1508,10 @@ export default function CustomerProductionOrders({
               </div>`
             : ''
         }
+        <div class="t-divider-dashed"></div>
+        <div class="t-center" style="font-size: 8.5px; font-weight: 700; line-height: 1.45;">
+          مبلغ نهایی سفارش پس از تکمیل و توزین نهایی محاسبه می‌گردد.
+        </div>
       </div>
 
       ${
@@ -1398,8 +1533,91 @@ export default function CustomerProductionOrders({
         چاپ: ${printTimestamp}
       </div>
     `;
+  };
 
-    printThermalReceipt(`رسید_مشتری_${order.orderNumber}`, html, 80);
+  // Fallback local browser print handlers
+  const printProductionTicketInBrowser = (order: CustomerProductionOrder, onlyDeptId?: string) => {
+    const bodyHtml = buildProductionTicketBodyHtml(order, onlyDeptId, false);
+    printThermalReceipt(`برگه_کارگاه_${order.orderNumber}`, bodyHtml, 72);
+  };
+
+  const printCustomerReceiptInBrowser = (order: CustomerProductionOrder) => {
+    const bodyHtml = buildCustomerReceiptBodyHtml(order);
+    printThermalReceipt(`رسید_مشتری_${order.orderNumber}`, bodyHtml, 72);
+  };
+
+  // One-click send directly to POS Print Queue (Windows 10 + Sewoo 100 USB)
+  const sendProductionTicketToPos = async (order: CustomerProductionOrder, onlyDeptId?: string) => {
+    const key = `workshop_${order.id}`;
+    setSendingPrintKey(key);
+    try {
+      const bodyHtml = buildProductionTicketBodyHtml(order, onlyDeptId, false);
+      const title = `برگه کارگاه — سفارش ${order.orderNumber}`;
+      const fullHtml = buildThermalReceiptDocumentHtml(title, bodyHtml, 72);
+      const deptLabel =
+        onlyDeptId && onlyDeptId !== 'ALL'
+          ? (order.items || []).find(it => it.departmentId === onlyDeptId)?.departmentName
+          : undefined;
+      const res = await enqueuePosPrintJob({
+        jobType: 'workshop_ticket',
+        title,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        departmentName: deptLabel,
+        paperWidthMm: 72,
+        copies: 1,
+        htmlContent: fullHtml,
+        requestedBy: currentUserName || 'کاربر سامانه'
+      });
+      setPrintStation(res.station);
+      showToast(
+        res.station.online ? 'success' : 'info',
+        res.station.online
+          ? `برگه کارگاه سفارش ${order.orderNumber} به چاپگر صندوق (Sewoo 100) ارسال شد.`
+          : `برگه کارگاه سفارش ${order.orderNumber} در صف چاپ صندوق ثبت شد (سرویس صندوق فعلاً آفلاین است).`
+      );
+    } catch (err: any) {
+      showToast(
+        'warning',
+        `ارسال به صف چاپ صندوق ناموفق بود (${err?.message || 'خطای اتصال'}) — می‌توانید از دکمه چاپ مرورگر استفاده کنید.`
+      );
+    } finally {
+      setSendingPrintKey(null);
+    }
+  };
+
+  const sendCustomerReceiptToPos = async (order: CustomerProductionOrder) => {
+    const key = `receipt_${order.id}`;
+    setSendingPrintKey(key);
+    try {
+      const bodyHtml = buildCustomerReceiptBodyHtml(order);
+      const title = `رسید مشتری — سفارش ${order.orderNumber} (${order.customerName})`;
+      const fullHtml = buildThermalReceiptDocumentHtml(title, bodyHtml, 72);
+      const res = await enqueuePosPrintJob({
+        jobType: 'customer_receipt',
+        title,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        paperWidthMm: 72,
+        copies: 1,
+        htmlContent: fullHtml,
+        requestedBy: currentUserName || 'کاربر سامانه'
+      });
+      setPrintStation(res.station);
+      showToast(
+        res.station.online ? 'success' : 'info',
+        res.station.online
+          ? `رسید مشتری سفارش ${order.orderNumber} به چاپگر صندوق (Sewoo 100) ارسال شد.`
+          : `رسید مشتری سفارش ${order.orderNumber} در صف چاپ صندوق ثبت شد (سرویس صندوق فعلاً آفلاین است).`
+      );
+    } catch (err: any) {
+      showToast(
+        'warning',
+        `ارسال به صف چاپ صندوق ناموفق بود (${err?.message || 'خطای اتصال'}) — می‌توانید از دکمه چاپ مرورگر استفاده کنید.`
+      );
+    } finally {
+      setSendingPrintKey(null);
+    }
   };
 
   // ==================== RENDER ====================
@@ -1416,36 +1634,60 @@ export default function CustomerProductionOrders({
           </div>
           <div>
             <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white tracking-tight">
-              ثبت سفارش تولید و کارتابل دپارتمان‌ها
+              {isWorkshopOnly ? 'کارتابل سفارشات دپارتمان‌های تولید' : 'سفارشات تولید مشتریان و کارتابل دپارتمان‌ها'}
             </h2>
             <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              ثبت سفارش اختصاصی مشتریان (کیک، نان، شیرینی، فینگرفود) با عکس نمونه، جمله روی محصول، بیعانه و ارسال به دپارتمان تولید
+              {isWorkshopOnly
+                ? 'پیگیری وضعیت تولید دپارتمان‌ها، مشاهده عکس نمونه و متن نوشته روی محصول و چاپ برگه کارگاه (ثبت سفارش جدید از منوی مشتریان)'
+                : 'ثبت سفارش اختصاصی مشتریان (کیک، نان، شیرینی، فینگرفود) با عکس نمونه، جمله روی محصول، هدف سفارش، بیعانه و ارسال به دپارتمان تولید'}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          {viewMode === 'form' ? (
-            <button
-              type="button"
-              onClick={() => {
-                resetForm();
-                setViewMode('board');
-              }}
-              className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-            >
-              <ClipboardList className="h-4 w-4" />
-              <span>بازگشت به کارتابل سفارش‌ها</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={openNewOrderForm}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="h-4 w-4 shrink-0" />
-              <span>ثبت سفارش تولید جدید</span>
-            </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsPrintQueueOpen(true)}
+            className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-2 cursor-pointer whitespace-nowrap"
+            title="مدیریت صف چاپ و نصب سرویس فیش‌پرینتر Sewoo 100 روی ویندوز ۱۰ صندوق"
+          >
+            <span
+              className={`h-2 w-2 rounded-full shrink-0 ${
+                printStation?.online ? 'bg-emerald-500' : 'bg-slate-400'
+              }`}
+            />
+            <Printer className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span>صف چاپ صندوق</span>
+            {(printStation?.pendingCount || 0) > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 text-[10px] font-black">
+                {toPersianDigits(printStation?.pendingCount || 0)}
+              </span>
+            )}
+          </button>
+
+          {!isWorkshopOnly && (
+            viewMode === 'form' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  resetForm();
+                  setViewMode('board');
+                }}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <ClipboardList className="h-4 w-4" />
+                <span>بازگشت به لیست و کارتابل سفارش‌ها</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openNewOrderForm}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="h-4 w-4 shrink-0" />
+                <span>ثبت سفارش تولید جدید</span>
+              </button>
+            )
           )}
         </div>
       </div>
@@ -1750,44 +1992,88 @@ export default function CustomerProductionOrders({
                               </span>
                             </span>
                           )}
+                          {order.orderPurpose && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/25 text-amber-800 dark:text-amber-300 font-bold">
+                              <Tag className="h-3 w-3" />
+                              <span>هدف: {order.orderPurpose}</span>
+                            </span>
+                          )}
                         </div>
                       </div>
 
                       {/* Order Actions */}
                       <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => printProductionTicket(order, selectedDepartmentFilter)}
-                          className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                          title="چاپ برگه دستور تولید شامل عکس نمونه و جمله روی محصول"
-                        >
-                          <Printer className="h-3.5 w-3.5" />
-                          <span>برگه کارگاه</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => printCustomerReceipt(order)}
-                          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                        >
-                          <Receipt className="h-3.5 w-3.5" />
-                          <span>رسید مشتری</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openEditOrderForm(order)}
-                          className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 hover:bg-sky-600 hover:text-white cursor-pointer transition-colors"
-                          title="ویرایش سفارش"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeleteTargetOrder(order)}
-                          className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white cursor-pointer transition-colors"
-                          title="حذف سفارش"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="inline-flex items-stretch rounded-xl overflow-hidden border border-emerald-600 shadow-xs">
+                          <button
+                            type="button"
+                            disabled={sendingPrintKey === `workshop_${order.id}`}
+                            onClick={() => sendProductionTicketToPos(order, selectedDepartmentFilter)}
+                            className="px-2.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            title="ارسال مستقیم برگه کارگاه (بدون عکس) به صف چاپگر صندوق Sewoo 100"
+                          >
+                            {sendingPrintKey === `workshop_${order.id}` ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Printer className="h-3.5 w-3.5" />
+                            )}
+                            <span>برگه کارگاه</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => printProductionTicketInBrowser(order, selectedDepartmentFilter)}
+                            className="px-2 py-2 bg-emerald-700 hover:bg-emerald-800 text-emerald-50 border-r border-emerald-500/50 cursor-pointer flex items-center"
+                            title="چاپ برگه کارگاه با مرورگر (روش جایگزین)"
+                            aria-label="چاپ برگه کارگاه با مرورگر"
+                          >
+                            <Monitor className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="inline-flex items-stretch rounded-xl overflow-hidden border border-slate-300 dark:border-slate-700">
+                          <button
+                            type="button"
+                            disabled={sendingPrintKey === `receipt_${order.id}`}
+                            onClick={() => sendCustomerReceiptToPos(order)}
+                            className="px-2.5 py-2 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-60 text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            title="ارسال مستقیم رسید مشتری به صف چاپگر صندوق Sewoo 100"
+                          >
+                            {sendingPrintKey === `receipt_${order.id}` ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Receipt className="h-3.5 w-3.5" />
+                            )}
+                            <span>رسید مشتری</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => printCustomerReceiptInBrowser(order)}
+                            className="px-2 py-2 bg-slate-50 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-700 cursor-pointer flex items-center"
+                            title="چاپ رسید مشتری با مرورگر (روش جایگزین)"
+                            aria-label="چاپ رسید مشتری با مرورگر"
+                          >
+                            <Monitor className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        {!isWorkshopOnly && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditOrderForm(order)}
+                              className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 hover:bg-sky-600 hover:text-white cursor-pointer transition-colors"
+                              title="ویرایش سفارش"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTargetOrder(order)}
+                              className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white cursor-pointer transition-colors"
+                              title="حذف سفارش"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -2280,6 +2566,166 @@ export default function CustomerProductionOrders({
                   </div>
                 </div>
               )}
+
+              {/* Order Purpose / Occasion (Optional — CRM & Follow-up only, NOT printed) */}
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-end gap-2.5">
+                  <div className="flex-1">
+                    <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
+                      <Tag className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>هدف از سفارش / مناسبت (اختیاری — جهت پیگیری و بازاریابی)</span>
+                    </label>
+                    <select
+                      value={orderPurpose}
+                      onChange={e => setOrderPurpose(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="">بدون انتخاب (اختیاری)</option>
+                      {orderPurposeOptions.map(opt => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                      {orderPurpose && !orderPurposeOptions.includes(orderPurpose) && (
+                        <option value={orderPurpose}>{orderPurpose}</option>
+                      )}
+                    </select>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowPurposeManager(prev => !prev)}
+                    className={`px-3.5 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+                      showPurposeManager
+                        ? 'bg-amber-600 text-white border-amber-500'
+                        : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-amber-500'
+                    }`}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    <span>مدیریت اهداف سفارش</span>
+                  </button>
+                </div>
+
+                {showPurposeManager && (
+                  <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-500/30 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-black text-slate-800 dark:text-slate-200">
+                        افزودن، ویرایش یا حذف گزینه‌های «هدف از سفارش»
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRestoreDefaultPurposes}
+                        className="text-[10.5px] font-bold text-amber-700 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        <span>بازیابی پیش‌فرض‌ها</span>
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newPurposeInput}
+                        onChange={e => setNewPurposeInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddOrderPurpose();
+                          }
+                        }}
+                        placeholder="مثلاً: تولد فرزند، جشن فارغ‌التحصیلی، افتتاحیه..."
+                        className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddOrderPurpose}
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>افزودن</span>
+                      </button>
+                    </div>
+
+                    {orderPurposeOptions.length === 0 ? (
+                      <p className="text-[11px] text-slate-500 text-center py-2">
+                        لیست اهداف خالی است. از کادر بالا گزینه جدید اضافه کنید.
+                      </p>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-44 overflow-y-auto">
+                        {orderPurposeOptions.map((opt, idx) => (
+                          <div
+                            key={`${opt}-${idx}`}
+                            className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800"
+                          >
+                            {editingPurposeIdx === idx ? (
+                              <div className="flex items-center gap-1 flex-1">
+                                <input
+                                  type="text"
+                                  value={editingPurposeValue}
+                                  onChange={e => setEditingPurposeValue(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSaveEditPurpose(idx);
+                                    }
+                                  }}
+                                  className="flex-1 px-2 py-1 rounded-lg border border-emerald-400 bg-white dark:bg-slate-900 text-[11px] font-bold text-slate-900 dark:text-white focus:outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveEditPurpose(idx)}
+                                  className="p-1 rounded-lg bg-emerald-600 text-white cursor-pointer"
+                                  title="ذخیره"
+                                >
+                                  <Check className="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPurposeIdx(null);
+                                    setEditingPurposeValue('');
+                                  }}
+                                  className="p-1 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                                  title="انصراف"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200 truncate">
+                                  {opt}
+                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingPurposeIdx(idx);
+                                      setEditingPurposeValue(opt);
+                                    }}
+                                    className="p-1 rounded-lg text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-500/15 cursor-pointer"
+                                    title="ویرایش"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteOrderPurpose(idx)}
+                                    className="p-1 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/15 cursor-pointer"
+                                    title="حذف"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2523,33 +2969,50 @@ export default function CustomerProductionOrders({
 
                     {/* Customer Sample Photo Uploader */}
                     <div className="space-y-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-xs font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
                           <ImageIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                           <span>عکس نمونه درخواستی مشتری ({toPersianDigits((line.sampleImages || []).length)}/۳)</span>
                         </span>
 
                         {(line.sampleImages || []).length < 3 && (
-                          <label className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:border-emerald-500 text-slate-800 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer">
-                            <Camera className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                            <span>{compressingLineId === line.lineId ? 'در حال بهینه‌سازی...' : 'انتخاب / گرفتن عکس'}</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              className="hidden"
-                              onChange={e => {
-                                handleUploadSampleImages(line.lineId, e.target.files);
-                                e.target.value = '';
-                              }}
-                            />
-                          </label>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <label className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap">
+                              <Camera className="h-3.5 w-3.5 shrink-0" />
+                              <span>{compressingLineId === line.lineId ? 'در حال ثبت...' : 'گرفتن عکس با دوربین'}</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                className="hidden"
+                                onChange={e => {
+                                  handleUploadSampleImages(line.lineId, e.target.files);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+
+                            <label className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:border-emerald-500 text-slate-800 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap">
+                              <ImageIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                              <span>انتخاب از گالری / فایل</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                onChange={e => {
+                                  handleUploadSampleImages(line.lineId, e.target.files);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          </div>
                         )}
                       </div>
 
                       {(line.sampleImages || []).length === 0 ? (
                         <div className="py-4 px-3 text-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-[11px] text-slate-500 dark:text-slate-400">
-                          تصویر نمونه ارسالی مشتری (مثلاً مدل کیک یا دیزاین سینی) را آپلود کنید — فشرده‌سازی خودکار جهت سرعت بالا
+                          با دوربین موبایل/تبلت مستقیماً عکس بگیرید یا تصویر نمونه ارسالی مشتری را از گالری انتخاب کنید — فشرده‌سازی خودکار
                         </div>
                       ) : (
                         <div className="flex flex-wrap gap-2">
@@ -2845,6 +3308,13 @@ export default function CustomerProductionOrders({
           </div>
         </div>
       )}
+
+      {/* ==================== MODAL 3: POS PRINT QUEUE & WINDOWS 10 AGENT SETUP ==================== */}
+      <PrintQueueModal
+        isOpen={isPrintQueueOpen}
+        onClose={() => setIsPrintQueueOpen(false)}
+        onStationStatusChange={setPrintStation}
+      />
     </div>
   );
 }

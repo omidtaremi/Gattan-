@@ -4,6 +4,7 @@
  */
 
 import 'dotenv/config';
+import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import express, { type Request, type Response, type NextFunction } from 'express';
@@ -39,6 +40,20 @@ import {
   type PgUserPublic,
 } from './src/server/pgDb.ts';
 import { canAccessTab, isAdminUser } from './src/shared/rbac.ts';
+import {
+  verifyPrintAgentKey,
+  getPrintStationStatus,
+  rotatePrintAgentKey,
+  recordAgentHeartbeat,
+  enqueuePrintJob,
+  listPrintJobs,
+  claimNextPrintJob,
+  completePrintJob,
+  retryPrintJob,
+  cancelPrintJob,
+  clearFinishedPrintJobs,
+  buildTestPrintHtml,
+} from './src/server/printQueue.ts';
 
 interface AuthenticatedRequest extends Request {
   authUser?: PgUserPublic;
@@ -136,6 +151,83 @@ function requireDigitalMenuAccess(
     return;
   }
   next();
+}
+
+const isProductionEnv = process.env.NODE_ENV === 'production' || process.env.APP_ENV === 'production';
+
+async function requirePrintQueueAccess(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  if (!isPostgresModeActive()) {
+    if (isProductionEnv) {
+      res.status(503).json({ ok: false, error: 'پایگاه داده PostgreSQL متصل نیست.' });
+      return;
+    }
+    // Local browser-storage dev preview mode
+    next();
+    return;
+  }
+  await requireAuth(req, res, () => {
+    const user = req.authUser;
+    if (
+      !user ||
+      (!isAdminUser(user) &&
+        !canAccessTab(user, 'customers') &&
+        !canAccessTab(user, 'production_planning') &&
+        !canAccessTab(user, 'sales'))
+    ) {
+      res.status(403).json({ ok: false, error: 'شما مجوز ارسال به صف چاپ صندوق را ندارید.' });
+      return;
+    }
+    next();
+  });
+}
+
+async function requirePrintAdminAccess(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  if (!isPostgresModeActive()) {
+    if (isProductionEnv) {
+      res.status(503).json({ ok: false, error: 'پایگاه داده PostgreSQL متصل نیست.' });
+      return;
+    }
+    next();
+    return;
+  }
+  await requireAuth(req, res, () => {
+    requireAdmin(req, res, next);
+  });
+}
+
+async function requirePrintAgentAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const headerKey = String(req.headers['x-print-agent-key'] || '').trim();
+  const authHeader = String(req.headers.authorization || '').trim();
+  const providedKey =
+    headerKey || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '');
+
+  if (!providedKey) {
+    res.status(401).json({ ok: false, error: 'کلید احراز هویت سرویس چاپ ارسال نشده است.' });
+    return;
+  }
+
+  try {
+    const valid = await verifyPrintAgentKey(providedKey);
+    if (!valid) {
+      res.status(401).json({ ok: false, error: 'کلید سرویس چاپ نامعتبر است.' });
+      return;
+    }
+    next();
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'خطا در بررسی کلید سرویس چاپ' });
+  }
 }
 
 async function startServer() {
@@ -602,6 +694,174 @@ async function startServer() {
       res.json({ ok: true, ...saved });
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'خطا در ذخیره تنظیمات منوی دیجیتال' });
+    }
+  });
+
+  // 4c. POS Print Queue & Windows 10 Print Agent Routes
+  app.get('/api/print-jobs', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const limit = Number(req.query.limit || 50);
+      const [jobs, station] = await Promise.all([listPrintJobs(limit), getPrintStationStatus()]);
+      res.json({ ok: true, jobs, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت صف چاپ صندوق' });
+    }
+  });
+
+  app.post('/api/print-jobs', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const body = req.body || {};
+      const requestedBy = req.authUser?.fullName || String(body.requestedBy || 'کاربر سامانه');
+      const job = await enqueuePrintJob({
+        jobType: String(body.jobType || 'customer_receipt'),
+        title: String(body.title || 'فیش چاپی'),
+        orderId: body.orderId ? String(body.orderId) : undefined,
+        orderNumber: body.orderNumber ? String(body.orderNumber) : undefined,
+        departmentName: body.departmentName ? String(body.departmentName) : undefined,
+        paperWidthMm: Number(body.paperWidthMm || 72),
+        copies: Number(body.copies || 1),
+        htmlContent: String(body.htmlContent || ''),
+        requestedBy,
+      });
+      const station = await getPrintStationStatus();
+      res.status(201).json({ ok: true, job, station });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در ثبت فیش در صف چاپ' });
+    }
+  });
+
+  app.post('/api/print-jobs/test', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const requestedBy = req.authUser?.fullName || 'تست چاپگر';
+      const job = await enqueuePrintJob({
+        jobType: 'test_print',
+        title: 'تست اتصال فیش‌پرینتر Sewoo 100',
+        paperWidthMm: 72,
+        copies: 1,
+        htmlContent: buildTestPrintHtml(),
+        requestedBy,
+      });
+      const station = await getPrintStationStatus();
+      res.status(201).json({ ok: true, job, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در ثبت فیش تست' });
+    }
+  });
+
+  app.post('/api/print-jobs/clear-finished', requirePrintQueueAccess, async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      const deletedCount = await clearFinishedPrintJobs();
+      const station = await getPrintStationStatus();
+      res.json({ ok: true, deletedCount, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در پاک‌سازی صف چاپ' });
+    }
+  });
+
+  app.post('/api/print-jobs/:id/retry', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const job = await retryPrintJob(String(req.params.id || ''));
+      if (!job) {
+        res.status(404).json({ ok: false, error: 'فیش مورد نظر یافت نشد.' });
+        return;
+      }
+      const station = await getPrintStationStatus();
+      res.json({ ok: true, job, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در ارسال مجدد فیش' });
+    }
+  });
+
+  app.delete('/api/print-jobs/:id', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const removed = await cancelPrintJob(String(req.params.id || ''));
+      if (!removed) {
+        res.status(404).json({ ok: false, error: 'فیش مورد نظر یافت نشد.' });
+        return;
+      }
+      const station = await getPrintStationStatus();
+      res.json({ ok: true, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در حذف فیش از صف چاپ' });
+    }
+  });
+
+  app.post('/api/print-agent/rotate-key', requirePrintAdminAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const stationName = req.body?.stationName ? String(req.body.stationName) : undefined;
+      const result = await rotatePrintAgentKey(stationName);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در تولید کلید جدید سرویس چاپ' });
+    }
+  });
+
+  app.get('/api/print-agent/bundle', requirePrintAdminAccess, async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      const baseDir = path.resolve(process.cwd(), 'print-agent-windows');
+      const allowedFiles = [
+        'agent.mjs',
+        'print-image.ps1',
+        'install-service.bat',
+        'uninstall-service.bat',
+        'test-print.bat',
+        'README-FA.txt',
+      ];
+      const files: Record<string, string> = {};
+      for (const name of allowedFiles) {
+        const resolved = path.resolve(baseDir, name);
+        if (!resolved.startsWith(baseDir + path.sep) || !fs.existsSync(resolved)) {
+          continue;
+        }
+        files[name] = fs.readFileSync(resolved, 'utf8');
+      }
+      res.json({ ok: true, files });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در خواندن فایل‌های سرویس چاپ ویندوز' });
+    }
+  });
+
+  // Windows 10 Print Agent machine endpoints (authenticated via X-Print-Agent-Key)
+  app.post('/api/print-agent/heartbeat', requirePrintAgentAuth, async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const station = await recordAgentHeartbeat({
+        hostname: body.hostname ? String(body.hostname) : undefined,
+        printerName: body.printerName ? String(body.printerName) : undefined,
+        availablePrinters: Array.isArray(body.availablePrinters) ? body.availablePrinters : undefined,
+        agentVersion: body.agentVersion ? String(body.agentVersion) : undefined,
+        ipAddress: getClientIp(req),
+      });
+      res.json({ ok: true, station });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Heartbeat error' });
+    }
+  });
+
+  app.post('/api/print-agent/claim-next', requirePrintAgentAuth, async (req: Request, res: Response) => {
+    try {
+      const stationId = req.body?.stationId ? String(req.body.stationId) : undefined;
+      const job = await claimNextPrintJob(stationId);
+      res.json({ ok: true, job });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Claim job error' });
+    }
+  });
+
+  app.post('/api/print-agent/jobs/:id/complete', requirePrintAgentAuth, async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const job = await completePrintJob(String(req.params.id || ''), {
+        ok: Boolean(body.ok),
+        errorMessage: body.errorMessage ? String(body.errorMessage) : undefined,
+      });
+      if (!job) {
+        res.status(404).json({ ok: false, error: 'Print job not found' });
+        return;
+      }
+      res.json({ ok: true, job });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Complete job error' });
     }
   });
 

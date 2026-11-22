@@ -2442,12 +2442,13 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
             />
           )}
 
-          {/* Customer Directory View */}
+          {/* Customer Directory & Production Orders View */}
           {activeTab === 'customers' && (
             <CustomerManagement 
               db={db} 
               onUpdateDb={handleUpdateDatabase} 
               activePeriodId={activePeriodId} 
+              currentUserName={currentUser?.fullName || currentUser?.name || currentUser?.username || ''}
             />
           )}
 

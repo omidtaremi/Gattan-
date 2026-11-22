@@ -694,6 +694,7 @@ export interface AppDatabase {
   productionPlanningSettings?: any;
   productionPlanningOrders?: any[];
   customerProductionOrders?: CustomerProductionOrder[];
+  customerOrderPurposes?: string[];
   dibalScales?: DibalScaleConfig[];
   dibalPLUs?: DibalPLUMapping[];
   dibalTickets?: DibalWeighingTicket[];
@@ -906,6 +907,7 @@ export interface CustomerProductionOrder {
   deliveryAddress?: string; // نشانی تحویل در صورت ارسال با پیک
   recipientName?: string; // نام تحویل‌گیرنده سفارش
   recipientPhone?: string; // تلفن همراه تحویل‌گیرنده سفارش
+  orderPurpose?: string; // هدف از سفارش / مناسبت (اختیاری - جهت پیگیری و بازاریابی)
   deliveryFee?: number; // هزینه ارسال (قدیمی - اختیاری)
   items: CustomerProductionOrderItem[]; // ردیف‌های سفارش (هر ردیف با دپارتمان مجزا)
   totalAmount: number; // مبلغ کل سفارش (شامل هزینه ارسال)

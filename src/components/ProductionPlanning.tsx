@@ -2297,7 +2297,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
             }`}
           >
             <ChefHat className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            ثبت سفارش تولید
+            کارتابل دپارتمان‌ها
             {activeCustomerOrdersCount > 0 && (
               <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
                 activeTab === 'customer_orders'
@@ -2356,6 +2356,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
               onUpdateDb={onUpdateDb}
               activePeriodId={activePeriodId}
               currentUserName={currentUserName}
+              mode="workshop_only"
             />
           </motion.div>
         ) : activeTab === 'planning' ? (

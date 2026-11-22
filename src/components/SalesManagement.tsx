@@ -645,20 +645,54 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       aggByProdMonth[key].preDiscount += (tx.qtySold * tx.unitPrice);
     });
 
-    // 7. Update catalog prices (and populate missing categoryId if product had none)
+    // 7. Update catalog prices using the LATEST chronological pre-discount unitPrice (NOT monthly average)
+    const getTxChronoRank = (tx: SalesTransaction, idx: number): [number, number, number] => {
+      const y = Number(tx.year || selectedSalesYear || 1403);
+      const m = Number(tx.month || selectedSalesMonth || 1);
+      let d = Number(tx.dayOfMonth || 0);
+      if ((!d || d <= 0) && tx.dateStr) {
+        const parts = String(tx.dateStr).split(/[\/\-]/);
+        if (parts.length >= 3) {
+          d = parseInt(parts[2], 10) || 1;
+        }
+      }
+      const dateScore = y * 10000 + m * 100 + Math.max(1, d);
+      let timeSec = Number(tx.hour || 0) * 3600;
+      if (tx.time) {
+        const tParts = String(tx.time).trim().split(':').map(n => parseInt(n, 10));
+        if (tParts.length >= 2 && !Number.isNaN(tParts[0]) && !Number.isNaN(tParts[1])) {
+          timeSec = tParts[0] * 3600 + tParts[1] * 60 + (!Number.isNaN(tParts[2]) ? tParts[2] : 0);
+        }
+      }
+      return [dateScore, timeSec, idx];
+    };
+
+    const isLaterRank = (a: [number, number, number], b: [number, number, number]) =>
+      a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] >= b[2];
+
+    const latestUnitPriceByProduct = new Map<string, { price: number; rank: [number, number, number] }>();
+    updatedDetailedTransactions.forEach((tx, idx) => {
+      if (!tx.productId) return;
+      const unitP = Math.round(Number(tx.unitPrice || 0));
+      if (unitP <= 0) return;
+      const rank = getTxChronoRank(tx, idx);
+      const prev = latestUnitPriceByProduct.get(tx.productId);
+      if (!prev || isLaterRank(rank, prev.rank)) {
+        latestUnitPriceByProduct.set(tx.productId, { price: unitP, rank });
+      }
+    });
+
     const combinedProducts = [...db.products, ...newProductsToPush];
     const updatedProducts = combinedProducts.map(p => {
       const pAggs = Object.values(aggByProdMonth).filter(a => a.productId === p.id && a.qty > 0);
       if (p.periodId === activePeriodId && pAggs.length > 0) {
-        const totalPre = pAggs.reduce((s, a) => s + a.preDiscount, 0);
-        const totalQ = pAggs.reduce((s, a) => s + a.qty, 0);
-        const calculatedUnitPrice = totalQ > 0 ? Math.round(totalPre / totalQ) : 0;
+        const latestUnitPrice = latestUnitPriceByProduct.get(p.id)?.price || 0;
         const hasValidCat = Boolean(p.categoryId && periodCatIdSet.has(p.categoryId));
         const fallbackCatId = !hasValidCat ? (pAggs.find(a => a.firstCatId)?.firstCatId || p.categoryId) : p.categoryId;
-        if (calculatedUnitPrice > 0 || fallbackCatId !== p.categoryId) {
+        if (latestUnitPrice > 0 || fallbackCatId !== p.categoryId) {
           return {
             ...p,
-            salePrice: calculatedUnitPrice > 0 ? calculatedUnitPrice : p.salePrice,
+            salePrice: latestUnitPrice > 0 ? latestUnitPrice : p.salePrice,
             categoryId: fallbackCatId
           };
         }
@@ -722,9 +756,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     const existingCodes = new Set(db.products.filter(p => p.periodId === activePeriodId).map(p => normalizePersianString(p.code || '')));
     const existingNames = new Set(db.products.filter(p => p.periodId === activePeriodId).map(p => normalizePersianString(p.name || '')));
 
-    const uniqueNewProductsMap = new Map<string, { code: string; name: string; categoryName?: string; salePrice: number }>();
+    const uniqueNewProductsMap = new Map<string, { code: string; name: string; categoryName?: string; salePrice: number; _dateScore: number; _timeSec: number; _idx: number }>();
     
-    unregisteredTxList.forEach(tx => {
+    unregisteredTxList.forEach((tx, idx) => {
       const code = (tx.productCode || '').trim();
       const name = (tx.productName || '').trim();
       if (code || name) {
@@ -732,16 +766,45 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         const normName = normalizePersianString(name || '');
         if (!existingCodes.has(normCode) && !existingNames.has(normName)) {
           const key = normCode || normName;
+          const y = Number(tx.year || selectedSalesYear || 1403);
+          const m = Number(tx.month || selectedSalesMonth || 1);
+          const d = Math.max(1, Number(tx.dayOfMonth || 1));
+          const dateScore = y * 10000 + m * 100 + d;
+          let timeSec = Number(tx.hour || 0) * 3600;
+          if (tx.time) {
+            const tp = String(tx.time).trim().split(':').map(n => parseInt(n, 10));
+            if (tp.length >= 2 && !Number.isNaN(tp[0]) && !Number.isNaN(tp[1])) {
+              timeSec = tp[0] * 3600 + tp[1] * 60 + (!Number.isNaN(tp[2]) ? tp[2] : 0);
+            }
+          }
+          const unitP = Math.round(Number(tx.unitPrice || 0));
           const prev = uniqueNewProductsMap.get(key);
           if (!prev) {
             uniqueNewProductsMap.set(key, {
               code: code || `NEW-${Date.now()}`,
               name: name && name !== 'کالای ناشناس' ? name : `کالای جدید با کد ${code || 'ناشناس'}`,
               categoryName: tx.categoryName,
-              salePrice: tx.unitPrice || 0
+              salePrice: unitP,
+              _dateScore: dateScore,
+              _timeSec: timeSec,
+              _idx: idx
             });
-          } else if (!prev.categoryName && tx.categoryName) {
-            prev.categoryName = tx.categoryName;
+          } else {
+            if (!prev.categoryName && tx.categoryName) {
+              prev.categoryName = tx.categoryName;
+            }
+            const isLater =
+              dateScore !== prev._dateScore
+                ? dateScore > prev._dateScore
+                : timeSec !== prev._timeSec
+                ? timeSec > prev._timeSec
+                : idx >= prev._idx;
+            if (unitP > 0 && isLater) {
+              prev.salePrice = unitP;
+              prev._dateScore = dateScore;
+              prev._timeSec = timeSec;
+              prev._idx = idx;
+            }
           }
         }
       }
@@ -844,19 +907,50 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           aggByProdMonth[key].preDiscount += (tx.qtySold * tx.unitPrice);
         });
 
-        // Update the products base sales price (and missing categoryId) in the catalog
+        // Update the products base sales price using the LATEST chronological pre-discount unitPrice (NOT monthly average)
+        const latestUnitPriceByProduct = new Map<string, { price: number; dateScore: number; timeSec: number; idx: number }>();
+        normalizedTransactions.forEach((tx, idx) => {
+          if (!tx.productId) return;
+          const unitP = Math.round(Number(tx.unitPrice || 0));
+          if (unitP <= 0) return;
+          const y = Number(tx.year || selectedSalesYear || 1403);
+          const m = Number(tx.month || selectedSalesMonth || 1);
+          let d = Number(tx.dayOfMonth || 0);
+          if ((!d || d <= 0) && tx.dateStr) {
+            const parts = String(tx.dateStr).split(/[\/\-]/);
+            if (parts.length >= 3) d = parseInt(parts[2], 10) || 1;
+          }
+          const dateScore = y * 10000 + m * 100 + Math.max(1, d);
+          let timeSec = Number(tx.hour || 0) * 3600;
+          if (tx.time) {
+            const tp = String(tx.time).trim().split(':').map(n => parseInt(n, 10));
+            if (tp.length >= 2 && !Number.isNaN(tp[0]) && !Number.isNaN(tp[1])) {
+              timeSec = tp[0] * 3600 + tp[1] * 60 + (!Number.isNaN(tp[2]) ? tp[2] : 0);
+            }
+          }
+          const prev = latestUnitPriceByProduct.get(tx.productId);
+          const isLater =
+            !prev ||
+            (dateScore !== prev.dateScore
+              ? dateScore > prev.dateScore
+              : timeSec !== prev.timeSec
+              ? timeSec > prev.timeSec
+              : idx >= prev.idx);
+          if (isLater) {
+            latestUnitPriceByProduct.set(tx.productId, { price: unitP, dateScore, timeSec, idx });
+          }
+        });
+
         const updatedProducts = db.products.map(p => {
           const pAggs = Object.values(aggByProdMonth).filter(a => a.productId === p.id && a.qty > 0);
           if (p.periodId === activePeriodId && pAggs.length > 0) {
-            const totalPre = pAggs.reduce((s, a) => s + a.preDiscount, 0);
-            const totalQ = pAggs.reduce((s, a) => s + a.qty, 0);
-            const calculatedUnitPrice = totalQ > 0 ? Math.round(totalPre / totalQ) : 0;
+            const latestUnitPrice = latestUnitPriceByProduct.get(p.id)?.price || 0;
             const hasValidCat = Boolean(p.categoryId && periodCatIdSet.has(p.categoryId));
             const fallbackCatId = !hasValidCat ? (pAggs.find(a => a.firstCatId)?.firstCatId || p.categoryId) : p.categoryId;
-            if (calculatedUnitPrice > 0 || fallbackCatId !== p.categoryId) {
+            if (latestUnitPrice > 0 || fallbackCatId !== p.categoryId) {
               return {
                 ...p,
-                salePrice: calculatedUnitPrice > 0 ? calculatedUnitPrice : p.salePrice,
+                salePrice: latestUnitPrice > 0 ? latestUnitPrice : p.salePrice,
                 categoryId: fallbackCatId
               };
             }
@@ -1142,9 +1236,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             const existingCodes = new Set(products.map(p => normalizePersianString(p.code || '')));
             const existingNames = new Set(products.map(p => normalizePersianString(p.name || '')));
 
-            const uniqueNewProductsMap = new Map<string, { code: string; name: string; categoryName?: string; salePrice: number }>();
+            const uniqueNewProductsMap = new Map<string, { code: string; name: string; categoryName?: string; salePrice: number; _dateScore: number; _timeSec: number; _idx: number }>();
             
-            parsedTransactions.filter(tx => !tx.productId).forEach(tx => {
+            parsedTransactions.filter(tx => !tx.productId).forEach((tx, idx) => {
               const code = (tx.productCode || '').trim();
               const name = (tx.productName || '').trim();
               if (code || name) {
@@ -1152,22 +1246,56 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 const normName = normalizePersianString(name || '');
                 if (!existingCodes.has(normCode) && !existingNames.has(normName)) {
                   const key = normCode || normName;
+                  const y = Number(tx.year || selectedSalesYear || 1403);
+                  const m = Number(tx.month || selectedSalesMonth || 1);
+                  const d = Math.max(1, Number(tx.dayOfMonth || 1));
+                  const dateScore = y * 10000 + m * 100 + d;
+                  let timeSec = Number(tx.hour || 0) * 3600;
+                  if (tx.time) {
+                    const tp = String(tx.time).trim().split(':').map(n => parseInt(n, 10));
+                    if (tp.length >= 2 && !Number.isNaN(tp[0]) && !Number.isNaN(tp[1])) {
+                      timeSec = tp[0] * 3600 + tp[1] * 60 + (!Number.isNaN(tp[2]) ? tp[2] : 0);
+                    }
+                  }
+                  const unitP = Math.round(Number(tx.unitPrice || 0));
                   const prev = uniqueNewProductsMap.get(key);
                   if (!prev) {
                     uniqueNewProductsMap.set(key, {
                       code: code || `NEW-${Date.now()}`,
                       name: name && name !== 'کالای ناشناس' ? name : `کالای جدید با کد ${code || 'ناشناس'}`,
                       categoryName: tx.categoryName,
-                      salePrice: tx.unitPrice || 0
+                      salePrice: unitP,
+                      _dateScore: dateScore,
+                      _timeSec: timeSec,
+                      _idx: idx
                     });
-                  } else if (!prev.categoryName && tx.categoryName) {
-                    prev.categoryName = tx.categoryName;
+                  } else {
+                    if (!prev.categoryName && tx.categoryName) {
+                      prev.categoryName = tx.categoryName;
+                    }
+                    const isLater =
+                      dateScore !== prev._dateScore
+                        ? dateScore > prev._dateScore
+                        : timeSec !== prev._timeSec
+                        ? timeSec > prev._timeSec
+                        : idx >= prev._idx;
+                    if (unitP > 0 && isLater) {
+                      prev.salePrice = unitP;
+                      prev._dateScore = dateScore;
+                      prev._timeSec = timeSec;
+                      prev._idx = idx;
+                    }
                   }
                 }
               }
             });
 
-            const uniqueNewProducts = Array.from(uniqueNewProductsMap.values());
+            const uniqueNewProducts = Array.from(uniqueNewProductsMap.values()).map(({ code, name, categoryName, salePrice }) => ({
+              code,
+              name,
+              categoryName,
+              salePrice
+            }));
 
             setReconciliationResult({
               totalImportedLines: json1.length,

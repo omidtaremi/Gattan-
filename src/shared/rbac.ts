@@ -184,7 +184,8 @@ export const COLLECTION_WRITE_PERMISSIONS: Record<string, string[]> = {
   dailyProductionSegments: ['production_planning', 'cogs'],
   productionPlanningSettings: ['production_planning'],
   productionPlanningOrders: ['production_planning'],
-  customerProductionOrders: ['production_planning', 'sales'],
+  customerProductionOrders: ['customers', 'production_planning', 'sales'],
+  customerOrderPurposes: ['customers', 'production_planning', 'sales'],
 
   // Public Digital Menu (QR)
   digitalMenu: ['digital_menu', 'sales', 'cogs'],

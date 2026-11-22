@@ -393,16 +393,22 @@ export function printElement(titleOrElementId: string, htmlContent?: string) {
 }
 
 /**
- * Dedicated thermal receipt printer helper (80mm / 58mm POS thermal rolls).
- * Prints cleanly via an isolated hidden iframe (no popup blocker issues, no A4 treasury wrappers).
+ * Dedicated thermal receipt printer helper (72mm standard 80mm-roll printable width, or 58mm).
+ * Dynamically measures exact rendered content height (after fonts & sample images load) and injects
+ * an exact `@page { size: 72mm <height>mm; }` rule so paper length matches report length with zero overflow or wasted paper.
  */
-export function printThermalReceipt(title: string, bodyHtml: string, paperWidthMm: 80 | 58 = 80) {
-  const safeContentWidth = paperWidthMm === 58 ? '50mm' : '72mm';
+export function buildThermalReceiptDocumentHtml(
+  title: string,
+  bodyHtml: string,
+  paperWidthMm: 72 | 80 | 58 = 72
+): string {
+  const effectivePaperWidth = paperWidthMm === 80 ? 72 : paperWidthMm;
+  const safeContentWidth = effectivePaperWidth === 58 ? '52mm' : '68mm';
 
   const thermalStyles = `
     @page {
-      size: ${paperWidthMm}mm auto;
-      margin: 0mm;
+      size: ${effectivePaperWidth}mm auto;
+      margin: 0mm !important;
     }
     * {
       box-sizing: border-box;
@@ -410,36 +416,39 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
       print-color-adjust: exact !important;
     }
     html, body {
-      margin: 0;
-      padding: 0;
-      width: ${paperWidthMm}mm;
+      margin: 0 !important;
+      padding: 0 !important;
+      width: ${effectivePaperWidth}mm;
+      max-width: ${effectivePaperWidth}mm;
       background: #ffffff;
       color: #000000;
       font-family: 'Vazirmatn', Tahoma, 'B Nazanin', Arial, sans-serif;
       direction: rtl;
       text-align: right;
-      font-size: 11px;
-      line-height: 1.45;
+      font-size: 10.5px;
+      line-height: 1.42;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     .thermal-sheet {
       width: ${safeContentWidth};
       max-width: ${safeContentWidth};
       margin: 0 auto;
-      padding: 2.5mm 1mm 6mm 1mm;
+      padding: 2mm 0.5mm 4mm 0.5mm;
       color: #000000;
     }
     .t-center { text-align: center; }
     .t-left { text-align: left; }
     .t-mono { font-family: ui-monospace, 'Cascadia Mono', 'Courier New', monospace; }
-    .t-divider-solid { border-top: 1.5px solid #000000; margin: 6px 0; }
-    .t-divider-double { border-top: 3px double #000000; margin: 7px 0; }
-    .t-divider-dashed { border-top: 1px dashed #000000; margin: 6px 0; }
+    .t-divider-solid { border-top: 1.5px solid #000000; margin: 5px 0; }
+    .t-divider-double { border-top: 3px double #000000; margin: 6px 0; }
+    .t-divider-dashed { border-top: 1px dashed #000000; margin: 5px 0; }
     .t-bar {
       background: #000000;
       color: #ffffff;
       text-align: center;
       font-weight: 900;
-      padding: 5px 6px;
+      padding: 4px 5px;
       border-radius: 3px;
       letter-spacing: -0.2px;
     }
@@ -447,32 +456,33 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      gap: 6px;
-      margin: 2.5px 0;
+      gap: 4px;
+      margin: 2px 0;
     }
     .t-box {
       border: 1.5px solid #000000;
       border-radius: 4px;
-      padding: 6px 7px;
-      margin: 6px 0;
+      padding: 5px 6px;
+      margin: 5px 0;
     }
     .t-box-double {
       border: 2.5px double #000000;
       border-radius: 4px;
-      padding: 6px 7px;
-      margin: 6px 0;
+      padding: 5px 6px;
+      margin: 5px 0;
     }
     .t-box-dashed {
       border: 1px dashed #000000;
       border-radius: 4px;
-      padding: 5px 7px;
-      margin: 5px 0;
+      padding: 4px 6px;
+      margin: 4px 0;
     }
     table.t-table {
       width: 100%;
       border-collapse: collapse;
       margin: 4px 0;
       font-size: 10px;
+      table-layout: fixed;
     }
     table.t-table th {
       border-top: 1.5px solid #000000;
@@ -483,7 +493,7 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
     }
     table.t-table td {
       border-bottom: 1px dashed #000000;
-      padding: 5px 2px;
+      padding: 4px 2px;
       vertical-align: top;
     }
     table.t-table tr:last-child td {
@@ -492,7 +502,7 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
     .t-photo {
       display: block;
       width: 100%;
-      max-height: 58mm;
+      max-height: 52mm;
       object-fit: contain;
       border: 1px solid #000000;
       border-radius: 3px;
@@ -503,7 +513,10 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
     }
     @media print {
       html, body {
-        width: ${paperWidthMm}mm;
+        width: ${effectivePaperWidth}mm !important;
+        max-width: ${effectivePaperWidth}mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
       }
       .t-avoid-break {
         page-break-inside: avoid;
@@ -512,7 +525,7 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
     }
   `;
 
-  const fullHtml = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html dir="rtl" lang="fa">
 <head>
   <meta charset="utf-8">
@@ -523,11 +536,16 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
   <style>${thermalStyles}</style>
 </head>
 <body>
-  <div class="thermal-sheet">${bodyHtml}</div>
+  <div class="thermal-sheet" id="thermal-sheet-root">${bodyHtml}</div>
 </body>
 </html>`;
+}
 
-  // Use a hidden iframe so thermal printing never depends on window.open popups
+export function printThermalReceipt(title: string, bodyHtml: string, paperWidthMm: 72 | 80 | 58 = 72) {
+  const effectivePaperWidth = paperWidthMm === 80 ? 72 : paperWidthMm;
+  const fullHtml = buildThermalReceiptDocumentHtml(title, bodyHtml, effectivePaperWidth);
+
+  // Use an off-screen iframe with REAL paper width so exact rendered height can be measured accurately
   const existing = document.getElementById('gatan-thermal-print-frame');
   if (existing && existing.parentNode) {
     existing.parentNode.removeChild(existing);
@@ -536,12 +554,13 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
   const iframe = document.createElement('iframe');
   iframe.id = 'gatan-thermal-print-frame';
   iframe.style.position = 'fixed';
-  iframe.style.right = '0';
-  iframe.style.bottom = '0';
-  iframe.style.width = '0';
-  iframe.style.height = '0';
+  iframe.style.left = '-9999px';
+  iframe.style.top = '0';
+  iframe.style.width = `${effectivePaperWidth}mm`;
+  iframe.style.height = '1px';
   iframe.style.border = '0';
   iframe.style.visibility = 'hidden';
+  iframe.style.pointerEvents = 'none';
   document.body.appendChild(iframe);
 
   const doc = iframe.contentWindow?.document;
@@ -553,8 +572,39 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
 
   const triggerPrint = () => {
     const win = iframe.contentWindow;
-    if (!win) return;
+    if (!win || !doc) return;
     try {
+      // Measure actual rendered height of the thermal receipt in millimeters
+      const sheetEl = doc.getElementById('thermal-sheet-root') || doc.body;
+      const measuredPx = Math.max(
+        sheetEl?.scrollHeight || 0,
+        Math.ceil(sheetEl?.getBoundingClientRect?.().height || 0),
+        doc.body?.scrollHeight || 0
+      );
+      // Convert CSS pixels (96dpi) -> mm, plus 6mm feed margin for thermal cutter
+      const exactHeightMm = Math.max(45, Math.ceil((measuredPx * 25.4) / 96) + 6);
+
+      // Inject dynamic exact-length @page rule so roll length equals exact report length
+      const existingDyn = doc.getElementById('dynamic-thermal-page-size');
+      if (existingDyn) existingDyn.remove();
+      const dynStyle = doc.createElement('style');
+      dynStyle.id = 'dynamic-thermal-page-size';
+      dynStyle.textContent = `
+        @page {
+          size: ${effectivePaperWidth}mm ${exactHeightMm}mm !important;
+          margin: 0mm !important;
+        }
+        @media print {
+          html, body {
+            width: ${effectivePaperWidth}mm !important;
+            height: ${exactHeightMm}mm !important;
+            overflow: hidden !important;
+          }
+        }
+      `;
+      doc.head.appendChild(dynStyle);
+      iframe.style.height = `${exactHeightMm}mm`;
+
       win.focus();
       win.print();
     } catch (err) {
@@ -566,7 +616,7 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
     }
   };
 
-  // Wait for fonts and all sample images inside the receipt to finish loading
+  // Wait for fonts and all sample images inside the receipt to finish loading before measuring height
   const waitForAssets = () => {
     const imgs = Array.from(doc.images || []);
     const imgPromises = imgs.map(img =>
@@ -581,7 +631,7 @@ export function printThermalReceipt(title: string, bodyHtml: string, paperWidthM
       doc.fonts && doc.fonts.ready ? doc.fonts.ready.catch(() => undefined) : Promise.resolve();
 
     Promise.all([fontPromise, ...imgPromises]).then(() => {
-      setTimeout(triggerPrint, 250);
+      setTimeout(triggerPrint, 280);
     });
   };
 

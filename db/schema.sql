@@ -114,6 +114,32 @@ CREATE TABLE IF NOT EXISTS app_import_staging (
 
 CREATE INDEX IF NOT EXISTS idx_app_import_staging_created_at ON app_import_staging (created_at);
 
+-- 8. جدول صف چاپ فیش‌پرینتر سیستم صندوق (POS Thermal Print Queue)
+CREATE TABLE IF NOT EXISTS app_print_jobs (
+  id TEXT PRIMARY KEY,
+  station_id TEXT NOT NULL DEFAULT 'cashier-main',
+  job_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  order_id TEXT,
+  order_number TEXT,
+  department_name TEXT,
+  paper_width_mm INTEGER NOT NULL DEFAULT 72,
+  copies INTEGER NOT NULL DEFAULT 1,
+  html_content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  requested_by TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  claimed_at TIMESTAMPTZ,
+  printed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_print_jobs_station_status
+  ON app_print_jobs (station_id, status, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_app_print_jobs_created_at
+  ON app_print_jobs (created_at DESC);
+
 -- ============================================================================
 -- نماهای تحلیلی استاندارد SQL (Views) جهت گزارش‌گیری مستقیم در psql / BI
 -- ============================================================================

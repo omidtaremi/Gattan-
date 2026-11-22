@@ -667,6 +667,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
       treasuryReceiptId: o.treasuryReceiptId || '',
       treasuryReceiptNo: o.treasuryReceiptNo || '',
       status: o.status,
+      orderPurpose: o.orderPurpose || '',
       notes: o.notes || '',
       registeredBy: o.registeredBy || '',
       createdAt: o.createdAt || '',
@@ -674,6 +675,13 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     };
   });
   addSheet(customerProdOrdersExport, "Customer_Production_Orders");
+
+  if (Array.isArray(db.customerOrderPurposes) && db.customerOrderPurposes.length > 0) {
+    addSheet(
+      db.customerOrderPurposes.map((title) => ({ title })),
+      "Customer_Order_Purposes"
+    );
+  }
 
   // 16c. Digital Menu Configuration
   if (db.digitalMenu) {
@@ -2008,11 +2016,22 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
       treasuryReceiptId: r.treasuryReceiptId ? String(r.treasuryReceiptId) : undefined,
       treasuryReceiptNo: r.treasuryReceiptNo ? String(r.treasuryReceiptNo) : undefined,
       status: (String(r.status || 'registered') as any),
+      orderPurpose: r.orderPurpose ? String(r.orderPurpose) : undefined,
       notes: r.notes ? String(r.notes) : undefined,
       registeredBy: r.registeredBy ? String(r.registeredBy) : undefined,
       createdAt: String(r.createdAt || new Date().toISOString()),
       updatedAt: String(r.updatedAt || new Date().toISOString()),
     })).filter(x => x.id);
+  }
+
+  const customerOrderPurposesRows = getSheetData("Customer_Order_Purposes");
+  if (customerOrderPurposesRows && customerOrderPurposesRows.length > 0) {
+    const parsedPurposes = customerOrderPurposesRows
+      .map(r => String(r.title || '').trim())
+      .filter(Boolean);
+    if (parsedPurposes.length > 0) {
+      result.customerOrderPurposes = parsedPurposes;
+    }
   }
 
   // 16c. Digital Menu Configuration

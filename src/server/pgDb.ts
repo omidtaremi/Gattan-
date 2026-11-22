@@ -212,6 +212,10 @@ export function isPostgresModeActive(): boolean {
   return isPgConfigured && isPgReady && pool !== null;
 }
 
+export function getPgPool(): Pool | null {
+  return isPostgresModeActive() ? pool : null;
+}
+
 export async function initPostgres(): Promise<void> {
   isPgConfigured = hasPostgresEnv();
   if (!isPgConfigured) {

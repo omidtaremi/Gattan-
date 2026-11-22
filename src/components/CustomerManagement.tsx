@@ -9,22 +9,30 @@ import {
   Users, Plus, Search, Edit2, Trash2, CheckCircle, XCircle, FileSpreadsheet, 
   Printer, Save, Phone, MapPin, CreditCard, Banknote, ListPlus, X, AlertTriangle, 
   Download, Building2, UserCheck, ShieldAlert, Tag, Percent, Calendar, FileText,
-  Clock, Hash, Mail, ArrowUpDown, ChevronDown, Check, Eye, Layers, Store, Briefcase, RefreshCw, Upload
+  Clock, Hash, Mail, ArrowUpDown, ChevronDown, Check, Eye, Layers, Store, Briefcase, RefreshCw, Upload, ChefHat
 } from 'lucide-react';
 import { 
   toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
 } from '../utils/persianUtils';
 import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
+import CustomerProductionOrders from './CustomerProductionOrders';
 
 interface CustomerManagementProps {
   db: AppDatabase;
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
+  currentUserName?: string;
 }
 
-export default function CustomerManagement({ db, onUpdateDb, activePeriodId }: CustomerManagementProps) {
-  // Navigation Sub-tab
-  const [activeSubTab, setActiveSubTab] = useState<'list' | 'form' | 'categories'>('list');
+export default function CustomerManagement({ db, onUpdateDb, activePeriodId, currentUserName = '' }: CustomerManagementProps) {
+  // Navigation Sub-tab — defaults directly to Customer Production Orders ('orders')
+  const [activeSubTab, setActiveSubTab] = useState<'orders' | 'list' | 'form' | 'categories'>('orders');
+
+  const activeCustomerOrdersCount = useMemo(() => {
+    return (db.customerProductionOrders || []).filter(
+      o => o.periodId === activePeriodId && o.status !== 'delivered' && o.status !== 'cancelled'
+    ).length;
+  }, [db.customerProductionOrders, activePeriodId]);
 
   // Search & Filtering
   const [searchQuery, setSearchQuery] = useState('');
@@ -590,6 +598,30 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId }: C
           <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 sm:gap-2 pb-0.5 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
             <button
               type="button"
+              onClick={() => setActiveSubTab('orders')}
+              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
+                activeSubTab === 'orders'
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg shadow-emerald-600/20'
+                  : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <ChefHat className="h-4 w-4 shrink-0" />
+              ثبت سفارش تولید
+              {activeCustomerOrdersCount > 0 && (
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
+                    activeSubTab === 'orders'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-emerald-500/20 text-emerald-300'
+                  }`}
+                >
+                  {toPersianDigits(activeCustomerOrdersCount)}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveSubTab('list')}
               className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
                 activeSubTab === 'list'
@@ -629,41 +661,56 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId }: C
           </div>
         </div>
 
-        {/* 4 SUMMARY STATS CARDS */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5 mt-4 sm:mt-6 pt-3.5 sm:pt-5 border-t border-slate-800/80 relative z-10">
-          <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block mb-1">کل مشتریان ثبت‌شده</span>
-            <div className="flex items-baseline justify-between">
-              <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(stats.total)}</span>
-              <span className="text-[10px] text-slate-500">پرونده</span>
+        {/* 4 SUMMARY STATS CARDS (Shown on Customer Directory / Form / Categories tabs) */}
+        {activeSubTab !== 'orders' && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5 mt-4 sm:mt-6 pt-3.5 sm:pt-5 border-t border-slate-800/80 relative z-10">
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+              <span className="text-[11px] text-slate-400 block mb-1">کل مشتریان ثبت‌شده</span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(stats.total)}</span>
+                <span className="text-[10px] text-slate-500">پرونده</span>
+              </div>
             </div>
-          </div>
 
-          <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-            <span className="text-[11px] text-emerald-400 block mb-1">مشتریان فعال تجاری</span>
-            <div className="flex items-baseline justify-between">
-              <span className="text-xl font-black text-emerald-400 font-mono">{toPersianDigits(stats.activeCount)}</span>
-              <span className="text-[10px] text-emerald-500/80">در حال همکاری</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+              <span className="text-[11px] text-emerald-400 block mb-1">مشتریان فعال تجاری</span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-black text-emerald-400 font-mono">{toPersianDigits(stats.activeCount)}</span>
+                <span className="text-[10px] text-emerald-500/80">در حال همکاری</span>
+              </div>
             </div>
-          </div>
 
-          <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-            <span className="text-[11px] text-cyan-400 block mb-1">مجموع سقف اعتبار ریالی</span>
-            <div className="flex items-baseline justify-between">
-              <span className="text-lg font-black text-cyan-400 font-mono">{formatWithCommas(stats.totalCredit)}</span>
-              <span className="text-[10px] text-slate-500">ریال</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+              <span className="text-[11px] text-cyan-400 block mb-1">مجموع سقف اعتبار ریالی</span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-cyan-400 font-mono">{formatWithCommas(stats.totalCredit)}</span>
+                <span className="text-[10px] text-slate-500">ریال</span>
+              </div>
             </div>
-          </div>
 
-          <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-            <span className="text-[11px] text-amber-400 block mb-1">فروشگاه‌ها و سازمانی</span>
-            <div className="flex items-baseline justify-between">
-              <span className="text-xl font-black text-amber-400 font-mono">{toPersianDigits(stats.corporateCount)}</span>
-              <span className="text-[10px] text-slate-500">شرکت / فروشگاه</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+              <span className="text-[11px] text-amber-400 block mb-1">فروشگاه‌ها و سازمانی</span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-black text-amber-400 font-mono">{toPersianDigits(stats.corporateCount)}</span>
+                <span className="text-[10px] text-slate-500">شرکت / فروشگاه</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
+
+      {/* ========================================================================= */}
+      {/* 0. CUSTOMER PRODUCTION ORDERS VIEW (DEFAULT LANDING PAGE)                 */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'orders' && (
+        <CustomerProductionOrders
+          db={db}
+          onUpdateDb={onUpdateDb}
+          activePeriodId={activePeriodId}
+          currentUserName={currentUserName}
+          mode="full"
+        />
+      )}
 
       {/* ========================================================================= */}
       {/* 1. CUSTOMER DIRECTORY VIEW */}
