@@ -8,7 +8,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Drawing.Printing
 
 if (-not (Test-Path -LiteralPath $ImagePath)) {
   throw "Image file not found: $ImagePath"
@@ -35,6 +34,7 @@ if ([string]::IsNullOrWhiteSpace($resolvedPrinter) -or $resolvedPrinter.ToLower(
 
 $sourceBmp = [System.Drawing.Bitmap]::FromFile($ImagePath)
 $croppedBmp = $null
+$doc = $null
 
 try {
   $w = $sourceBmp.Width
@@ -42,9 +42,9 @@ try {
 
   # Trim trailing pure-white space at the bottom so paper length matches exact content height
   $lastNonWhiteY = 20
-  for ($y = $h - 1; $y -ge 0; $y -= 2) {
+  for ($y = $h - 1; $y -ge 0; $y -= 4) {
     $rowHasInk = $false
-    for ($x = 0; $x -lt $w; $x += 3) {
+    for ($x = 0; $x -lt $w; $x += 6) {
       $px = $sourceBmp.GetPixel($x, $y)
       if ($px.R -lt 245 -or $px.G -lt 245 -or $px.B -lt 245) {
         $rowHasInk = $true
@@ -57,8 +57,8 @@ try {
     }
   }
 
-  # Add ~32px (~4mm) bottom breathing space before Sewoo auto-cut
-  $cropHeight = [Math]::Min($h, $lastNonWhiteY + 32)
+  # Add ~36px (~4.5mm) bottom breathing space before Sewoo auto-cut
+  $cropHeight = [Math]::Min($h, $lastNonWhiteY + 36)
   if ($cropHeight -lt 80) { $cropHeight = [Math]::Min($h, 120) }
 
   $cropRect = New-Object System.Drawing.Rectangle(0, 0, $w, $cropHeight)
@@ -68,7 +68,7 @@ try {
   $paperWidthUnits = [int][Math]::Round(($PaperWidthMm / 25.4) * 100)
   $aspectRatio = [double]$cropHeight / [double]$w
   $drawHeightUnits = [int][Math]::Ceiling($paperWidthUnits * $aspectRatio)
-  $paperHeightUnits = $drawHeightUnits + 12
+  $paperHeightUnits = $drawHeightUnits + 14
 
   $doc = New-Object System.Drawing.Printing.PrintDocument
   $doc.DocumentName = "Gatan Receipt"
@@ -84,16 +84,16 @@ try {
   $doc.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
   $doc.OriginAtMargins = $false
 
-  $bmpRef = $croppedBmp
-  $targetW = $paperWidthUnits
-  $targetH = $drawHeightUnits
+  $script:bmpRef = $croppedBmp
+  $script:targetW = $paperWidthUnits
+  $script:targetH = $drawHeightUnits
 
   $doc.add_PrintPage({
     param($sender, $e)
     $e.Graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $e.Graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    $destRect = New-Object System.Drawing.Rectangle(0, 0, $targetW, $targetH)
-    $e.Graphics.DrawImage($bmpRef, $destRect)
+    $destRect = New-Object System.Drawing.Rectangle(0, 0, $script:targetW, $script:targetH)
+    $e.Graphics.DrawImage($script:bmpRef, $destRect)
     $e.HasMorePages = $false
   })
 
@@ -101,6 +101,7 @@ try {
   Write-Output "Printed successfully to '$resolvedPrinter' (${PaperWidthMm}mm x $([Math]::Round($paperHeightUnits * 0.254, 1))mm)"
 }
 finally {
+  if ($doc) { $doc.Dispose() }
   if ($croppedBmp) { $croppedBmp.Dispose() }
   if ($sourceBmp) { $sourceBmp.Dispose() }
 }
