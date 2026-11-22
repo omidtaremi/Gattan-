@@ -124,10 +124,45 @@ function safeTmpPath(filename) {
 }
 
 function normalizeHtmlForHeadless(htmlContent, paperWidthMm = 72) {
-  const widthMm = paperWidthMm === 58 ? 58 : 72;
+  const is58 = paperWidthMm === 58;
+  const targetViewportPx = is58 ? 448 : 576;
+  const logicalBodyPx = is58 ? 218 : 272;
+  const logicalSheetPx = is58 ? 204 : 258;
+  const zoomFactor = is58 ? 2.0 : 2.06;
+
+  const headlessOverrideCss = `
+<style id="gatan-headless-fit">
+  html {
+    width: ${targetViewportPx}px !important;
+    max-width: ${targetViewportPx}px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    overflow-x: hidden !important;
+  }
+  body {
+    width: ${logicalBodyPx}px !important;
+    max-width: ${logicalBodyPx}px !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    zoom: ${zoomFactor} !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .thermal-sheet, .sheet {
+    width: ${logicalSheetPx}px !important;
+    max-width: ${logicalSheetPx}px !important;
+    margin: 0 auto !important;
+    padding: 6px 2px 10px 2px !important;
+  }
+</style>`;
+
   const trimmed = String(htmlContent || '').trim();
   if (/<!doctype|<html/i.test(trimmed)) {
-    return trimmed;
+    if (/<\/head>/i.test(trimmed)) {
+      return trimmed.replace(/<\/head>/i, `${headlessOverrideCss}\n</head>`);
+    }
+    return `${headlessOverrideCss}\n${trimmed}`;
   }
   return `<!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -136,15 +171,13 @@ function normalizeHtmlForHeadless(htmlContent, paperWidthMm = 72) {
 <style>
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; padding: 0;
-    width: ${widthMm}mm; max-width: ${widthMm}mm;
-    background: #ffffff; color: #000000;
     font-family: Tahoma, 'Vazirmatn', 'Segoe UI', Arial, sans-serif;
     direction: rtl; text-align: right;
   }
 </style>
+${headlessOverrideCss}
 </head>
-<body>${trimmed}</body>
+<body><div class="thermal-sheet">${trimmed}</div></body>
 </html>`;
 }
 
@@ -161,8 +194,8 @@ async function renderHtmlAndPrint({ jobId, htmlContent, printerName, paperWidthM
   const htmlFile = safeTmpPath(`${stamp}.html`);
   const pngFile = safeTmpPath(`${stamp}.png`);
 
-  // 72mm at 96 CSS DPI = 272px (with 2x scale = 544px..576px crisp 203-DPI thermal output)
-  const cssWidthPx = paperWidthMm === 58 ? 220 : 288;
+  // 576px at scale=1 matches native 203-DPI Sewoo 100 72mm head AND stays above Windows 10 min window width (~500px)
+  const viewportWidthPx = paperWidthMm === 58 ? 448 : 576;
   const fullHtml = normalizeHtmlForHeadless(htmlContent, paperWidthMm);
 
   try {
@@ -178,8 +211,8 @@ async function renderHtmlAndPrint({ jobId, htmlContent, printerName, paperWidthM
         '--disable-extensions',
         '--hide-scrollbars',
         '--virtual-time-budget=2500',
-        '--force-device-scale-factor=2',
-        `--window-size=${cssWidthPx},2400`,
+        '--force-device-scale-factor=1',
+        `--window-size=${viewportWidthPx},3600`,
         `--screenshot=${pngFile}`,
         fileUrl,
       ],

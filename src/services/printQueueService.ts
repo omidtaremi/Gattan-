@@ -215,3 +215,43 @@ export function buildWindowsOneClickSetupPs1(
     '& (Join-Path $targetDir "install-service.bat")',
   ].join('\r\n');
 }
+
+/**
+ * Generates a PowerShell updater script that updates agent.mjs & print-image.ps1 in C:\GatanPrintAgent
+ * without modifying config.json, restarts the background agent, and runs a quick test print.
+ */
+export function buildWindowsUpdaterPs1(files: Record<string, string>): string {
+  const toBase64Utf8 = (text: string): string => {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  };
+
+  const fileWriteBlocks = Object.entries(files)
+    .map(([fileName, content]) => {
+      const b64 = toBase64Utf8(content);
+      return `[System.IO.File]::WriteAllBytes((Join-Path $targetDir '${fileName}'), [System.Convert]::FromBase64String('${b64}'))`;
+    })
+    .join('\r\n');
+
+  return [
+    '# Gatan POS Print Agent — Windows 10 Updater (keeps existing config.json)',
+    '$ErrorActionPreference = "Stop"',
+    '$targetDir = "C:\\GatanPrintAgent"',
+    'New-Item -ItemType Directory -Force -Path $targetDir | Out-Null',
+    'Write-Host "Stopping running Gatan Print Agent..." -ForegroundColor Yellow',
+    'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*agent.mjs*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+    'Start-Sleep -Seconds 1',
+    fileWriteBlocks,
+    'Write-Host "Updated agent files in $targetDir (config.json preserved)." -ForegroundColor Green',
+    '$vbs = Join-Path $targetDir "start-hidden.vbs"',
+    'if (Test-Path $vbs) { Start-Process -FilePath "wscript.exe" -ArgumentList "`"$vbs`"" }',
+    'Write-Host "Running 72mm test print on Sewoo 100..." -ForegroundColor Cyan',
+    '& node (Join-Path $targetDir "agent.mjs") --test',
+    'Write-Host "Done! Press Enter to close." -ForegroundColor Green',
+    'Read-Host',
+  ].join('\r\n');
+}

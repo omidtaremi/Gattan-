@@ -33,6 +33,7 @@ import {
   rotatePrintAgentStationKey,
   fetchPrintAgentBundleFiles,
   buildWindowsOneClickSetupPs1,
+  buildWindowsUpdaterPs1,
   type PrintJobSummary,
   type PrintStationStatus,
 } from '../services/printQueueService';
@@ -273,6 +274,25 @@ export default function PrintQueueModal({
       });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'خطا در ساخت فایل نصاب ویندوز' });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleDownloadUpdater = async () => {
+    setBusyAction('download_updater');
+    setFeedback(null);
+    try {
+      const files = await fetchPrintAgentBundleFiles();
+      const ps1 = buildWindowsUpdaterPs1(files);
+      downloadTextFile('update-gatan-printer-win10.ps1', '\uFEFF' + ps1, 'text/plain;charset=utf-8');
+      setFeedback({
+        type: 'success',
+        message:
+          'فایل بروزرسانی update-gatan-printer-win10.ps1 دانلود شد. روی آن کلیک راست و «Run with PowerShell» بزنید تا فایل‌های سرویس بدون تغییر کلید بروزرسانی و تست شوند.',
+      });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'خطا در ساخت فایل بروزرسانی' });
     } finally {
       setBusyAction(null);
     }
@@ -698,6 +718,15 @@ export default function PrintQueueModal({
                   >
                     <Download className="h-4 w-4" />
                     <span>دانلود نصاب کامل ویندوز ۱۰ (setup-gatan-printer-win10.ps1)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadUpdater}
+                    disabled={busyAction === 'download_updater'}
+                    className="px-3.5 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 hover:bg-emerald-100 dark:hover:bg-emerald-500/25 border border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>بروزرسانی سرویس نصب‌شده (بدون تغییر کلید)</span>
                   </button>
                   <button
                     type="button"
