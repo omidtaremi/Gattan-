@@ -15,6 +15,7 @@ export type SystemTabId =
   | 'payroll'
   | 'expenses'
   | 'dibal_scale'
+  | 'digital_menu'
   | 'cloud_sync';
 
 export interface SystemTabDefinition {
@@ -34,6 +35,7 @@ export const SYSTEM_TABS: SystemTabDefinition[] = [
   { id: 'payroll', label: 'حقوق و دستمزد' },
   { id: 'expenses', label: 'هزینه‌ها و مخارج سربار' },
   { id: 'dibal_scale', label: 'مدیریت ترازوی دیبال (Dibal M-525)' },
+  { id: 'digital_menu', label: 'منوی دیجیتال کافه (QR)' },
   { id: 'cloud_sync', label: 'دیتابیس، کاربران و سرور (PostgreSQL)' },
 ];
 
@@ -182,6 +184,10 @@ export const COLLECTION_WRITE_PERMISSIONS: Record<string, string[]> = {
   dailyProductionSegments: ['production_planning', 'cogs'],
   productionPlanningSettings: ['production_planning'],
   productionPlanningOrders: ['production_planning'],
+  customerProductionOrders: ['production_planning', 'sales'],
+
+  // Public Digital Menu (QR)
+  digitalMenu: ['digital_menu', 'sales', 'cogs'],
 
   // Procurement
   procurementOrders: ['procurement', 'items'],

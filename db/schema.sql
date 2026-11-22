@@ -299,3 +299,20 @@ SELECT
   COALESCE((r.data->>'isActive')::boolean, TRUE) AS is_active
 FROM app_collection_records r
 WHERE r.collection_key = 'suppliers';
+
+-- نمای پیکربندی منوی دیجیتال عمومی (QR Digital Menu Config)
+CREATE OR REPLACE VIEW v_digital_menu_config AS
+SELECT
+  c.collection_key,
+  COALESCE((c.data->>'enabled')::boolean, TRUE) AS is_enabled,
+  c.data->'appearance'->>'cafeNameFa' AS cafe_name_fa,
+  c.data->'appearance'->>'cafeNameEn' AS cafe_name_en,
+  c.data->'appearance'->>'defaultLanguage' AS default_language,
+  c.data->'appearance'->>'currencyMode' AS currency_mode,
+  c.data->'appearance'->>'sourcePeriodId' AS source_period_id,
+  c.version,
+  c.updated_by,
+  c.updated_at
+FROM app_collections c
+WHERE c.collection_key = 'digitalMenu';
+

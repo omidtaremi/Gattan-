@@ -33,9 +33,12 @@ import {
   stageImportChunksInPg,
   commitStagedImportInPg,
   getAuditLogsFromPg,
+  getPublicDigitalMenuFromPg,
+  getDigitalMenuConfigAdminFromPg,
+  saveDigitalMenuConfigInPg,
   type PgUserPublic,
 } from './src/server/pgDb.ts';
-import { isAdminUser } from './src/shared/rbac.ts';
+import { canAccessTab, isAdminUser } from './src/shared/rbac.ts';
 
 interface AuthenticatedRequest extends Request {
   authUser?: PgUserPublic;
@@ -114,6 +117,21 @@ function requireAdmin(
     res.status(403).json({
       ok: false,
       error: 'این عملیات فقط برای مدیر ارشد سامانه مجاز است.',
+    });
+    return;
+  }
+  next();
+}
+
+function requireDigitalMenuAccess(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  if (!req.authUser || !canAccessTab(req.authUser, 'digital_menu')) {
+    res.status(403).json({
+      ok: false,
+      error: 'شما مجوز مدیریت منوی دیجیتال کافه را ندارید.',
     });
     return;
   }
@@ -219,6 +237,49 @@ async function startServer() {
         connected: false,
         error: err?.message || 'Status error',
       });
+    }
+  });
+
+  // 1b. Strictly Read-Only Public Digital Menu API (Zero Auth Required, Sanitized Projection Only)
+  app.get('/api/public/menu', async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
+    if (!isPostgresModeActive()) {
+      res.json({ ok: true, mode: 'local', menu: null });
+      return;
+    }
+    try {
+      const menu = await getPublicDigitalMenuFromPg();
+      res.json({ ok: true, mode: 'postgres', menu });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در بارگذاری منوی دیجیتال' });
+    }
+  });
+
+  app.get('/api/public/menu/products/:productId', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
+    if (!isPostgresModeActive()) {
+      res.json({ ok: true, mode: 'local', product: null });
+      return;
+    }
+    try {
+      const productId = String(req.params.productId || '').trim();
+      if (!productId || productId.length > 120) {
+        res.status(400).json({ ok: false, error: 'شناسه محصول نامعتبر است.' });
+        return;
+      }
+      const menu = await getPublicDigitalMenuFromPg();
+      if (!menu.enabled) {
+        res.status(404).json({ ok: false, error: 'منوی دیجیتال در حال حاضر غیرفعال است.' });
+        return;
+      }
+      const product = menu.products.find((p) => p.id === productId);
+      if (!product) {
+        res.status(404).json({ ok: false, error: 'محصول مورد نظر در منو یافت نشد.' });
+        return;
+      }
+      res.json({ ok: true, mode: 'postgres', product });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت جزئیات محصول' });
     }
   });
 
@@ -517,6 +578,30 @@ async function startServer() {
       res.json({ ok: true, logs });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت گزارش وقایع' });
+    }
+  });
+
+  // 4b. ERP Admin Digital Menu Configuration Routes (RBAC-Protected)
+  app.get('/api/digital-menu/config', requireAuth, requireDigitalMenuAccess, async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      const data = await getDigitalMenuConfigAdminFromPg();
+      res.json({ ok: true, ...data });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت تنظیمات منوی دیجیتال' });
+    }
+  });
+
+  app.put('/api/digital-menu/config', requireAuth, requireDigitalMenuAccess, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const payload = req.body?.config !== undefined ? req.body.config : req.body;
+      if (!payload || typeof payload !== 'object') {
+        res.status(400).json({ ok: false, error: 'ساختار تنظیمات منوی دیجیتال نامعتبر است.' });
+        return;
+      }
+      const saved = await saveDigitalMenuConfigInPg(req.authUser!, payload, getClientIp(req));
+      res.json({ ok: true, ...saved });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در ذخیره تنظیمات منوی دیجیتال' });
     }
   });
 

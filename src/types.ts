@@ -721,6 +721,7 @@ export interface AppDatabase {
     insuranceDays?: Record<string, number>;
     normalMgmtDeductions?: Record<string, number>;
   }>;
+  digitalMenu?: import('./shared/digitalMenu').DigitalMenuConfig;
 }
 
 export interface SqlServerConfig {
@@ -921,6 +922,19 @@ export interface CustomerProductionOrder {
 }
 
 export type { UserRoleDefinition } from './shared/rbac';
+export type {
+  DigitalMenuLanguage,
+  DigitalMenuCurrencyMode,
+  DigitalMenuUnavailableMode,
+  DigitalMenuAppearance,
+  DigitalMenuCategory,
+  DigitalMenuCategorySetting,
+  DigitalMenuProductSetting,
+  DigitalMenuConfig,
+  PublicMenuCategory,
+  PublicMenuProduct,
+  PublicDigitalMenuPayload,
+} from './shared/digitalMenu';
 
 export interface User {
   id: string;

@@ -18,9 +18,27 @@ import {
   type AuthUserLike,
   type UserRoleDefinition,
 } from '../shared/rbac.ts';
+import {
+  buildPublicDigitalMenuPayload,
+  sanitizeDigitalMenuConfig,
+  DEFAULT_DIGITAL_MENU_CONFIG,
+  type DigitalMenuConfig,
+  type PublicDigitalMenuPayload,
+  type ErpPeriodLike,
+  type ErpCategoryLike,
+  type ErpProductLike,
+} from '../shared/digitalMenu.ts';
 
 const CHUNK_SIZE = 5000;
 const SESSION_TTL_HOURS = 24 * 7; // 7 days
+const PUBLIC_MENU_CACHE_TTL_MS = 30_000;
+const PUBLIC_MENU_RELEVANT_KEYS = new Set(['periods', 'productCategories', 'products', 'digitalMenu']);
+
+let cachedPublicMenu: { payload: PublicDigitalMenuPayload; expiresAt: number } | null = null;
+
+export function invalidatePublicDigitalMenuCache(): void {
+  cachedPublicMenu = null;
+}
 
 function safePgJsonStringify(value: unknown): string {
   const raw = JSON.stringify(value === undefined ? null : value);
@@ -1460,7 +1478,8 @@ export async function syncCollectionsDeltaToPg(
           ipAddress
         );
       } else {
-        const val = safeChanges[key];
+        const rawVal = safeChanges[key];
+        const val = key === 'digitalMenu' ? sanitizeDigitalMenuConfig(rawVal) : rawVal;
         const newVer = await saveCollectionInTx(
           client,
           key,
@@ -1492,6 +1511,10 @@ export async function syncCollectionsDeltaToPg(
     );
 
     await client.query('COMMIT');
+
+    if (candidateKeys.some((k) => PUBLIC_MENU_RELEVANT_KEYS.has(k))) {
+      invalidatePublicDigitalMenuCache();
+    }
 
     // Fetch latest data for any conflicted keys so the client can auto-reconcile
     let conflictedCollections: Record<string, unknown> = {};
@@ -1707,6 +1730,7 @@ export async function importFullDatabaseToPg(
     );
 
     await client.query('COMMIT');
+    invalidatePublicDigitalMenuCache();
     return { versions, importedCollections: keys.length };
   } catch (err: any) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1885,6 +1909,7 @@ export async function commitStagedImportInPg(
     );
 
     await client.query('COMMIT');
+    invalidatePublicDigitalMenuCache();
     return { versions, importedCollections: stagedKeys.length };
   } catch (err: any) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1917,3 +1942,169 @@ export async function getAuditLogsFromPg(limit = 100): Promise<AuditLogEntry[]> 
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
   }));
 }
+
+async function readSpecificCollectionsRaw(
+  keys: string[]
+): Promise<Record<string, unknown>> {
+  if (!pool || keys.length === 0) return {};
+  const { rows } = await pool.query(
+    'SELECT collection_key, data, is_chunked FROM app_collections WHERE collection_key = ANY($1::text[])',
+    [keys]
+  );
+
+  const result: Record<string, unknown> = {};
+  const recordStoreKeys: string[] = [];
+  const chunkedKeys: string[] = [];
+
+  for (const row of rows) {
+    const key = String(row.collection_key);
+    if (isRecordStoreMarker(row.data)) {
+      recordStoreKeys.push(key);
+      result[key] = [];
+    } else if (row.is_chunked) {
+      chunkedKeys.push(key);
+      result[key] = [];
+    } else {
+      result[key] = row.data;
+    }
+  }
+
+  if (recordStoreKeys.length > 0) {
+    const { rows: recRows } = await pool.query<{ collection_key: string; data: unknown }>(
+      `SELECT collection_key, data
+       FROM app_collection_records
+       WHERE collection_key = ANY($1::text[])
+       ORDER BY collection_key ASC, sort_order ASC, record_id ASC`,
+      [recordStoreKeys]
+    );
+    for (const r of recRows) {
+      const target = result[r.collection_key] as unknown[];
+      if (target) target.push(r.data);
+    }
+  }
+
+  if (chunkedKeys.length > 0) {
+    const { rows: chunkRows } = await pool.query<{ collection_key: string; data: unknown[] }>(
+      `SELECT collection_key, data
+       FROM app_collection_chunks
+       WHERE collection_key = ANY($1::text[])
+       ORDER BY collection_key ASC, chunk_index ASC`,
+      [chunkedKeys]
+    );
+    for (const ch of chunkRows) {
+      const target = result[ch.collection_key] as unknown[];
+      if (target && Array.isArray(ch.data)) {
+        for (let i = 0; i < ch.data.length; i++) {
+          target.push(ch.data[i]);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Strictly read-only, sanitized public digital menu projection from PostgreSQL with in-memory caching.
+ * Never reads or exposes sensitive ERP tables (users, suppliers, payroll, COGS, internal notes).
+ */
+export async function getPublicDigitalMenuFromPg(): Promise<PublicDigitalMenuPayload> {
+  if (!pool) {
+    return buildPublicDigitalMenuPayload({});
+  }
+
+  const now = Date.now();
+  if (cachedPublicMenu && cachedPublicMenu.expiresAt > now) {
+    return cachedPublicMenu.payload;
+  }
+
+  const raw = await readSpecificCollectionsRaw([
+    'periods',
+    'productCategories',
+    'products',
+    'digitalMenu',
+  ]);
+
+  const payload = buildPublicDigitalMenuPayload({
+    periods: Array.isArray(raw.periods) ? (raw.periods as ErpPeriodLike[]) : [],
+    productCategories: Array.isArray(raw.productCategories)
+      ? (raw.productCategories as ErpCategoryLike[])
+      : [],
+    products: Array.isArray(raw.products) ? (raw.products as ErpProductLike[]) : [],
+    digitalMenu: (raw.digitalMenu as DigitalMenuConfig) || DEFAULT_DIGITAL_MENU_CONFIG,
+  });
+
+  cachedPublicMenu = {
+    payload,
+    expiresAt: now + PUBLIC_MENU_CACHE_TTL_MS,
+  };
+
+  return payload;
+}
+
+export async function getDigitalMenuConfigAdminFromPg(): Promise<{
+  config: DigitalMenuConfig;
+  version: number;
+}> {
+  if (!pool) {
+    return { config: sanitizeDigitalMenuConfig(DEFAULT_DIGITAL_MENU_CONFIG), version: 0 };
+  }
+  const { rows } = await pool.query<{ data: unknown; version: string }>(
+    "SELECT data, version::text AS version FROM app_collections WHERE collection_key = 'digitalMenu' LIMIT 1"
+  );
+  if (!rows[0]) {
+    return { config: sanitizeDigitalMenuConfig(DEFAULT_DIGITAL_MENU_CONFIG), version: 0 };
+  }
+  return {
+    config: sanitizeDigitalMenuConfig(rows[0].data),
+    version: Number(rows[0].version || 1),
+  };
+}
+
+export async function saveDigitalMenuConfigInPg(
+  actor: AuthUserLike,
+  rawConfig: unknown,
+  ipAddress?: string
+): Promise<{ config: DigitalMenuConfig; version: number }> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+
+  const sanitized = sanitizeDigitalMenuConfig({
+    ...(rawConfig && typeof rawConfig === 'object' ? (rawConfig as Record<string, unknown>) : {}),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const version = await saveCollectionInTx(
+      client,
+      'digitalMenu',
+      sanitized,
+      actor.username || 'admin'
+    );
+    await logAuditAction(
+      client,
+      actor.id || null,
+      actor.username || 'admin',
+      'DIGITAL_MENU_UPDATE',
+      'digitalMenu',
+      Object.keys(sanitized.products).length,
+      {
+        enabled: sanitized.enabled,
+        menuCategoriesCount: sanitized.menuCategories.length,
+        productsConfigured: Object.keys(sanitized.products).length,
+        version,
+      },
+      ipAddress
+    );
+    await client.query('COMMIT');
+    invalidatePublicDigitalMenuCache();
+    return { config: sanitized, version };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+

@@ -675,6 +675,11 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   });
   addSheet(customerProdOrdersExport, "Customer_Production_Orders");
 
+  // 16c. Digital Menu Configuration
+  if (db.digitalMenu) {
+    addSheet([{ configJson: JSON.stringify(db.digitalMenu) }], "Digital_Menu_Config");
+  }
+
   // 17. Stock Audits
   const auditsExport = (db.stockCountAudits || []).map(s => ({
     id: s.id,
@@ -2008,6 +2013,15 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
       createdAt: String(r.createdAt || new Date().toISOString()),
       updatedAt: String(r.updatedAt || new Date().toISOString()),
     })).filter(x => x.id);
+  }
+
+  // 16c. Digital Menu Configuration
+  const digitalMenuRows = getSheetData("Digital_Menu_Config");
+  if (digitalMenuRows && digitalMenuRows.length > 0 && digitalMenuRows[0].configJson) {
+    const parsedMenu = parseJSON(digitalMenuRows[0].configJson, null);
+    if (parsedMenu && typeof parsedMenu === 'object') {
+      result.digitalMenu = parsedMenu;
+    }
   }
 
   // 17. Stock Audits

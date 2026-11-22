@@ -19,6 +19,8 @@ import CustomerManagement from './components/CustomerManagement';
 import TreasuryManagement from './components/TreasuryManagement';
 import DatabaseServerPanel from './components/DatabaseServerPanel';
 import DatabaseBackupModal from './components/DatabaseBackupModal';
+import PublicDigitalMenu from './components/PublicDigitalMenu';
+import DigitalMenuAdmin from './components/DigitalMenuAdmin';
 import { performDatabaseBackup } from './services/backupService';
 import { testSqlServerConnection, pushToSqlServer, pullFromSqlServer, downloadSqlServerDDLScript } from './services/sqlServerService';
 import { exportDatabaseToExcel, importExcelToDatabase, exportDibalDataToExcel, importDibalDataFromExcel } from './utils/excelService';
@@ -48,7 +50,7 @@ import {
   Database, RefreshCw, LogOut, ChevronDown, CheckCircle, AlertTriangle, 
   Settings, FolderKanban, ShieldAlert, Wifi, WifiOff, FileJson, Upload, LayoutDashboard,
   Boxes, Users2, LineChart, Banknote, FileCheck, Landmark, GraduationCap, Coins, Download, Cloud, Check,
-  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X, Sun, Moon
+  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X, Sun, Moon, QrCode
 } from 'lucide-react';
 import {
   toPersianDigits,
@@ -59,8 +61,41 @@ import {
 } from './utils/persianUtils';
 import { useTheme } from './utils/theme';
 
+function isPublicMenuPath(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  return normalized === '/menu' || normalized.startsWith('/menu/');
+}
 
 export default function App() {
+  const [pathname, setPathname] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.pathname : '/'
+  );
+
+  useEffect(() => {
+    const onPopState = () => {
+      setPathname(window.location.pathname);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  if (isPublicMenuPath(pathname)) {
+    return <PublicDigitalMenu />;
+  }
+
+  return (
+    <ErpApplication
+      onOpenPublicMenu={() => {
+        if (typeof window !== 'undefined') {
+          window.history.pushState({}, '', '/menu');
+          setPathname('/menu');
+        }
+      }}
+    />
+  );
+}
+
+function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) {
   const { isDark, toggleTheme } = useTheme();
   const [db, setDb] = useState<AppDatabase | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -1851,6 +1886,7 @@ export default function App() {
     { id: 'payroll', label: 'حقوق و دستمزد', shortLabel: 'حقوق و دستمزد', icon: <GraduationCap className="h-4.5 w-4.5 shrink-0" /> },
     { id: 'expenses', label: 'هزینه‌ها و مخارج سربار', shortLabel: 'هزینه‌ها و سربار', icon: <Landmark className="h-4.5 w-4.5 shrink-0" /> },
     { id: 'dibal_scale', label: 'مدیریت ترازوی دیبال (Dibal M-525)', shortLabel: 'ترازوی دیبال', icon: <Scale className="h-4.5 w-4.5 shrink-0" /> },
+    { id: 'digital_menu', label: 'منوی دیجیتال کافه (QR)', shortLabel: 'منوی دیجیتال', icon: <QrCode className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
     { id: 'cloud_sync', label: 'دیتابیس، کاربران و PostgreSQL', shortLabel: 'دیتابیس و کاربران', icon: <Server className="h-4.5 w-4.5 text-emerald-400 shrink-0" /> },
   ];
 
@@ -2487,6 +2523,17 @@ export default function App() {
               db={db}
               onUpdateDb={handleUpdateDatabase}
               activePeriodId={activePeriodId}
+            />
+          )}
+
+          {/* Public QR Digital Menu Admin View */}
+          {activeTab === 'digital_menu' && db && (
+            <DigitalMenuAdmin
+              db={db}
+              onUpdateDb={handleUpdateDatabase}
+              activePeriodId={activePeriodId}
+              serverMode={serverMode}
+              onOpenPublicPreview={onOpenPublicMenu}
             />
           )}
 

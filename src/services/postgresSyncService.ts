@@ -3,7 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AppDatabase, User, UserRoleDefinition } from '../types';
+import {
+  AppDatabase,
+  User,
+  UserRoleDefinition,
+  DigitalMenuConfig,
+  PublicDigitalMenuPayload,
+  PublicMenuProduct,
+} from '../types';
 
 const TOKEN_STORAGE_KEY = 'gatan_pg_auth_token';
 
@@ -624,3 +631,79 @@ export async function fetchAuditLogs(limit = 60): Promise<AuditLogItem[]> {
     return [];
   }
 }
+
+export async function fetchPublicDigitalMenu(): Promise<{
+  ok: boolean;
+  mode: 'postgres' | 'local';
+  menu: PublicDigitalMenuPayload | null;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/public/menu', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, mode: 'local', menu: null, error: data.error || 'خطا در دریافت منوی دیجیتال' };
+    }
+    return {
+      ok: true,
+      mode: data.mode === 'postgres' ? 'postgres' : 'local',
+      menu: data.menu || null,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      mode: 'local',
+      menu: null,
+      error: err?.message || 'خطا در ارتباط با سرور',
+    };
+  }
+}
+
+export async function fetchPublicDigitalMenuProduct(productId: string): Promise<{
+  ok: boolean;
+  mode: 'postgres' | 'local';
+  product: PublicMenuProduct | null;
+}> {
+  try {
+    const res = await fetch(`/api/public/menu/products/${encodeURIComponent(productId)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return { ok: false, mode: 'local', product: null };
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: true,
+      mode: data.mode === 'postgres' ? 'postgres' : 'local',
+      product: data.product || null,
+    };
+  } catch {
+    return { ok: false, mode: 'local', product: null };
+  }
+}
+
+export async function saveDigitalMenuConfigToServer(config: DigitalMenuConfig): Promise<{
+  ok: boolean;
+  config?: DigitalMenuConfig;
+  version?: number;
+  error?: string;
+}> {
+  try {
+    const { body, headers } = await buildCompressedJsonBody({ config });
+    const res = await fetch('/api/digital-menu/config', {
+      method: 'PUT',
+      headers,
+      body,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: data.error || 'خطا در ذخیره تنظیمات منوی دیجیتال' };
+    }
+    return { ok: true, config: data.config, version: data.version };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'خطا در ارتباط با سرور' };
+  }
+}
+
