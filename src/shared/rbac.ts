@@ -79,6 +79,7 @@ export interface AuthUserLike {
   name?: string;
   role?: string;
   permissions?: string[];
+  allowedBranches?: string[];
   is2FA?: boolean;
   isActive?: boolean;
 }

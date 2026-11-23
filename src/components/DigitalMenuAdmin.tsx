@@ -57,12 +57,14 @@ import {
 } from '../shared/digitalMenu';
 import { saveDigitalMenuConfigToServer } from '../services/postgresSyncService';
 import { toPersianDigits } from '../utils/persianUtils';
+import { nextSimpleId } from '../utils/simpleId';
 
 interface DigitalMenuAdminProps {
   db: AppDatabase;
   onUpdateDb: (updatedDb: AppDatabase) => void;
   activePeriodId: string;
   serverMode: 'postgres' | 'local';
+  activeBranch?: { id: string; slug: string; name: string; isDefault?: boolean };
   onOpenPublicPreview?: () => void;
 }
 
@@ -169,6 +171,7 @@ export default function DigitalMenuAdmin({
   onUpdateDb,
   activePeriodId,
   serverMode,
+  activeBranch,
   onOpenPublicPreview,
 }: DigitalMenuAdminProps) {
   const [subTab, setSubTab] = useState<AdminSubTab>('overview');
@@ -213,6 +216,12 @@ export default function DigitalMenuAdmin({
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedUrl, setCopiedUrl] = useState(false);
 
+  // Reset local editor when switching branches
+  useEffect(() => {
+    setConfig(sanitizeDigitalMenuConfig(db.digitalMenu || DEFAULT_DIGITAL_MENU_CONFIG));
+    setHasUnsavedChanges(false);
+  }, [activeBranch?.id]);
+
   // Sync external db.digitalMenu updates when no unsaved local edits exist
   useEffect(() => {
     if (!hasUnsavedChanges && db.digitalMenu) {
@@ -245,30 +254,32 @@ export default function DigitalMenuAdmin({
 
   // Live ERP non-WIP products available to pick from (single source of truth for live pricing)
   const erpProductsInPeriod = useMemo(() => {
+    const targetPeriodId = resolvedPeriod.id || activePeriodId;
     return (db.products || []).filter(
-      (p) => (!resolvedPeriod.id || p.periodId === resolvedPeriod.id) && !p.isWip
+      (p) => p.periodId === targetPeriodId && !p.isWip
     );
-  }, [db.products, resolvedPeriod.id]);
+  }, [db.products, resolvedPeriod.id, activePeriodId]);
 
-  // Lookup map across period (with fallback to all non-WIP products if period switched)
+  // Lookup map strictly within resolvedPeriod (or activePeriodId)
   const erpProductById = useMemo(() => {
+    const targetPeriodId = resolvedPeriod.id || activePeriodId;
     const map = new Map<string, Product>();
     for (const p of db.products || []) {
       if (!p || !p.id || p.isWip) continue;
-      const existing = map.get(p.id);
-      if (!existing || (resolvedPeriod.id && p.periodId === resolvedPeriod.id)) {
+      if (p.periodId === targetPeriodId) {
         map.set(p.id, p);
       }
     }
     return map;
-  }, [db.products, resolvedPeriod.id]);
+  }, [db.products, resolvedPeriod.id, activePeriodId]);
 
   // Helper ERP group list ONLY for filtering inside the "Add Products from ERP" picker modal
   const erpHelperGroups = useMemo(() => {
+    const targetPeriodId = resolvedPeriod.id || activePeriodId;
     return (db.productCategories || []).filter(
-      (c) => !resolvedPeriod.id || c.periodId === resolvedPeriod.id
+      (c) => c.periodId === targetPeriodId
     );
-  }, [db.productCategories, resolvedPeriod.id]);
+  }, [db.productCategories, resolvedPeriod.id, activePeriodId]);
 
   const erpHelperGroupNameMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -409,7 +420,7 @@ export default function DigitalMenuAdmin({
     }
     const maxOrder = menuCategories.reduce((m, c) => Math.max(m, c.displayOrder), 0);
     const newCat: DigitalMenuCategory = {
-      id: `dmcat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextSimpleId(config.menuCategories || [], 'dmcat'),
       nameFa: fa,
       nameEn: en,
       descriptionFa: newCatDescFa.trim(),
@@ -635,17 +646,21 @@ export default function DigitalMenuAdmin({
     });
   }, [menuProductEntries, translationSearch, onlyMissingEn]);
 
-  // Public Menu URL & QR Generation
+  // Public Menu URL & QR Generation (per-branch QR route)
   const publicMenuUrl = useMemo(() => {
+    const branchPath =
+      activeBranch && !activeBranch.isDefault && activeBranch.slug
+        ? `/menu/${encodeURIComponent(activeBranch.slug)}`
+        : '/menu';
     const customBase = (config.appearance.publicBaseUrl || '').trim().replace(/\/+$/, '');
     if (customBase) {
-      return `${customBase}/menu`;
+      return `${customBase}${branchPath}`;
     }
     if (typeof window !== 'undefined' && window.location?.origin) {
-      return `${window.location.origin}/menu`;
+      return `${window.location.origin}${branchPath}`;
     }
-    return '/menu';
-  }, [config.appearance.publicBaseUrl]);
+    return branchPath;
+  }, [config.appearance.publicBaseUrl, activeBranch?.id, activeBranch?.slug, activeBranch?.isDefault]);
 
   useEffect(() => {
     let active = true;
@@ -1209,7 +1224,9 @@ export default function DigitalMenuAdmin({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100 dark:border-zinc-800/80 text-xs">
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-zinc-900/60 border border-slate-200/70 dark:border-zinc-800">
-                  <div className="text-slate-500 dark:text-zinc-400 mb-1">آدرس عمومی منو (تک کد QR کافه)</div>
+                  <div className="text-slate-500 dark:text-zinc-400 mb-1">
+                    آدرس عمومی منو (کد QR اختصاصی{activeBranch?.name ? ` — ${activeBranch.name}` : ''})
+                  </div>
                   <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-400 break-all" dir="ltr">
                     {publicMenuUrl}
                   </div>

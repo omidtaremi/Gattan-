@@ -15,6 +15,7 @@ import {
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface CounterpartySettlementTabProps {
   db: AppDatabase;
@@ -52,12 +53,12 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
   const [status, setStatus] = useState<'completed' | 'draft' | 'cancelled'>('completed');
 
   const settlements = useMemo(() => {
-    return db.counterpartySettlements || [];
-  }, [db.counterpartySettlements]);
+    return (db.counterpartySettlements || []).filter(s => s.periodId === activePeriodId);
+  }, [db.counterpartySettlements, activePeriodId]);
 
-  const customers = useMemo(() => db.customers || [], [db.customers]);
-  const suppliers = useMemo(() => db.suppliers || [], [db.suppliers]);
-  const bankAccounts = useMemo(() => db.bankAccounts || [], [db.bankAccounts]);
+  const customers = useMemo(() => (db.customers || []).filter(c => c.periodId === activePeriodId), [db.customers, activePeriodId]);
+  const suppliers = useMemo(() => (db.suppliers || []).filter(s => s.periodId === activePeriodId), [db.suppliers, activePeriodId]);
+  const bankAccounts = useMemo(() => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId), [db.bankAccounts, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = settlements.length;
@@ -163,7 +164,7 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
     let updatedList: CounterpartySettlement[];
 
     const setObj: CounterpartySettlement = {
-      id: editingSettlement ? editingSettlement.id : `set-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: editingSettlement ? editingSettlement.id : nextSimpleId(currentList, getPrefixForCollection('counterpartySettlements')),
       periodId: activePeriodId,
       settlementNo: settlementNo.trim(),
       date,

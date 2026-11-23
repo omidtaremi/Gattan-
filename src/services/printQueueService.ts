@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { getAuthToken } from './postgresSyncService';
+import { getAuthToken, getSyncBranchId } from './postgresSyncService';
 
 export type PrintJobType = 'customer_receipt' | 'workshop_ticket' | 'test_print';
 export type PrintJobStatus = 'pending' | 'printing' | 'printed' | 'failed' | 'cancelled';
@@ -48,6 +48,7 @@ export interface PrintStationStatus {
 function buildHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
+    'X-Branch-Id': getSyncBranchId(),
     ...extra,
   };
   const token = getAuthToken();

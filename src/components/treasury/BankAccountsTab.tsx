@@ -13,6 +13,7 @@ import {
 import { 
   toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
 } from '../../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface BankAccountsTabProps {
   db: AppDatabase;
@@ -52,26 +53,26 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
   const [notes, setNotes] = useState('');
 
   const accounts = useMemo(() => {
-    return db.bankAccounts || [];
-  }, [db.bankAccounts]);
+    return (db.bankAccounts || []).filter(a => a.periodId === activePeriodId);
+  }, [db.bankAccounts, activePeriodId]);
 
   const posTerminals = useMemo(() => {
-    return db.posTerminals || [];
-  }, [db.posTerminals]);
+    return (db.posTerminals || []).filter(t => t.periodId === activePeriodId);
+  }, [db.posTerminals, activePeriodId]);
 
-  // Balance calculation (initial balance + receipts - payments)
+  // Balance calculation (initial balance + receipts - payments, active period only)
   const accountBalances = useMemo(() => {
     const map: Record<string, number> = {};
+    const periodReceipts = (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId);
+    const periodPayments = (db.treasuryPayments || []).filter(p => p.periodId === activePeriodId);
     accounts.forEach(acc => {
       let balance = acc.initialBalance || 0;
-      // Inflows from receipts
-      (db.treasuryReceipts || []).forEach(r => {
+      periodReceipts.forEach(r => {
         if (r.bankAccountId === acc.id && r.status === 'confirmed') {
           balance += (r.amount || 0);
         }
       });
-      // Outflows from payments
-      (db.treasuryPayments || []).forEach(p => {
+      periodPayments.forEach(p => {
         if (p.bankAccountId === acc.id && p.status === 'confirmed') {
           balance -= (p.amount || 0);
         }
@@ -79,7 +80,7 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
       map[acc.id] = balance;
     });
     return map;
-  }, [accounts, db.treasuryReceipts, db.treasuryPayments]);
+  }, [accounts, db.treasuryReceipts, db.treasuryPayments, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = accounts.length;
@@ -175,7 +176,7 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
       } : a);
     } else {
       const newAcc: BankAccount = {
-        id: `bank-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: nextSimpleId(currentList, getPrefixForCollection('bankAccounts')),
         periodId: activePeriodId,
         bankName: bankName.trim(),
         branchName: branchName.trim(),

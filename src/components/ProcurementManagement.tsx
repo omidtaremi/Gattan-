@@ -24,6 +24,9 @@ import {
   getTodayJalali
 } from '../utils/persianUtils';
 import ShamsiDatePicker from './ShamsiDatePicker';
+import { nextSimpleId } from '../utils/simpleId';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import {
   FileText,
   Search,
@@ -157,8 +160,10 @@ function computeOrderStatus(items: ProcurementOrderItem[]): string {
   return 'ثبت شده';
 }
 
+let procLineSeq = 0;
 function generateLineId(): string {
-  return `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  procLineSeq += 1;
+  return `line-${procLineSeq}`;
 }
 
 function calcEstimatedRowWeightKg(
@@ -225,6 +230,7 @@ export default function ProcurementManagement({
 
   // Navigation Tabs (Default: Buyer Workbench)
   const [activeTab, setActiveTab] = useState<'report' | 'backlog' | 'history' | 'create'>('report');
+  const [showCopyModal, setShowCopyModal] = useState(false);
 
   // Notification toast inside module (no window.alert)
   const [toast, setToast] = useState<{ type: 'success' | 'warning' | 'info'; message: string } | null>(null);
@@ -300,11 +306,13 @@ export default function ProcurementManagement({
 
   const supplierMap = useMemo(() => {
     const map: Record<string, Supplier> = {};
-    (db.suppliers || []).forEach(s => {
-      map[s.id] = s;
-    });
+    (db.suppliers || [])
+      .filter(s => s.periodId === activePeriodId)
+      .forEach(s => {
+        map[s.id] = s;
+      });
     return map;
-  }, [db.suppliers]);
+  }, [db.suppliers, activePeriodId]);
 
   const rawItemMap = useMemo(() => {
     const map: Record<string, Item> = {};
@@ -324,27 +332,30 @@ export default function ProcurementManagement({
 
   const productMap = useMemo(() => {
     const map: Record<string, Product> = {};
-    (db.products || []).forEach(p => {
-      map[p.id] = p;
-      if (p.accountId) {
-        map[p.accountId.trim()] = p;
-        map[p.accountId.trim().toLowerCase()] = p;
-      }
-      if (p.code) {
-        map[p.code.trim()] = p;
-        map[p.code.trim().toLowerCase()] = p;
-      }
-    });
+    (db.products || [])
+      .filter(p => p.periodId === activePeriodId)
+      .forEach(p => {
+        map[p.id] = p;
+        if (p.accountId) {
+          map[p.accountId.trim()] = p;
+          map[p.accountId.trim().toLowerCase()] = p;
+        }
+        if (p.code) {
+          map[p.code.trim()] = p;
+          map[p.code.trim().toLowerCase()] = p;
+        }
+      });
     return map;
-  }, [db.products]);
+  }, [db.products, activePeriodId]);
 
   const purchasedProducts = useMemo(() => {
     const categoriesWithPurchaseKeyword = (db.productCategories || []).filter(
       cat =>
-        cat.name.includes('خرید') ||
-        cat.name.includes('خریداری') ||
-        cat.name.includes('پیمانکاری') ||
-        cat.name.includes('آماده')
+        cat.periodId === activePeriodId &&
+        (cat.name.includes('خرید') ||
+          cat.name.includes('خریداری') ||
+          cat.name.includes('پیمانکاری') ||
+          cat.name.includes('آماده'))
     );
     const categoryIds = categoriesWithPurchaseKeyword.map(c => c.id);
     const filtered = (db.products || []).filter(
@@ -369,7 +380,7 @@ export default function ProcurementManagement({
       if (n) names.add(n);
     });
     (db.personnel || [])
-      .filter(p => !p.periodId || p.periodId === activePeriodId)
+      .filter(p => p.periodId === activePeriodId)
       .forEach(p => {
         const full = `${p.firstName || ''} ${p.lastName || ''}`.trim() || String((p as any).name || (p as any).fullName || '').trim();
         if (full) names.add(full);
@@ -378,14 +389,16 @@ export default function ProcurementManagement({
   }, [db.users, db.personnel, activePeriodId, currentUserName]);
 
   // ==================== LAST PURCHASE PRICE & MULTI-SUPPLIER ENGINE ====================
-  // Sort all purchase invoices newest-first (period invoices preferred, all invoices scanned as fallback)
+  // Strictly isolated to active period's purchase invoices
   const invoiceHistoryIndex = useMemo(() => {
-    const allInvoices = [...(db.purchaseInvoices || [])].sort((a, b) => {
-      const da = normalizeJalaliSortable(a.date);
-      const dbStr = normalizeJalaliSortable(b.date);
-      if (dbStr !== da) return dbStr.localeCompare(da);
-      return String(b.id || '').localeCompare(String(a.id || ''));
-    });
+    const allInvoices = [...(db.purchaseInvoices || [])]
+      .filter(inv => inv.periodId === activePeriodId)
+      .sort((a, b) => {
+        const da = normalizeJalaliSortable(a.date);
+        const dbStr = normalizeJalaliSortable(b.date);
+        if (dbStr !== da) return dbStr.localeCompare(da);
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
 
     const latestByItem: Record<string, { price: number; date: string; supplierId: string }> = {};
     const latestByItemSupplier: Record<string, { price: number; date: string; supplierId: string }> = {};
@@ -823,7 +836,7 @@ export default function ProcurementManagement({
     }
 
     // Creating a new weekly order -> deactivate all previous weekly orders in this period
-    const newOrderId = `order-${Date.now()}`;
+    const newOrderId = nextSimpleId(db.procurementOrders || [], 'po');
     const nextOrder: ProcurementOrder = {
       id: newOrderId,
       periodId: activePeriodId,
@@ -1596,119 +1609,55 @@ export default function ProcurementManagement({
       className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-xl font-sans p-3.5 sm:p-6 text-right"
       dir="rtl"
     >
-      {/* MODULE HEADER */}
-      <div className="flex flex-col border-b border-slate-200 dark:border-slate-800 pb-4 mb-5 gap-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 p-2.5 rounded-2xl border border-rose-200 dark:border-rose-500/20 shrink-0">
-              <ShoppingCart className="h-5 w-5 sm:h-6 sm:w-6" />
+      {/* UNIFIED MODULE HEADER & PRIMARY TABS */}
+      <div className="mb-5">
+        <ModuleHeader
+          icon={<ShoppingCart className="h-5 w-5" />}
+          title="سفارشات هفتگی کالا و کارتابل تدارکات"
+          subtitle="ثبت درخواست چندردیفه پرسنل با انتخاب تامین‌کننده هر کالا، پیگیری جاماندگان و تایید تحویل واقعی"
+          periodName={db.periods.find(p => p.id === activePeriodId)?.name}
+          recordCount={ordersHistory.length}
+          recordLabel="سفارش"
+          actions={
+            <div className="flex items-center gap-2 flex-wrap">
+              {previousBacklogRows.length > 0 && activeTab !== 'backlog' && (
+                <ErpButton
+                  variant="secondary"
+                  size="sm"
+                  icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
+                  onClick={() => setActiveTab('backlog')}
+                >
+                  {toPersianDigits(previousBacklogRows.length)} قلم جامانده
+                </ErpButton>
+              )}
+              <ErpButton variant="secondary" size="sm" onClick={() => setShowCopyModal(true)}>
+                {ERP_BUTTON_LABELS.copyFromPeriod}
+              </ErpButton>
+              <ErpButton
+                variant="primary"
+                size="sm"
+                icon={<Plus className="h-4 w-4" />}
+                onClick={() => setActiveTab('create')}
+              >
+                {ERP_BUTTON_LABELS.add}
+              </ErpButton>
             </div>
-            <div>
-              <h2 className="text-base sm:text-xl font-black text-slate-900 dark:text-white tracking-tight">
-                سفارشات هفتگی کالا و کارتابل تدارکات
-              </h2>
-              <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                ثبت درخواست چندردیفه پرسنل با انتخاب تامین‌کننده هر کالا · گزارش مسئول خرید و پیگیری جاماندگان · تایید دریافت با مقدار واقعی
-              </p>
-            </div>
-          </div>
+          }
+        />
 
-          {previousBacklogRows.length > 0 && activeTab !== 'backlog' && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('backlog')}
-              className="self-start sm:self-center flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>{toPersianDigits(previousBacklogRows.length)} قلم جامانده از لیست‌های قبلی</span>
-            </button>
-          )}
-        </div>
-
-        {/* 4-TAB NAVIGATION (Buyer Workbench first, Create Order last) */}
-        <div className="flex flex-nowrap overflow-x-auto no-scrollbar md:grid md:grid-cols-4 bg-slate-100 dark:bg-slate-950 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 w-full gap-1">
-          <button
-            type="button"
-            onClick={() => {
-              setReportOrderFilter('ACTIVE');
-              setActiveTab('report');
-            }}
-            className={`px-3 sm:px-4 py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'report'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <ClipboardCheck className="h-3.5 w-3.5 shrink-0" />
-            <span>کارتابل مسئول خرید و تحویل</span>
-            {reportStats.activePendingCount > 0 && (
-              <span
-                className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
-                  activeTab === 'report' ? 'bg-white/20 text-white' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
-                }`}
-              >
-                {toPersianDigits(reportStats.activePendingCount)}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('backlog')}
-            className={`px-3 sm:px-4 py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'backlog'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />
-            <span>اقلام جامانده از قبل</span>
-            {previousBacklogRows.length > 0 && (
-              <span
-                className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
-                  activeTab === 'backlog' ? 'bg-white/20 text-white' : 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300'
-                }`}
-              >
-                {toPersianDigits(previousBacklogRows.length)}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('history')}
-            className={`px-3 sm:px-4 py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'history'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <FileText className="h-3.5 w-3.5 shrink-0" />
-            <span>آرشیو سفارش‌ها ({toPersianDigits(ordersHistory.length)})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('create')}
-            className={`px-3 sm:px-4 py-2.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all text-center cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'create'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Plus className="h-3.5 w-3.5 shrink-0" />
-            <span>{editingOrderId ? 'ویرایش درخواست سفارش' : 'ثبت درخواست هفتگی'}</span>
-            {basketItems.length > 0 && (
-              <span
-                className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
-                  activeTab === 'create' ? 'bg-white/20 text-white' : 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300'
-                }`}
-              >
-                {toPersianDigits(basketItems.length)}
-              </span>
-            )}
-          </button>
-        </div>
+        <ModulePrimaryTabs
+          activeId={activeTab}
+          onChange={(id) => {
+            if (id === 'report') setReportOrderFilter('ACTIVE');
+            setActiveTab(id as typeof activeTab);
+          }}
+          tabs={[
+            { id: 'report', label: 'کارتابل مسئول خرید و تحویل', icon: <ClipboardCheck className="h-4 w-4" />, count: reportStats.activePendingCount },
+            { id: 'backlog', label: 'اقلام جامانده از قبل', icon: <ArrowRightLeft className="h-4 w-4" />, count: previousBacklogRows.length },
+            { id: 'history', label: 'آرشیو سفارش‌ها', icon: <FileText className="h-4 w-4" />, count: ordersHistory.length },
+            { id: 'create', label: editingOrderId ? 'ویرایش درخواست سفارش' : 'ثبت درخواست هفتگی', icon: <Plus className="h-4 w-4" />, count: basketItems.length || undefined },
+          ]}
+        />
 
         {/* INLINE TOAST NOTIFICATION */}
         {toast && (
@@ -3614,6 +3563,14 @@ export default function ProcurementManagement({
           </div>
         </div>
       )}
+      <CopyFromPeriodModal
+        open={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        targetPeriodId={activePeriodId}
+        section="procurementOrders"
+        onUpdateDb={onUpdateDb}
+      />
     </div>
   );
 }

@@ -4,15 +4,25 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { AppDatabase, Supplier, SupplierBankAccount, Item } from '../types';
+import { AppDatabase, Supplier, SupplierBankAccount } from '../types';
 import { 
-  Plus, Search, Edit2, Trash2, CheckCircle, XCircle, FileSpreadsheet, 
-  Printer, Save, Phone, MapPin, CreditCard, Banknote, ListPlus, X, AlertTriangle, Download 
+  Search, Phone, MapPin, CreditCard, Banknote, ListPlus, X, Trash2, Users2, Save, Plus
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
+  toPersianDigits, downloadCSV, printElement, matchPersianString 
 } from '../utils/persianUtils';
 import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
+import { createSimpleIdGenerator, nextSimpleId } from '../utils/simpleId';
+import {
+  ERP_BUTTON_LABELS,
+  EmptyPeriodState,
+  ErpButton,
+  ModuleHeader,
+  StatusText,
+  UnifiedToolbar,
+} from './ui/UnifiedErpUi';
+import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
+import { useErpFeedback } from './ui/ToastContext';
 
 interface SupplierManagementProps {
   db: AppDatabase;
@@ -21,8 +31,15 @@ interface SupplierManagementProps {
 }
 
 export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: SupplierManagementProps) {
+  const feedback = useErpFeedback();
   const [searchQuery, setSearchQuery] = useState('');
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [showCopyModal, setShowCopyModal] = useState(false);
+
+  const activePeriodName = useMemo(
+    () => (db.periods || []).find(p => p.id === activePeriodId)?.name || activePeriodId,
+    [db.periods, activePeriodId]
+  );
 
   // Custom confirmation modal state for sandboxed iframe compatibility
   const [confirmModal, setConfirmModal] = useState<{
@@ -89,7 +106,7 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
 
   const addBankAccountToDraft = () => {
     if (!accountNo) {
-      alert('لطفا شماره حساب بانکی را وارد نمایید.');
+      feedback.warning('لطفاً شماره حساب بانکی را وارد نمایید.');
       return;
     }
     const newAcc: SupplierBankAccount = {
@@ -123,7 +140,7 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
   const handleSaveSupplier = (e: React.FormEvent) => {
     e.preventDefault();
     if (!supName.trim()) {
-      alert('وارد کردن نام تامین‌کننده الزامی است.');
+      feedback.warning('وارد کردن نام تامین‌کننده الزامی است.');
       return;
     }
 
@@ -139,7 +156,7 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
           suppliedItemIds: supItems
         }
       : {
-          id: `sup-${Date.now()}`,
+          id: nextSimpleId(db.suppliers || [], 'sup'),
           periodId: activePeriodId,
           name: supName.trim(),
           phone: supPhone.trim(),
@@ -161,6 +178,8 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
       ...db,
       suppliers: updatedList
     });
+
+    feedback.success(isEdit ? 'تغییرات تامین‌کننده ذخیره شد.' : 'تامین‌کننده جدید با موفقیت ثبت شد.');
 
     // Reset Form states
     setSupName('');
@@ -185,12 +204,13 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
   const deleteSupplier = (id: string) => {
     askConfirm(
       'حذف تامین‌کننده کالا',
-      'آیا مایل به حذف این تامین‌کننده هستید؟ تمامی رکوردهای خریدهای قبلی از ایشان به قوت خود باقی خواهند ماند اما نام ایشان از لیست تامین کارهای جدید برداشته می‌شود.',
+      'آیا مایل به حذف این تامین‌کننده هستید؟ تمامی رکوردهای خریدهای قبلی به قوت خود باقی می‌مانند.',
       () => {
         onUpdateDb({
           ...db,
           suppliers: db.suppliers.filter(s => s.id !== id)
         });
+        feedback.success('تامین‌کننده حذف شد.');
       }
     );
   };
@@ -232,10 +252,7 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
     downloadCSV('Sample_Gatan_Suppliers', headers, rows);
   };
 
-  const importSuppliersCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const importSuppliersFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (event) => {
       const buffer = event.target?.result as ArrayBuffer;
@@ -244,6 +261,7 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
       const text = decodeFileBuffer(buffer);
       const rows = parseCSVText(text);
       const updatedSuppliers = [...db.suppliers];
+      const nextSupId = createSimpleIdGenerator(updatedSuppliers, 'sup');
       let importCount = 0;
 
       rows.forEach((row, index) => {
@@ -251,17 +269,16 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
         const nameVal = row[0];
         if (!nameVal) return;
 
-        // Skip duplicate name in same period
         if (updatedSuppliers.some(s => s.periodId === activePeriodId && s.name === nameVal)) return;
 
         const importedSupplier: Supplier = {
-          id: `sup-import-${Date.now()}-${index}`,
+          id: nextSupId(),
           periodId: activePeriodId,
           name: nameVal,
           phone: row[1] || '۰',
           address: row[2] || 'ثبت نشده',
           isActive: row[3]?.includes('غیر') ? false : true,
-          bankAccounts: [], // Custom blank bank setup
+          bankAccounts: [],
           suppliedItemIds: []
         };
 
@@ -270,18 +287,19 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
       });
 
       onUpdateDb({ ...db, suppliers: updatedSuppliers });
-      alert(`${importCount} تامین کننده با موفقیت به انبار سامانه گاتان ملحق شد.`);
+      feedback.success(`${toPersianDigits(importCount)} تامین‌کننده با موفقیت وارد شد.`);
     };
     reader.readAsArrayBuffer(file);
   };
 
   const clearAllSuppliers = () => {
     askConfirm(
-      'حذف عمومی تمای تامین‌کنندگان',
-      'آیا از حذف کلی تمامی تامین‌کنندگان ثبت شده در این دوره مالی اطمینان دارید؟ تمام رکوردهای بانکی و آدرس‌ها حذف خواهند شد.',
+      'حذف تمامی تامین‌کنندگان دوره',
+      'آیا از حذف کلی تمامی تامین‌کنندگان ثبت‌شده در این دوره مالی اطمینان دارید؟',
       () => {
         const remainingSuppliers = db.suppliers.filter(s => s.periodId !== activePeriodId);
         onUpdateDb({ ...db, suppliers: remainingSuppliers });
+        feedback.success('تامین‌کنندگان این دوره حذف شدند.');
       }
     );
   };
@@ -289,35 +307,46 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
   const printSuppliersReport = () => {
     const el = document.getElementById('suppliers-printable-grid');
     if (el) {
-      printElement('دفترچه تلفن و حساب‌های تامین کنندگان گاتان', el.outerHTML);
+      printElement('دفترچه تلفن و حساب‌های تامین‌کنندگان گاتان', el.outerHTML);
     }
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right selection:bg-rose-500 selection:text-white" dir="rtl">
-      
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
-        <div className="flex items-center gap-3">
-          <div className="bg-emerald-500/10 text-emerald-400 p-2 sm:p-2.5 rounded-2xl border border-emerald-500/15 shrink-0">
-            <Plus className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-base sm:text-xl font-black text-white">
-              دفترچه و حساب‌های بانکی تامین کنندگان
-            </h2>
-            <p className="hidden sm:block text-xs text-slate-400 mt-1">مدیریت مشخصات خریداران کالا، شماره حساب کارت‌ها، شباهای متصل و کالاهای تحت تملک</p>
-          </div>
-        </div>
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right space-y-5" dir="rtl">
+      <ModuleHeader
+        icon={<Users2 className="w-5 h-5" />}
+        title="تامین‌کنندگان و حساب‌های بانکی"
+        subtitle="مدیریت مشخصات تامین‌کنندگان، حساب‌های بانکی، شبا و اقلام تحت تامین هر دوره"
+        periodName={activePeriodName}
+        recordCount={suppliers.length}
+        recordLabel="تامین‌کننده"
+      />
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={printSuppliersReport}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-750 hover:text-white rounded-xl text-xs font-bold cursor-pointer transition-all active:scale-98 shadow-sm"
-          >
-            <Printer className="h-4 w-4 text-slate-400" /> چاپ لیست ملحقی
-          </button>
-        </div>
-      </div>
+      <UnifiedToolbar
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="جستجو در نام، تلفن یا آدرس..."
+        hasActiveFilters={Boolean(searchQuery)}
+        onClearFilters={() => setSearchQuery('')}
+        onCopyFromPeriod={() => setShowCopyModal(true)}
+        onDownloadTemplate={downloadSampleSuppliersCSV}
+        onImportExcel={importSuppliersFile}
+        importAccept=".csv"
+        onExportExcel={exportSuppliersCSV}
+        onPrint={printSuppliersReport}
+        extraSecondaryActions={
+          suppliers.length > 0 ? (
+            <ErpButton
+              variant="danger-subtle"
+              size="sm"
+              onClick={clearAllSuppliers}
+              icon={<Trash2 className="w-3.5 h-3.5" />}
+            >
+              حذف همه
+            </ErpButton>
+          ) : undefined
+        }
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         
@@ -530,15 +559,18 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
 
             {/* Form actions */}
             <div className="flex gap-2">
-              <button
+              <ErpButton
                 type="submit"
-                className="flex-1 bg-gradient-to-r from-rose-600 to-rose-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-rose-600/10 hover:from-rose-500 hover:to-rose-400 cursor-pointer text-xs transition-all active:scale-98"
+                variant="primary"
+                className="flex-1"
+                icon={editingSupplier ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               >
-                {editingSupplier ? 'اعمال ویرایش‌ها' : 'افزودن تامین‌کننده'}
-              </button>
+                {editingSupplier ? ERP_BUTTON_LABELS.save : ERP_BUTTON_LABELS.add}
+              </ErpButton>
               {editingSupplier && (
-                <button
+                <ErpButton
                   type="button"
+                  variant="secondary"
                   onClick={() => {
                     setEditingSupplier(null);
                     setSupName('');
@@ -548,10 +580,9 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
                     setSupItems([]);
                     setItemSearchQuery('');
                   }}
-                  className="px-4 py-3 border border-slate-800 text-slate-300 rounded-xl bg-slate-900 text-xs transition-colors hover:bg-slate-800 hover:text-white cursor-pointer font-bold"
                 >
-                  انصراف
-                </button>
+                  {ERP_BUTTON_LABELS.cancel}
+                </ErpButton>
               )}
             </div>
           </form>
@@ -560,83 +591,38 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
 
         {/* ================= DIRECTORY OF SUPPLIERS ================= */}
         <div className="xl:col-span-2 space-y-4">
-          
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-950 p-4 rounded-3xl border border-slate-850 shadow-sm">
-            <div className="relative w-full sm:w-72">
-              <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                <Search className="h-4 w-4 text-slate-400" />
-              </span>
-              <input
-                id="supplier-search-input"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="جستجو تامین‌کننده (نام، تلفن، آدرس)..."
-                className="w-full pr-10 pl-3 py-2.5 text-xs border border-slate-800 rounded-xl bg-slate-900/60 text-slate-200 outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={downloadSampleSuppliersCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl text-xs font-bold cursor-pointer transition-all active:scale-98"
-                title="دانلود فایل اکسل نمونه برای وارد کردن تامین‌کنندگان"
-              >
-                <Download className="h-3.5 w-3.5 text-slate-400" /> نمونه اکسل
-              </button>
-              <button
-                onClick={exportSuppliersCSV}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600/10 border border-emerald-500/20 hover:bg-emerald-600 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer active:scale-98"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" /> خروجی اکسل
-              </button>
-              <label className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600/10 border border-blue-500/20 hover:bg-blue-600 hover:text-white text-blue-400 rounded-xl text-xs font-bold cursor-pointer transition-all active:scale-98">
-                <Plus className="h-3.5 w-3.5 text-blue-400" /> واردات اکسل
-                <input
-                  id="supplier-import-file"
-                  type="file"
-                  accept=".csv"
-                  onChange={importSuppliersCSV}
-                  className="hidden"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={clearAllSuppliers}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-950/20 text-rose-400 border border-rose-900/30 rounded-xl text-xs font-bold transition-all cursor-pointer hover:bg-rose-900 hover:text-white active:scale-98"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-rose-400" /> حذف کلی
-              </button>
-            </div>
-          </div>
-
           <div id="suppliers-printable-grid" className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {searchedSuppliers.length === 0 ? (
-              <div className="md:col-span-2 text-center p-12 text-slate-500 bg-slate-950 border border-slate-850 rounded-3xl">
-                اطلاعات تامین‌کننده‌ای با فیلتر شما مطابقت ندارد.
+              <div className="md:col-span-2">
+                <EmptyPeriodState
+                  title={
+                    suppliers.length === 0
+                      ? 'در این دوره مالی تامین‌کننده‌ای ثبت نشده است'
+                      : 'تامین‌کننده‌ای با عبارت جستجو یافت نشد'
+                  }
+                  description={
+                    suppliers.length === 0
+                      ? 'از فرم سمت راست تامین‌کننده جدید ثبت کنید یا لیست تامین‌کنندگان را از دوره‌های قبلی کپی کنید.'
+                      : 'عبارت جستجو را تغییر دهید یا فیلتر را پاک کنید.'
+                  }
+                  onCopyFromPeriod={suppliers.length === 0 ? () => setShowCopyModal(true) : undefined}
+                />
               </div>
             ) : (
               searchedSuppliers.map(s => (
                 <div 
                   key={s.id} 
-                  className={`border p-5 rounded-3xl transition-all relative shadow-sm ${
+                  className={`border p-5 rounded-2xl transition-all relative ${
                     s.isActive 
-                      ? 'bg-slate-950 border-slate-850 hover:border-slate-800' 
-                      : 'border-slate-900 bg-slate-950/40 text-slate-550'
+                      ? 'bg-slate-950 border-slate-800 hover:border-slate-700' 
+                      : 'border-slate-900 bg-slate-950/40 text-slate-500'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <strong className="text-base font-black text-slate-100 block">{s.name}</strong>
-                    
-                    {s.isActive ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/25">
-                        <CheckCircle className="h-3 w-3" /> فعال
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 bg-slate-900 px-2.5 py-0.5 rounded-full border border-slate-800/80">
-                        <XCircle className="h-3 w-3" /> غیرفعال
-                      </span>
-                    )}
+                    <StatusText tone={s.isActive ? 'success' : 'neutral'}>
+                      {s.isActive ? 'فعال' : 'غیرفعال'}
+                    </StatusText>
                   </div>
 
                   {/* General details */}
@@ -695,18 +681,20 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
                   )}
 
                   <div className="flex justify-end gap-2 pt-2 border-t border-slate-900 mt-2">
-                    <button
+                    <ErpButton
+                      variant="secondary"
+                      size="sm"
                       onClick={() => startEditSupplier(s)}
-                      className="p-1.5 px-3 border border-slate-800 text-slate-300 rounded-xl hover:bg-slate-800 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
                     >
-                      <Edit2 className="h-3.5 w-3.5" /> ویرایش ردیف
-                    </button>
-                    <button
+                      {ERP_BUTTON_LABELS.edit}
+                    </ErpButton>
+                    <ErpButton
+                      variant="danger-subtle"
+                      size="sm"
                       onClick={() => deleteSupplier(s.id)}
-                      className="p-1.5 px-3 border border-rose-950/40 text-rose-400 rounded-xl hover:bg-rose-950/20 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
                     >
-                      <Trash2 className="h-3.5 w-3.5 animate-pulse" /> حذف تامین‌کننده
-                    </button>
+                      {ERP_BUTTON_LABELS.delete}
+                    </ErpButton>
                   </div>
                 </div>
               ))
@@ -716,38 +704,33 @@ export default function SupplierManagement({ db, onUpdateDb, activePeriodId }: S
 
       </div>
 
+      <CopyFromPeriodModal
+        open={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        targetPeriodId={activePeriodId}
+        section="suppliers"
+        onUpdateDb={onUpdateDb}
+      />
+
       {confirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn animate-duration-200" dir="rtl">
-          <div className="bg-slate-950 border border-slate-850 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-right animate-scaleIn">
-            <div className="flex items-center gap-3 text-rose-500 mb-4">
-              <div className="p-2.5 bg-rose-500/15 border border-rose-500/25 rounded-2xl">
-                <AlertTriangle className="h-6 w-6 text-rose-500 animate-pulse" />
-              </div>
-              <h3 className="text-base font-extrabold text-slate-100">{confirmModal.title}</h3>
-            </div>
-            
-            <p className="text-xs text-slate-350 leading-relaxed font-semibold mb-6">
-              {confirmModal.message}
-            </p>
-            
-            <div className="flex justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setConfirmModal(null)}
-                className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-850 font-bold text-xs rounded-xl transition-colors cursor-pointer"
-              >
-                انصراف
-              </button>
-              <button
-                type="button"
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" dir="rtl">
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl text-right">
+            <h3 className="text-sm font-bold text-slate-100 mb-2">{confirmModal.title}</h3>
+            <p className="text-xs text-slate-400 leading-6 mb-5">{confirmModal.message}</p>
+            <div className="flex justify-end gap-2">
+              <ErpButton variant="secondary" onClick={() => setConfirmModal(null)}>
+                {ERP_BUTTON_LABELS.cancel}
+              </ErpButton>
+              <ErpButton
+                variant="danger"
                 onClick={() => {
                   confirmModal.onConfirm();
                   setConfirmModal(null);
                 }}
-                className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-lg border border-rose-500/20 transition-all cursor-pointer"
               >
-                تایید و حذف قطعی
-              </button>
+                {ERP_BUTTON_LABELS.delete}
+              </ErpButton>
             </div>
           </div>
         </div>

@@ -10,9 +10,17 @@ import {
   DigitalMenuConfig,
   PublicDigitalMenuPayload,
   PublicMenuProduct,
+  BranchDefinition,
 } from '../types';
+import { DEFAULT_BRANCH_ID } from '../shared/branches';
 
 const TOKEN_STORAGE_KEY = 'gatan_pg_auth_token';
+const ACTIVE_BRANCH_KEY = 'gatan_active_branch_id';
+
+export interface BranchStatusItem extends BranchDefinition {
+  databaseExists?: boolean;
+  dbSizeBytes?: number;
+}
 
 export interface ServerDbStatus {
   mode: 'postgres' | 'local';
@@ -20,6 +28,8 @@ export interface ServerDbStatus {
   connected: boolean;
   dbVersion?: string;
   databaseName?: string;
+  branchId?: string;
+  branchName?: string;
   dbSizeBytes?: number;
   isEmpty?: boolean;
   initializedByUser?: boolean;
@@ -35,6 +45,7 @@ export interface PublicUserSummary {
   fullName: string;
   role: string;
   is2FA: boolean;
+  allowedBranches?: string[];
 }
 
 export interface AuditLogItem {
@@ -47,6 +58,31 @@ export interface AuditLogItem {
   details: Record<string, unknown> | null;
   ipAddress: string | null;
   createdAt: string;
+}
+
+let currentSyncBranchId = DEFAULT_BRANCH_ID;
+
+export function getSyncBranchId(): string {
+  try {
+    const stored = (localStorage.getItem(ACTIVE_BRANCH_KEY) || '').trim();
+    if (stored) {
+      currentSyncBranchId = stored;
+      return stored;
+    }
+  } catch {
+    // ignore
+  }
+  return currentSyncBranchId || DEFAULT_BRANCH_ID;
+}
+
+export function setSyncBranchId(branchId: string): void {
+  const clean = String(branchId || '').trim() || DEFAULT_BRANCH_ID;
+  currentSyncBranchId = clean;
+  try {
+    localStorage.setItem(ACTIVE_BRANCH_KEY, clean);
+  } catch {
+    // ignore
+  }
 }
 
 export function getAuthToken(): string {
@@ -76,6 +112,7 @@ export function clearAuthToken(): void {
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
+    'X-Branch-Id': getSyncBranchId(),
     ...extra,
   };
   const token = getAuthToken();
@@ -126,13 +163,17 @@ async function buildCompressedJsonBody(
   };
 }
 
-export async function fetchPostgresStatus(): Promise<ServerDbStatus> {
+export async function fetchPostgresStatus(branchId?: string): Promise<ServerDbStatus> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
+    const targetBranch = branchId || getSyncBranchId();
     const res = await fetch('/api/db/status', {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'X-Branch-Id': targetBranch,
+      },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -158,6 +199,113 @@ export async function fetchPublicUsers(): Promise<PublicUserSummary[]> {
     return Array.isArray(data.users) ? data.users : [];
   } catch {
     return [];
+  }
+}
+
+export async function fetchPublicBranches(): Promise<
+  Array<{ id: string; slug: string; name: string; isDefault: boolean; isActive: boolean }>
+> {
+  try {
+    const res = await fetch('/api/branches/public', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.branches) ? data.branches : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchBranches(): Promise<{
+  ok: boolean;
+  branches: BranchStatusItem[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/branches', {
+      method: 'GET',
+      headers: authHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, branches: [], error: data.error };
+    return { ok: true, branches: Array.isArray(data.branches) ? data.branches : [] };
+  } catch (err: any) {
+    return { ok: false, branches: [], error: err?.message || 'خطا در دریافت لیست شعبه‌ها' };
+  }
+}
+
+export async function createAdminBranch(payload: {
+  name: string;
+  slug?: string;
+  dbName?: string;
+  address?: string;
+  phone?: string;
+}): Promise<{ ok: boolean; branch?: BranchStatusItem; error?: string }> {
+  const res = await fetch('/api/branches', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error || 'خطا در ایجاد شعبه جدید' };
+  return { ok: true, branch: data.branch };
+}
+
+export async function updateAdminBranch(
+  branchId: string,
+  payload: {
+    name?: string;
+    address?: string;
+    phone?: string;
+    isActive?: boolean;
+  }
+): Promise<{ ok: boolean; branch?: BranchStatusItem; error?: string }> {
+  const res = await fetch(`/api/branches/${encodeURIComponent(branchId)}`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error || 'خطا در ویرایش شعبه' };
+  return { ok: true, branch: data.branch };
+}
+
+export async function deleteAdminBranch(branchId: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/branches/${encodeURIComponent(branchId)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error || 'خطا در حذف شعبه' };
+  return { ok: true };
+}
+
+export async function fetchBranchCopySource(sourceBranchId: string): Promise<{
+  ok: boolean;
+  branch?: BranchDefinition;
+  collections?: Record<string, unknown>;
+  isEmpty?: boolean;
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`/api/branches/${encodeURIComponent(sourceBranchId)}/copy-source`, {
+      method: 'GET',
+      headers: authHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: data.error || 'خطا در دریافت داده‌های شعبه مبدا' };
+    }
+    return {
+      ok: true,
+      branch: data.branch,
+      collections: data.collections || {},
+      isEmpty: Boolean(data.isEmpty),
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'خطا در ارتباط با سرور' };
   }
 }
 
@@ -516,6 +664,7 @@ export async function createAdminUser(payload: {
   fullName: string;
   role: string;
   permissions: string[];
+  allowedBranches?: string[];
   password: string;
   is2FA: boolean;
   secretCode: string;
@@ -538,6 +687,7 @@ export async function updateAdminUser(
     fullName?: string;
     role?: string;
     permissions?: string[];
+    allowedBranches?: string[];
     password?: string;
     is2FA?: boolean;
     secretCode?: string;
@@ -632,14 +782,18 @@ export async function fetchAuditLogs(limit = 60): Promise<AuditLogItem[]> {
   }
 }
 
-export async function fetchPublicDigitalMenu(): Promise<{
+export async function fetchPublicDigitalMenu(branchParam?: string): Promise<{
   ok: boolean;
   mode: 'postgres' | 'local';
-  menu: PublicDigitalMenuPayload | null;
+  menu: (PublicDigitalMenuPayload & { branch?: { id: string; slug: string; name: string } }) | null;
   error?: string;
 }> {
   try {
-    const res = await fetch('/api/public/menu', {
+    const cleanBranch = String(branchParam || '').trim();
+    const url = cleanBranch
+      ? `/api/public/menu?branch=${encodeURIComponent(cleanBranch)}`
+      : '/api/public/menu';
+    const res = await fetch(url, {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
@@ -662,13 +816,18 @@ export async function fetchPublicDigitalMenu(): Promise<{
   }
 }
 
-export async function fetchPublicDigitalMenuProduct(productId: string): Promise<{
+export async function fetchPublicDigitalMenuProduct(
+  productId: string,
+  branchParam?: string
+): Promise<{
   ok: boolean;
   mode: 'postgres' | 'local';
   product: PublicMenuProduct | null;
 }> {
   try {
-    const res = await fetch(`/api/public/menu/products/${encodeURIComponent(productId)}`, {
+    const cleanBranch = String(branchParam || '').trim();
+    const qs = cleanBranch ? `?branch=${encodeURIComponent(cleanBranch)}` : '';
+    const res = await fetch(`/api/public/menu/products/${encodeURIComponent(productId)}${qs}`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });

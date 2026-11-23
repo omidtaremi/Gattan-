@@ -3,28 +3,46 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import bcrypt from 'bcryptjs';
 import { User } from '../types';
-import { KeyRound, ShieldAlert, UserCheck, Smartphone, RefreshCw, LogIn, Server, Sun, Moon } from 'lucide-react';
+import { KeyRound, ShieldAlert, UserCheck, Smartphone, RefreshCw, LogIn, Server, Sun, Moon, Building2 } from 'lucide-react';
 import { toPersianDigits } from '../utils/persianUtils';
 import { useTheme } from '../utils/theme';
+import {
+  DEFAULT_BRANCHES,
+  DEFAULT_BRANCH_ID,
+  canAccessBranch,
+  getAllowedBranches,
+} from '../shared/branches';
 import {
   loginWithPostgres,
   type PublicUserSummary,
 } from '../services/postgresSyncService';
 
+export interface LoginBranchOption {
+  id: string;
+  slug: string;
+  name: string;
+  isDefault?: boolean;
+  isActive?: boolean;
+}
+
 interface LoginScreenProps {
   users: User[];
   serverMode: 'postgres' | 'local';
   publicUsers?: PublicUserSummary[];
-  onLoginSuccess: (user: User) => void;
+  branches?: LoginBranchOption[];
+  initialBranchId?: string;
+  onLoginSuccess: (user: User, branchId: string) => void;
 }
 
 export default function LoginScreen({
   users,
   serverMode,
   publicUsers,
+  branches,
+  initialBranchId,
   onLoginSuccess,
 }: LoginScreenProps) {
   const { isDark, toggleTheme } = useTheme();
@@ -33,8 +51,17 @@ export default function LoginScreen({
       ? publicUsers
       : users;
 
+  const activeBranches = useMemo<LoginBranchOption[]>(() => {
+    const source = Array.isArray(branches) && branches.length > 0 ? branches : DEFAULT_BRANCHES;
+    const filtered = source.filter((b) => b.isActive !== false);
+    return filtered.length > 0 ? filtered : DEFAULT_BRANCHES;
+  }, [branches]);
+
   const [selectedUsername, setSelectedUsername] = useState(
     selectableUsers[0]?.username || 'admin'
+  );
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(
+    initialBranchId || activeBranches[0]?.id || DEFAULT_BRANCH_ID
   );
   const [password, setPassword] = useState('');
   const [showRecovery, setShowRecovery] = useState(false);
@@ -56,17 +83,65 @@ export default function LoginScreen({
     }
   }, [selectableUsers, selectedUsername]);
 
+  const selectedUserObj = useMemo(
+    () => selectableUsers.find((u) => u.username === selectedUsername) || null,
+    [selectableUsers, selectedUsername]
+  );
+
+  const allowedBranchesForSelectedUser = useMemo(() => {
+    if (!selectedUserObj) return activeBranches;
+    return getAllowedBranches(
+      {
+        role: selectedUserObj.role,
+        permissions: 'permissions' in selectedUserObj ? (selectedUserObj as User).permissions : undefined,
+        allowedBranches: selectedUserObj.allowedBranches,
+      },
+      activeBranches
+    );
+  }, [selectedUserObj, activeBranches]);
+
+  useEffect(() => {
+    if (allowedBranchesForSelectedUser.length === 0) return;
+    const exists = allowedBranchesForSelectedUser.some((b) => b.id === selectedBranchId);
+    if (!exists) {
+      const preferred =
+        (initialBranchId && allowedBranchesForSelectedUser.find((b) => b.id === initialBranchId)?.id) ||
+        allowedBranchesForSelectedUser[0].id;
+      setSelectedBranchId(preferred);
+    }
+  }, [allowedBranchesForSelectedUser, selectedBranchId, initialBranchId]);
+
+  const finalizeAuthorizedLogin = (loggedInUser: User): boolean => {
+    const allowedForActualUser = getAllowedBranches(loggedInUser, activeBranches);
+    if (allowedForActualUser.length === 0) {
+      setLoginError('برای این حساب کاربری هیچ شعبه فعالی مجاز نشده است. لطفاً با مدیر ارشد تماس بگیرید.');
+      setMfaError('برای این حساب کاربری هیچ شعبه فعالی مجاز نشده است.');
+      return false;
+    }
+    const targetBranch = canAccessBranch(loggedInUser, selectedBranchId) &&
+      allowedForActualUser.some((b) => b.id === selectedBranchId)
+      ? selectedBranchId
+      : allowedForActualUser[0].id;
+    onLoginSuccess(loggedInUser, targetBranch);
+    return true;
+  };
+
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setMfaHint('');
+
+    if (allowedBranchesForSelectedUser.length === 0) {
+      setLoginError('برای این کاربر هیچ شعبه فعالی مجاز نشده است. لطفاً با مدیر ارشد تماس بگیرید.');
+      return;
+    }
 
     if (serverMode === 'postgres') {
       setIsSubmitting(true);
       try {
         const res = await loginWithPostgres(selectedUsername, password);
         if (res.ok && res.user) {
-          onLoginSuccess(res.user);
+          finalizeAuthorizedLogin(res.user);
         } else if (res.requires2FA && res.user) {
           setTempUser(res.user);
           setStep('2fa');
@@ -102,7 +177,7 @@ export default function LoginScreen({
         setStep('2fa');
         setMfaHint(`کد تایید دو مرحله‌ای (حالت آفلاین): ${found.secretCode}`);
       } else {
-        onLoginSuccess(found);
+        finalizeAuthorizedLogin(found);
       }
     } else {
       setLoginError('نام کاربری یا رمز عبور اشتباه است (رمز پیش‌فرض تمامی کاربران 123 است)');
@@ -118,7 +193,7 @@ export default function LoginScreen({
       try {
         const res = await loginWithPostgres(selectedUsername, password, enteredCode);
         if (res.ok && res.user) {
-          onLoginSuccess(res.user);
+          finalizeAuthorizedLogin(res.user);
         } else {
           setMfaError(res.error || 'کد امنیتی دو مرحله‌ای وارد شده معتبر نمی‌باشد.');
         }
@@ -131,7 +206,7 @@ export default function LoginScreen({
     }
 
     if (tempUser && enteredCode === tempUser.secretCode) {
-      onLoginSuccess(tempUser);
+      finalizeAuthorizedLogin(tempUser);
     } else {
       setMfaError('کد امنیتی دو مرحله‌ای وارد شده معتبر نمی‌باشد.');
     }
@@ -284,6 +359,32 @@ export default function LoginScreen({
                     />
                   )}
                   <UserCheck className="absolute left-3 top-3.5 h-4 w-4 text-zinc-500 pointer-events-none" />
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="branch-select" className="block text-xs font-semibold text-zinc-400 mb-2">انتخاب شعبه</label>
+                <div className="mt-1 relative">
+                  {allowedBranchesForSelectedUser.length > 0 ? (
+                    <select
+                      id="branch-select"
+                      value={selectedBranchId}
+                      onChange={(e) => setSelectedBranchId(e.target.value)}
+                      disabled={allowedBranchesForSelectedUser.length === 1}
+                      className="block w-full pl-3 pr-10 py-3 text-sm bg-zinc-900/60 border border-zinc-800 rounded-xl text-zinc-100 focus:border-emerald-500 outline-none transition-all cursor-pointer disabled:opacity-80 disabled:cursor-default"
+                    >
+                      {allowedBranchesForSelectedUser.map((b) => (
+                        <option key={b.id} value={b.id} className="bg-zinc-950 text-zinc-100">
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="px-4 py-3 text-xs bg-rose-950/30 border border-rose-500/30 rounded-xl text-rose-300">
+                      شعبه‌ای برای این کاربر مجاز نشده است.
+                    </div>
+                  )}
+                  <Building2 className="absolute left-3 top-3.5 h-4 w-4 text-emerald-500/80 pointer-events-none" />
                 </div>
               </div>
 

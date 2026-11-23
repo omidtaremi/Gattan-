@@ -4,7 +4,8 @@
  */
 
 import crypto from 'node:crypto';
-import { getPgPool, isPostgresModeActive } from './pgDb.ts';
+import { getPgPoolAsync, isPostgresModeActive } from './pgDb.ts';
+import { DEFAULT_BRANCH_ID } from '../shared/branches.ts';
 
 export type PrintJobType = 'customer_receipt' | 'workshop_ticket' | 'test_print';
 export type PrintJobStatus = 'pending' | 'printing' | 'printed' | 'failed' | 'cancelled';
@@ -68,14 +69,35 @@ const STALE_PRINTING_TIMEOUT_MS = 90_000;
 const MAX_HTML_BYTES = 300_000;
 const MAX_IN_MEMORY_JOBS = 200;
 
-// In-memory fallback store (used only when PostgreSQL is not configured, e.g., local preview mode)
-let memMeta: StoredAgentMeta = {
-  stationId: DEFAULT_STATION_ID,
-  stationName: DEFAULT_STATION_NAME,
-  availablePrinters: [],
-};
-let memJobs: PrintJobRecord[] = [];
-let pgTableEnsured = false;
+// In-memory fallback store per branch (used only when PostgreSQL is not configured, e.g., local preview mode)
+const memMetaByBranch = new Map<string, StoredAgentMeta>();
+const memJobsByBranch = new Map<string, PrintJobRecord[]>();
+const pgTableEnsuredBranches = new Set<string>();
+
+function resolveBranchKey(branchId?: string): string {
+  const clean = String(branchId || '').trim();
+  return clean || DEFAULT_BRANCH_ID;
+}
+
+function getMemMeta(branchKey: string): StoredAgentMeta {
+  const existing = memMetaByBranch.get(branchKey);
+  if (existing) return existing;
+  const fresh: StoredAgentMeta = {
+    stationId: DEFAULT_STATION_ID,
+    stationName: DEFAULT_STATION_NAME,
+    availablePrinters: [],
+  };
+  memMetaByBranch.set(branchKey, fresh);
+  return fresh;
+}
+
+function getMemJobs(branchKey: string): PrintJobRecord[] {
+  const existing = memJobsByBranch.get(branchKey);
+  if (existing) return existing;
+  const fresh: PrintJobRecord[] = [];
+  memJobsByBranch.set(branchKey, fresh);
+  return fresh;
+}
 
 function sha256Hex(value: string): string {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
@@ -93,9 +115,9 @@ function timingSafeHexEqual(a: string, b: string): boolean {
   }
 }
 
-async function ensurePrintJobsTableInPg(): Promise<void> {
-  if (pgTableEnsured) return;
-  const pgPool = getPgPool();
+async function ensurePrintJobsTableInPg(branchKey: string): Promise<void> {
+  if (pgTableEnsuredBranches.has(branchKey)) return;
+  const pgPool = await getPgPoolAsync(branchKey);
   if (!pgPool) return;
   await pgPool.query(`
     CREATE TABLE IF NOT EXISTS app_print_jobs (
@@ -122,15 +144,16 @@ async function ensurePrintJobsTableInPg(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_app_print_jobs_created_at
       ON app_print_jobs (created_at DESC);
   `);
-  pgTableEnsured = true;
+  pgTableEnsuredBranches.add(branchKey);
 }
 
-async function readAgentMeta(): Promise<StoredAgentMeta> {
-  const pgPool = getPgPool();
+async function readAgentMeta(branchId?: string): Promise<StoredAgentMeta> {
+  const branchKey = resolveBranchKey(branchId);
+  const pgPool = await getPgPoolAsync(branchKey);
   if (!pgPool) {
-    return { ...memMeta };
+    return { ...getMemMeta(branchKey) };
   }
-  await ensurePrintJobsTableInPg();
+  await ensurePrintJobsTableInPg(branchKey);
   const { rows } = await pgPool.query<{ meta_value: StoredAgentMeta }>(
     'SELECT meta_value FROM app_metadata WHERE meta_key = $1',
     [META_KEY]
@@ -150,13 +173,14 @@ async function readAgentMeta(): Promise<StoredAgentMeta> {
   };
 }
 
-async function writeAgentMeta(meta: StoredAgentMeta): Promise<void> {
-  const pgPool = getPgPool();
+async function writeAgentMeta(meta: StoredAgentMeta, branchId?: string): Promise<void> {
+  const branchKey = resolveBranchKey(branchId);
+  const pgPool = await getPgPoolAsync(branchKey);
   if (!pgPool) {
-    memMeta = { ...meta };
+    memMetaByBranch.set(branchKey, { ...meta });
     return;
   }
-  await ensurePrintJobsTableInPg();
+  await ensurePrintJobsTableInPg(branchKey);
   await pgPool.query(
     `INSERT INTO app_metadata (meta_key, meta_value, updated_at)
      VALUES ($1, $2::jsonb, NOW())
@@ -172,7 +196,7 @@ function getEnvPrintAgentKey(): string {
   return raw;
 }
 
-export async function verifyPrintAgentKey(providedKey: string): Promise<boolean> {
+export async function verifyPrintAgentKey(providedKey: string, branchId?: string): Promise<boolean> {
   const trimmed = (providedKey || '').trim();
   if (!trimmed || trimmed.length < 16 || trimmed.length > 256) return false;
 
@@ -182,16 +206,17 @@ export async function verifyPrintAgentKey(providedKey: string): Promise<boolean>
     return timingSafeHexEqual(providedHash, sha256Hex(envKey));
   }
 
-  const meta = await readAgentMeta();
+  const meta = await readAgentMeta(branchId);
   if (!meta.keyHash) return false;
   return timingSafeHexEqual(providedHash, meta.keyHash);
 }
 
 export async function rotatePrintAgentKey(
-  stationName?: string
+  stationName?: string,
+  branchId?: string
 ): Promise<{ apiKey: string; status: PrintStationStatus }> {
   const newKey = `gatan_prt_${crypto.randomBytes(24).toString('hex')}`;
-  const current = await readAgentMeta();
+  const current = await readAgentMeta(branchId);
   const updated: StoredAgentMeta = {
     ...current,
     stationId: DEFAULT_STATION_ID,
@@ -199,19 +224,22 @@ export async function rotatePrintAgentKey(
     keyHash: sha256Hex(newKey),
     keyUpdatedAt: new Date().toISOString(),
   };
-  await writeAgentMeta(updated);
-  const status = await getPrintStationStatus();
+  await writeAgentMeta(updated, branchId);
+  const status = await getPrintStationStatus(branchId);
   return { apiKey: newKey, status };
 }
 
-export async function recordAgentHeartbeat(input: {
-  hostname?: string;
-  printerName?: string;
-  availablePrinters?: string[];
-  agentVersion?: string;
-  ipAddress?: string;
-}): Promise<PrintStationStatus> {
-  const current = await readAgentMeta();
+export async function recordAgentHeartbeat(
+  input: {
+    hostname?: string;
+    printerName?: string;
+    availablePrinters?: string[];
+    agentVersion?: string;
+    ipAddress?: string;
+  },
+  branchId?: string
+): Promise<PrintStationStatus> {
+  const current = await readAgentMeta(branchId);
   const sanitizedPrinters = Array.isArray(input.availablePrinters)
     ? input.availablePrinters
         .map((p) => String(p || '').trim().slice(0, 120))
@@ -228,8 +256,8 @@ export async function recordAgentHeartbeat(input: {
     agentVersion: input.agentVersion ? String(input.agentVersion).trim().slice(0, 32) : current.agentVersion,
     lastIp: input.ipAddress ? String(input.ipAddress).trim().slice(0, 64) : current.lastIp,
   };
-  await writeAgentMeta(updated);
-  return getPrintStationStatus();
+  await writeAgentMeta(updated, branchId);
+  return getPrintStationStatus(branchId);
 }
 
 function mapPgJobRow(row: any, includeHtml: boolean): PrintJobRecord {
@@ -265,8 +293,9 @@ function mapPgJobRow(row: any, includeHtml: boolean): PrintJobRecord {
   return rec;
 }
 
-export async function getPrintStationStatus(): Promise<PrintStationStatus> {
-  const meta = await readAgentMeta();
+export async function getPrintStationStatus(branchId?: string): Promise<PrintStationStatus> {
+  const branchKey = resolveBranchKey(branchId);
+  const meta = await readAgentMeta(branchKey);
   const envKey = getEnvPrintAgentKey();
   const keySource: 'env' | 'database' | 'none' = envKey
     ? 'env'
@@ -282,9 +311,9 @@ export async function getPrintStationStatus(): Promise<PrintStationStatus> {
   let printedTodayCount = 0;
   let failedCount = 0;
 
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rows } = await pgPool.query<{
       pending_cnt: string;
       printing_cnt: string;
@@ -308,7 +337,7 @@ export async function getPrintStationStatus(): Promise<PrintStationStatus> {
     }
   } else {
     const dayAgo = Date.now() - 24 * 3600 * 1000;
-    for (const j of memJobs) {
+    for (const j of getMemJobs(branchKey)) {
       if (j.status === 'pending') pendingCount++;
       else if (j.status === 'printing') printingCount++;
       else if (j.status === 'failed') failedCount++;
@@ -352,17 +381,21 @@ function sanitizePrintHtml(rawHtml: string): string {
   return clean;
 }
 
-export async function enqueuePrintJob(input: {
-  jobType: string;
-  title: string;
-  orderId?: string;
-  orderNumber?: string;
-  departmentName?: string;
-  paperWidthMm?: number;
-  copies?: number;
-  htmlContent: string;
-  requestedBy: string;
-}): Promise<PrintJobRecord> {
+export async function enqueuePrintJob(
+  input: {
+    jobType: string;
+    title: string;
+    orderId?: string;
+    orderNumber?: string;
+    departmentName?: string;
+    paperWidthMm?: number;
+    copies?: number;
+    htmlContent: string;
+    requestedBy: string;
+  },
+  branchId?: string
+): Promise<PrintJobRecord> {
+  const branchKey = resolveBranchKey(branchId);
   const allowedTypes: PrintJobType[] = ['customer_receipt', 'workshop_ticket', 'test_print'];
   const jobType: PrintJobType = allowedTypes.includes(input.jobType as PrintJobType)
     ? (input.jobType as PrintJobType)
@@ -394,9 +427,9 @@ export async function enqueuePrintJob(input: {
     : undefined;
   const requestedBy = String(input.requestedBy || 'کاربر سامانه').trim().slice(0, 100);
 
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rows } = await pgPool.query(
       `INSERT INTO app_print_jobs
         (id, station_id, job_type, title, order_id, order_number, department_name, paper_width_mm, copies, html_content, status, attempts, requested_by)
@@ -435,19 +468,21 @@ export async function enqueuePrintJob(input: {
     requestedBy,
     createdAt,
   };
+  const memJobs = getMemJobs(branchKey);
   memJobs.unshift(job);
   if (memJobs.length > MAX_IN_MEMORY_JOBS) {
-    memJobs = memJobs.slice(0, MAX_IN_MEMORY_JOBS);
+    memJobsByBranch.set(branchKey, memJobs.slice(0, MAX_IN_MEMORY_JOBS));
   }
   const { htmlContent: _omit, ...summary } = job;
   return summary;
 }
 
-export async function listPrintJobs(limit = 50): Promise<PrintJobRecord[]> {
+export async function listPrintJobs(limit = 50, branchId?: string): Promise<PrintJobRecord[]> {
+  const branchKey = resolveBranchKey(branchId);
   const safeLimit = Math.min(150, Math.max(1, Math.floor(Number(limit) || 50)));
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rows } = await pgPool.query(
       `SELECT id, station_id, job_type, title, order_id, order_number, department_name,
               paper_width_mm, copies, status, attempts, error_message, requested_by,
@@ -461,14 +496,18 @@ export async function listPrintJobs(limit = 50): Promise<PrintJobRecord[]> {
     return rows.map((r) => mapPgJobRow(r, false));
   }
 
-  return memJobs.slice(0, safeLimit).map(({ htmlContent: _omit, ...rest }) => rest);
+  return getMemJobs(branchKey).slice(0, safeLimit).map(({ htmlContent: _omit, ...rest }) => rest);
 }
 
-export async function claimNextPrintJob(stationId = DEFAULT_STATION_ID): Promise<PrintJobRecord | null> {
+export async function claimNextPrintJob(
+  stationId = DEFAULT_STATION_ID,
+  branchId?: string
+): Promise<PrintJobRecord | null> {
+  const branchKey = resolveBranchKey(branchId);
   const safeStation = String(stationId || DEFAULT_STATION_ID).trim().slice(0, 64) || DEFAULT_STATION_ID;
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     // Recover any stale printing jobs (e.g., POS rebooted mid-print)
     await pgPool.query(
       `UPDATE app_print_jobs
@@ -504,6 +543,7 @@ export async function claimNextPrintJob(stationId = DEFAULT_STATION_ID): Promise
   }
 
   // In-memory recovery + FIFO claim
+  const memJobs = getMemJobs(branchKey);
   const now = Date.now();
   for (const j of memJobs) {
     if (
@@ -536,8 +576,10 @@ export async function claimNextPrintJob(stationId = DEFAULT_STATION_ID): Promise
 
 export async function completePrintJob(
   jobId: string,
-  result: { ok: boolean; errorMessage?: string }
+  result: { ok: boolean; errorMessage?: string },
+  branchId?: string
 ): Promise<PrintJobRecord | null> {
+  const branchKey = resolveBranchKey(branchId);
   const safeId = String(jobId || '').trim().slice(0, 100);
   if (!safeId) return null;
   const nextStatus: PrintJobStatus = result.ok ? 'printed' : 'failed';
@@ -545,9 +587,9 @@ export async function completePrintJob(
     ? null
     : String(result.errorMessage || 'خطای نامشخص در چاپگر صندوق').trim().slice(0, 400);
 
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rows } = await pgPool.query(
       `UPDATE app_print_jobs
        SET status = $2,
@@ -561,7 +603,7 @@ export async function completePrintJob(
     return mapPgJobRow(rows[0], false);
   }
 
-  const found = memJobs.find((j) => j.id === safeId);
+  const found = getMemJobs(branchKey).find((j) => j.id === safeId);
   if (!found) return null;
   found.status = nextStatus;
   found.errorMessage = errMsg || undefined;
@@ -572,13 +614,14 @@ export async function completePrintJob(
   return summary;
 }
 
-export async function retryPrintJob(jobId: string): Promise<PrintJobRecord | null> {
+export async function retryPrintJob(jobId: string, branchId?: string): Promise<PrintJobRecord | null> {
+  const branchKey = resolveBranchKey(branchId);
   const safeId = String(jobId || '').trim().slice(0, 100);
   if (!safeId) return null;
 
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rows } = await pgPool.query(
       `UPDATE app_print_jobs
        SET status = 'pending',
@@ -593,7 +636,7 @@ export async function retryPrintJob(jobId: string): Promise<PrintJobRecord | nul
     return mapPgJobRow(rows[0], false);
   }
 
-  const found = memJobs.find((j) => j.id === safeId);
+  const found = getMemJobs(branchKey).find((j) => j.id === safeId);
   if (!found) return null;
   found.status = 'pending';
   found.attempts = 0;
@@ -603,26 +646,29 @@ export async function retryPrintJob(jobId: string): Promise<PrintJobRecord | nul
   return summary;
 }
 
-export async function cancelPrintJob(jobId: string): Promise<boolean> {
+export async function cancelPrintJob(jobId: string, branchId?: string): Promise<boolean> {
+  const branchKey = resolveBranchKey(branchId);
   const safeId = String(jobId || '').trim().slice(0, 100);
   if (!safeId) return false;
 
-  const pgPool = getPgPool();
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rowCount } = await pgPool.query('DELETE FROM app_print_jobs WHERE id = $1', [safeId]);
     return Number(rowCount || 0) > 0;
   }
 
+  const memJobs = getMemJobs(branchKey);
   const before = memJobs.length;
-  memJobs = memJobs.filter((j) => j.id !== safeId);
-  return memJobs.length < before;
+  memJobsByBranch.set(branchKey, memJobs.filter((j) => j.id !== safeId));
+  return getMemJobs(branchKey).length < before;
 }
 
-export async function clearFinishedPrintJobs(): Promise<number> {
-  const pgPool = getPgPool();
+export async function clearFinishedPrintJobs(branchId?: string): Promise<number> {
+  const branchKey = resolveBranchKey(branchId);
+  const pgPool = await getPgPoolAsync(branchKey);
   if (pgPool) {
-    await ensurePrintJobsTableInPg();
+    await ensurePrintJobsTableInPg(branchKey);
     const { rowCount } = await pgPool.query(
       `DELETE FROM app_print_jobs
        WHERE station_id = $1 AND status IN ('printed', 'cancelled', 'failed')`,
@@ -631,9 +677,13 @@ export async function clearFinishedPrintJobs(): Promise<number> {
     return Number(rowCount || 0);
   }
 
+  const memJobs = getMemJobs(branchKey);
   const before = memJobs.length;
-  memJobs = memJobs.filter((j) => j.status === 'pending' || j.status === 'printing');
-  return before - memJobs.length;
+  memJobsByBranch.set(
+    branchKey,
+    memJobs.filter((j) => j.status === 'pending' || j.status === 'printing')
+  );
+  return before - getMemJobs(branchKey).length;
 }
 
 export function buildTestPrintHtml(): string {

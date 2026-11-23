@@ -30,6 +30,7 @@ import {
 } from '../services/printQueueService';
 import PrintQueueModal from './PrintQueueModal';
 import ShamsiDatePicker from './ShamsiDatePicker';
+import { nextSimpleId } from '../utils/simpleId';
 import {
   Plus,
   Trash2,
@@ -74,7 +75,6 @@ interface CustomerProductionOrdersProps {
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
   currentUserName?: string;
-  mode?: 'full' | 'workshop_only';
 }
 
 const DEFAULT_ORDER_PURPOSES: string[] = [
@@ -187,8 +187,10 @@ function deriveOverallOrderStatus(items: CustomerProductionOrderItem[], currentS
   return 'registered';
 }
 
+let cplLineCounter = 0;
 function generateLineId(): string {
-  return `cpl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  cplLineCounter += 1;
+  return `cpl-${cplLineCounter}`;
 }
 
 // Client-side Canvas image compression so sample photos stay crisp yet lightweight for VPS PostgreSQL storage
@@ -454,10 +456,8 @@ export default function CustomerProductionOrders({
   db,
   onUpdateDb,
   activePeriodId,
-  currentUserName = '',
-  mode = 'full'
+  currentUserName = ''
 }: CustomerProductionOrdersProps) {
-  const isWorkshopOnly = mode === 'workshop_only';
   const todayJalali = useMemo(() => getTodayJalali(), []);
   const tomorrowJalali = useMemo(() => addDaysToJalaliSimple(todayJalali, 1), [todayJalali]);
   const next7DaysJalali = useMemo(() => addDaysToJalaliSimple(todayJalali, 7), [todayJalali]);
@@ -496,9 +496,9 @@ export default function CustomerProductionOrders({
     };
   }, []);
 
-  // ==================== MASTER DATA ====================
+  // ==================== MASTER DATA (STRICTLY ISOLATED BY PERIOD) ====================
   const periodDepartments = useMemo(() => {
-    const depts = (db.departments || []).filter(d => !d.periodId || d.periodId === activePeriodId);
+    const depts = (db.departments || []).filter(d => d.periodId === activePeriodId);
     if (depts.length > 0) {
       return depts.map(d => ({ id: d.id, name: d.name }));
     }
@@ -513,11 +513,13 @@ export default function CustomerProductionOrders({
 
   const categoryMap = useMemo(() => {
     const map: Record<string, { name: string; departmentId?: string }> = {};
-    (db.productCategories || []).forEach(c => {
-      map[c.id] = { name: c.name, departmentId: c.departmentId };
-    });
+    (db.productCategories || [])
+      .filter(c => c.periodId === activePeriodId)
+      .forEach(c => {
+        map[c.id] = { name: c.name, departmentId: c.departmentId };
+      });
     return map;
-  }, [db.productCategories]);
+  }, [db.productCategories, activePeriodId]);
 
   const departmentMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -528,30 +530,24 @@ export default function CustomerProductionOrders({
   }, [periodDepartments]);
 
   const periodCustomers = useMemo(() => {
-    return (db.customers || []).filter(c => (!c.periodId || c.periodId === activePeriodId) && c.isActive !== false);
+    return (db.customers || []).filter(c => c.periodId === activePeriodId && c.isActive !== false);
   }, [db.customers, activePeriodId]);
 
   const customerCategories = useMemo(() => {
-    const cats = (db.customerCategories || []).filter(c => !c.periodId || c.periodId === activePeriodId);
-    if (cats.length > 0) return cats;
-    return [
-      { id: 'cc-retail', name: 'مشتریان حضوری / خرده‌فروشی' },
-      { id: 'cc-vip', name: 'مشتریان VIP و مناسبتی' },
-      { id: 'cc-corporate', name: 'سازمانی و کافه‌ها' }
-    ];
+    return (db.customerCategories || []).filter(c => c.periodId === activePeriodId);
   }, [db.customerCategories, activePeriodId]);
 
   const bankAccounts = useMemo(
-    () => (db.bankAccounts || []).filter(b => b.isActive !== false),
-    [db.bankAccounts]
+    () => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId && b.isActive !== false),
+    [db.bankAccounts, activePeriodId]
   );
   const posTerminals = useMemo(
-    () => (db.posTerminals || []).filter(p => p.isActive !== false),
-    [db.posTerminals]
+    () => (db.posTerminals || []).filter(p => p.periodId === activePeriodId && p.isActive !== false),
+    [db.posTerminals, activePeriodId]
   );
   const cashDrawers = useMemo(
-    () => (db.cashDrawers || []).filter(c => c.isActive !== false),
-    [db.cashDrawers]
+    () => (db.cashDrawers || []).filter(c => c.periodId === activePeriodId && c.isActive !== false),
+    [db.cashDrawers, activePeriodId]
   );
 
   // ==================== ORDERS DATA ====================
@@ -830,9 +826,9 @@ export default function CustomerProductionOrders({
 
     const chosenCatId = quickCustCategoryId || customerCategories[0]?.id || '';
     const chosenCatName = customerCategories.find(c => c.id === chosenCatId)?.name || '';
-    const existingCount = (db.customers || []).length;
+    const existingCount = periodCustomers.length;
     const newCust: Customer = {
-      id: `cust-${Date.now()}`,
+      id: nextSimpleId(db.customers || [], 'cust'),
       periodId: activePeriodId,
       code: `C-${101 + existingCount}`,
       name: quickCustName.trim(),
@@ -1017,11 +1013,11 @@ export default function CustomerProductionOrders({
     let updatedReceipts = db.treasuryReceipts || [];
 
     if (postToTreasury && prepaymentAmount > 0 && !linkedReceiptId) {
-      const receiptSeq = String(updatedReceipts.length + 1).padStart(3, '0');
+      const receiptSeq = String(updatedReceipts.filter(r => r.periodId === activePeriodId).length + 1).padStart(3, '0');
       const newReceiptNo = `REC-PO-${receiptSeq}`;
       const nowTime = new Date().toTimeString().slice(0, 5);
       const newReceipt: TreasuryReceipt = {
-        id: `trec-${Date.now()}`,
+        id: nextSimpleId(updatedReceipts, 'trec'),
         periodId: activePeriodId,
         receiptNo: newReceiptNo,
         date: orderDate || todayJalali,
@@ -1054,7 +1050,7 @@ export default function CustomerProductionOrders({
     const computedStatus = deriveOverallOrderStatus(sanitizedItems, existingEditing?.status);
 
     const savedOrder: CustomerProductionOrder = {
-      id: editingOrderId || `cpo-${Date.now()}`,
+      id: editingOrderId || nextSimpleId(existingOrders, 'cpo'),
       orderNumber,
       periodId: activePeriodId,
       customerId: selectedCustomerId || undefined,
@@ -1634,12 +1630,10 @@ export default function CustomerProductionOrders({
           </div>
           <div>
             <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white tracking-tight">
-              {isWorkshopOnly ? 'کارتابل سفارشات دپارتمان‌های تولید' : 'سفارشات تولید مشتریان و کارتابل دپارتمان‌ها'}
+              سفارشات تولید مشتریان و کارتابل دپارتمان‌ها
             </h2>
             <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              {isWorkshopOnly
-                ? 'پیگیری وضعیت تولید دپارتمان‌ها، مشاهده عکس نمونه و متن نوشته روی محصول و چاپ برگه کارگاه (ثبت سفارش جدید از منوی مشتریان)'
-                : 'ثبت سفارش اختصاصی مشتریان (کیک، نان، شیرینی، فینگرفود) با عکس نمونه، جمله روی محصول، هدف سفارش، بیعانه و ارسال به دپارتمان تولید'}
+              ثبت سفارش اختصاصی مشتریان (کیک، نان، شیرینی، فینگرفود) با عکس نمونه، جمله روی محصول، هدف سفارش، بیعانه و ارسال به دپارتمان تولید
             </p>
           </div>
         </div>
@@ -1665,29 +1659,27 @@ export default function CustomerProductionOrders({
             )}
           </button>
 
-          {!isWorkshopOnly && (
-            viewMode === 'form' ? (
-              <button
-                type="button"
-                onClick={() => {
-                  resetForm();
-                  setViewMode('board');
-                }}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <ClipboardList className="h-4 w-4" />
-                <span>بازگشت به لیست و کارتابل سفارش‌ها</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={openNewOrderForm}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
-              >
-                <Plus className="h-4 w-4 shrink-0" />
-                <span>ثبت سفارش تولید جدید</span>
-              </button>
-            )
+          {viewMode === 'form' ? (
+            <button
+              type="button"
+              onClick={() => {
+                resetForm();
+                setViewMode('board');
+              }}
+              className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <ClipboardList className="h-4 w-4" />
+              <span>بازگشت به لیست و کارتابل سفارش‌ها</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={openNewOrderForm}
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
+            >
+              <Plus className="h-4 w-4 shrink-0" />
+              <span>ثبت سفارش تولید جدید</span>
+            </button>
           )}
         </div>
       </div>
@@ -2054,26 +2046,22 @@ export default function CustomerProductionOrders({
                             <Monitor className="h-3.5 w-3.5" />
                           </button>
                         </div>
-                        {!isWorkshopOnly && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => openEditOrderForm(order)}
-                              className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 hover:bg-sky-600 hover:text-white cursor-pointer transition-colors"
-                              title="ویرایش سفارش"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeleteTargetOrder(order)}
-                              className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white cursor-pointer transition-colors"
-                              title="حذف سفارش"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => openEditOrderForm(order)}
+                          className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 hover:bg-sky-600 hover:text-white cursor-pointer transition-colors"
+                          title="ویرایش سفارش"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTargetOrder(order)}
+                          className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white cursor-pointer transition-colors"
+                          title="حذف سفارش"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </div>
 

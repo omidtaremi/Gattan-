@@ -16,6 +16,7 @@ import {
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate, numberToWordsPersian
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
 
 interface PaymentsTabProps {
   db: AppDatabase;
@@ -78,15 +79,15 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
   const [payeeName, setPayeeName] = useState('');
 
   const payments = useMemo(() => {
-    return db.treasuryPayments || [];
-  }, [db.treasuryPayments]);
+    return (db.treasuryPayments || []).filter(p => p.periodId === activePeriodId);
+  }, [db.treasuryPayments, activePeriodId]);
 
-  const bankAccounts = useMemo(() => db.bankAccounts || [], [db.bankAccounts]);
-  const cashDrawers = useMemo(() => db.cashDrawers || [], [db.cashDrawers]);
-  const suppliers = useMemo(() => db.suppliers || [], [db.suppliers]);
-  const personnelList = useMemo(() => db.personnel || [], [db.personnel]);
-  const chequeBooks = useMemo(() => db.chequeBooks || [], [db.chequeBooks]);
-  const chequeLeaves = useMemo(() => db.chequeLeaves || [], [db.chequeLeaves]);
+  const bankAccounts = useMemo(() => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId), [db.bankAccounts, activePeriodId]);
+  const cashDrawers = useMemo(() => (db.cashDrawers || []).filter(d => d.periodId === activePeriodId), [db.cashDrawers, activePeriodId]);
+  const suppliers = useMemo(() => (db.suppliers || []).filter(s => s.periodId === activePeriodId), [db.suppliers, activePeriodId]);
+  const personnelList = useMemo(() => (db.personnel || []).filter(p => p.periodId === activePeriodId), [db.personnel, activePeriodId]);
+  const chequeBooks = useMemo(() => (db.chequeBooks || []).filter(b => b.periodId === activePeriodId), [db.chequeBooks, activePeriodId]);
+  const chequeLeaves = useMemo(() => (db.chequeLeaves || []).filter(l => l.periodId === activePeriodId), [db.chequeLeaves, activePeriodId]);
 
   // Cheque Maps & Available Leaves for Selection
   const bankMap = useMemo(() => {
@@ -207,7 +208,8 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
       alert('لطفاً ابتدا از تب حساب‌های بانکی، حداقل یک حساب جاری تعریف نمایید.');
       return;
     }
-    const newBookId = `chk_book_${Date.now()}`;
+    const newBookId = nextSimpleId(db.chequeBooks || [], getPrefixForCollection('chequeBooks'));
+    const nextLeafId = createSimpleIdGenerator(db.chequeLeaves || [], getPrefixForCollection('chequeLeaves'));
     const newBook: ChequeBook = {
       id: newBookId,
       periodId: activePeriodId,
@@ -226,7 +228,8 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
     const newLeaves: ChequeLeaf[] = [];
     for (let i = 1001; i <= 1025; i++) {
       newLeaves.push({
-        id: `leaf_${newBookId}_${i}`,
+        id: nextLeafId(),
+        periodId: activePeriodId,
         chequeBookId: newBookId,
         bankAccountId: targetBank.id,
         leafNumber: i,
@@ -374,7 +377,7 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
 
     const currentList = db.treasuryPayments || [];
     let updatedList: TreasuryPayment[];
-    let updatedLeaves = [...chequeLeaves];
+    let updatedLeaves = [...(db.chequeLeaves || [])];
 
     const currentLeaf = chequeLeaves.find(l => l.id === chequeLeafId);
     const selectedBook = bookMap.get(chequeBookId || currentLeaf?.chequeBookId || '');
@@ -395,7 +398,7 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
       };
     }
 
-    const paymentId = editingPayment ? editingPayment.id : `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const paymentId = editingPayment ? editingPayment.id : nextSimpleId(currentList, getPrefixForCollection('treasuryPayments'));
     const paymentObj: TreasuryPayment = {
       id: paymentId,
       periodId: activePeriodId,
@@ -433,6 +436,7 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
           if (l.id === oldLeafId) {
             return {
               id: l.id,
+              periodId: l.periodId || activePeriodId,
               chequeBookId: l.chequeBookId,
               bankAccountId: l.bankAccountId,
               leafNumber: l.leafNumber,
@@ -500,6 +504,7 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
             ) {
               return {
                 id: l.id,
+                periodId: l.periodId || activePeriodId,
                 chequeBookId: l.chequeBookId,
                 bankAccountId: l.bankAccountId,
                 leafNumber: l.leafNumber,

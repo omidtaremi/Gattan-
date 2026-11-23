@@ -3,17 +3,28 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { 
+import {
   Period, Item, ItemCategory, Supplier, Product, ProductCategory, Department,
-  SalesPeriod, ProductSale, UnitConversion, ProductFormula, 
+  SalesPeriod, ProductSale, UnitConversion, ProductFormula,
   Personnel, PayrollPeriod, PayrollItem, PersonnelAllocation, PeriodOverhead, ProcurementOrder, StockCountAudit, StockCount,
   PurchaseInvoice, Shift, ShiftAssignment, AppDatabase, ProductionSection,
   MonthlyWorkdaySetting, PayrollCalculationRules, OfficialHoliday,
-  Customer, CustomerCategory, UserRoleDefinition
+  Customer, CustomerCategory, UserRoleDefinition, User, BranchDefinition
 } from './types';
 import { DEFAULT_USER_ROLES, normalizePermissions } from './shared/rbac';
+import {
+  DEFAULT_BRANCHES,
+  DEFAULT_BRANCH_ID,
+  buildSafeBranchDbName,
+  normalizeAllowedBranches,
+  normalizeBranchSlug,
+} from './shared/branches';
 import { pushToSqlServer, pullFromSqlServer, testSqlServerConnection } from './services/sqlServerService';
-import { saveToIndexedDB, loadFromIndexedDB } from './utils/idbStorage';
+import {
+  saveToIndexedDB,
+  loadFromIndexedDB,
+  deleteBranchFromIndexedDB,
+} from './utils/idbStorage';
 import {
   getDefaultYearMonthFromPeriod,
   parseShamsiYearMonth,
@@ -21,44 +32,287 @@ import {
   getProductFormulaKey,
   getMaterialFormulaKey
 } from './utils/persianUtils';
+import {
+  ISOLATED_ARRAY_COLLECTIONS,
+  DEFAULT_PAYROLL_CALCULATION_RULES,
+  createDefaultBarcodeSettings,
+  migrateLegacyKeysAndPeriodIsolation,
+} from './utils/periodIsolation';
+import { createSimpleIdGenerator, getPrefixForCollection } from './utils/simpleId';
 
 const STORAGE_KEY = 'gatan_system_db';
+const ACTIVE_BRANCH_STORAGE_KEY = 'gatan_active_branch_id';
+const LOCAL_BRANCHES_STORAGE_KEY = 'gatan_local_branches_v1';
+const LOCAL_SHARED_AUTH_KEY = 'gatan_local_shared_auth_v1';
+
+let activeBranchIdCache: string = DEFAULT_BRANCH_ID;
+
+export function getActiveBranchId(): string {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const saved = (window.localStorage.getItem(ACTIVE_BRANCH_STORAGE_KEY) || '').trim();
+      if (saved) {
+        activeBranchIdCache = saved;
+        return saved;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return activeBranchIdCache || DEFAULT_BRANCH_ID;
+}
+
+export function setActiveBranchId(branchId: string): void {
+  const clean = String(branchId || '').trim() || DEFAULT_BRANCH_ID;
+  activeBranchIdCache = clean;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(ACTIVE_BRANCH_STORAGE_KEY, clean);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function getLocalBranches(): BranchDefinition[] {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(LOCAL_BRANCHES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const hasDefault = parsed.some((b: any) => b && b.id === DEFAULT_BRANCH_ID);
+          return hasDefault ? parsed : [DEFAULT_BRANCHES[0], ...parsed];
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_BRANCHES.map((b) => ({ ...b }));
+}
+
+export function saveLocalBranches(branches: BranchDefinition[]): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(LOCAL_BRANCHES_STORAGE_KEY, JSON.stringify(branches));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function createLocalBranch(input: {
+  name: string;
+  slug?: string;
+  dbName?: string;
+  address?: string;
+  phone?: string;
+}): BranchDefinition {
+  const cleanName = String(input.name || '').trim();
+  if (!cleanName) throw new Error('نام شعبه الزامی است.');
+  const current = getLocalBranches();
+  let maxNum = 2;
+  const usedIds = new Set<string>();
+  const usedSlugs = new Set<string>();
+  const usedDbNames = new Set<string>();
+  for (const b of current) {
+    usedIds.add(b.id);
+    usedSlugs.add(b.slug);
+    usedDbNames.add(b.dbName);
+    const m = b.id.match(/^branch-(\d+)$/);
+    if (m) maxNum = Math.max(maxNum, Number(m[1]));
+  }
+  let seq = maxNum + 1;
+  let newId = `branch-${seq}`;
+  while (usedIds.has(newId)) {
+    seq++;
+    newId = `branch-${seq}`;
+  }
+  const baseSlug = normalizeBranchSlug(input.slug || '', newId);
+  let finalSlug = baseSlug;
+  let s = 2;
+  while (usedSlugs.has(finalSlug)) finalSlug = `${baseSlug}-${s++}`;
+  let finalDbName = String(input.dbName || '').trim().toLowerCase() || buildSafeBranchDbName(seq);
+  while (usedDbNames.has(finalDbName)) {
+    seq++;
+    finalDbName = buildSafeBranchDbName(seq);
+  }
+  const created: BranchDefinition = {
+    id: newId,
+    slug: finalSlug,
+    name: cleanName,
+    dbName: finalDbName,
+    isDefault: false,
+    isActive: true,
+    address: input.address ? String(input.address).trim() : undefined,
+    phone: input.phone ? String(input.phone).trim() : undefined,
+    createdAt: new Date().toISOString(),
+  };
+  saveLocalBranches([...current, created]);
+  return created;
+}
+
+export function updateLocalBranch(
+  branchId: string,
+  input: { name?: string; address?: string; phone?: string; isActive?: boolean }
+): BranchDefinition[] {
+  const current = getLocalBranches();
+  const next = current.map((b) => {
+    if (b.id !== branchId) return b;
+    return {
+      ...b,
+      name: input.name !== undefined ? String(input.name).trim() || b.name : b.name,
+      address: input.address !== undefined ? String(input.address).trim() || undefined : b.address,
+      phone: input.phone !== undefined ? String(input.phone).trim() || undefined : b.phone,
+      isActive: b.isDefault ? true : input.isActive !== undefined ? Boolean(input.isActive) : b.isActive,
+    };
+  });
+  saveLocalBranches(next);
+  return next;
+}
+
+export async function deleteLocalBranch(branchId: string): Promise<BranchDefinition[]> {
+  if (branchId === DEFAULT_BRANCH_ID) {
+    throw new Error('شعبه اصلی (مرکزی) قابل حذف نیست.');
+  }
+  const current = getLocalBranches();
+  const next = current.filter((b) => b.id !== branchId);
+  saveLocalBranches(next);
+  await deleteBranchFromIndexedDB(branchId);
+  try {
+    window.localStorage.removeItem(`gatan_branch_db_${branchId}`);
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+function loadSharedLocalAuth(): { users?: User[]; roles?: UserRoleDefinition[] } | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(LOCAL_SHARED_AUTH_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function saveSharedLocalAuth(users?: User[], roles?: UserRoleDefinition[]): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const existing = loadSharedLocalAuth() || {};
+      const next = {
+        users: Array.isArray(users) && users.length > 0 ? users : existing.users,
+        roles: Array.isArray(roles) && roles.length > 0 ? roles : existing.roles,
+      };
+      window.localStorage.setItem(LOCAL_SHARED_AUTH_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function createBlankBranchDatabase(
+  sharedUsers?: User[],
+  sharedRoles?: UserRoleDefinition[]
+): AppDatabase {
+  const base = getInitialDatabase();
+  const firstPeriod: Period = {
+    id: 'p-1',
+    name: 'دوره اول',
+    isActive: true,
+    startDate: '1405/01/01',
+    endDate: '1405/01/31',
+    createdAt: new Date().toISOString(),
+  };
+
+  const blank: any = {
+    ...base,
+    periods: [firstPeriod],
+    selectedPeriodId: 'p-1',
+    roles:
+      Array.isArray(sharedRoles) && sharedRoles.length > 0
+        ? sharedRoles
+        : base.roles,
+    users:
+      Array.isArray(sharedUsers) && sharedUsers.length > 0
+        ? sharedUsers
+        : base.users,
+    payrollRulesByPeriod: {
+      'p-1': { ...DEFAULT_PAYROLL_CALCULATION_RULES },
+    },
+    barcodeSettingsByPeriod: {
+      'p-1': createDefaultBarcodeSettings(),
+    },
+    digitalMenu: undefined,
+  };
+
+  for (const key of ISOLATED_ARRAY_COLLECTIONS) {
+    blank[key] = [];
+  }
+  blank.shifts = [];
+  blank.shiftAssignments = [];
+  blank.attendanceLogs = [];
+  blank.attendanceDailySummary = [];
+  blank.attendanceOverrides = [];
+  blank.monthlyWorkdaySettings = [];
+  blank.officialHolidays = [];
+  blank.productionPlanningOrders = [];
+  blank.syncLogs = [];
+
+  return sanitizeAndMergeDatabase(blank);
+}
+
+function getBranchLocalStorageKey(branchId?: string): string {
+  const clean = String(branchId || '').trim();
+  if (!clean || clean === DEFAULT_BRANCH_ID) return STORAGE_KEY;
+  return `gatan_branch_db_${clean}`;
+}
 
 const DEFAULT_CATEGORIES = ['نان', 'قنادی', 'کافه', 'فینگر فود', 'مشترک'];
 
 export function getInitialDatabase(): AppDatabase {
   const initialPeriods: Period[] = [
-    { id: '1405-01', name: 'دوره فروردین ۱۴۰۵', isActive: true, createdAt: '2026-03-21T00:00:00Z' },
-    { id: '1405-02', name: 'دوره اردیبهشت ۱۴۰۵', isActive: true, createdAt: '2026-04-21T00:00:00Z' }
+    { id: 'p-1', name: 'دوره فروردین ۱۴۰۵', isActive: true, startDate: '1405/01/01', endDate: '1405/01/31', createdAt: '2026-03-21T00:00:00Z' },
+    { id: 'p-2', name: 'دوره اردیبهشت ۱۴۰۵', isActive: true, startDate: '1405/02/01', endDate: '1405/02/31', createdAt: '2026-04-21T00:00:00Z' }
   ];
 
-  const defaultItemCategories: ItemCategory[] = [];
-  const defaultProductCategories: ProductCategory[] = [];
-  const defaultDepartments: Department[] = [];
+  // Only p-1 receives starter sample data; p-2 starts 100% blank to enforce strict period isolation.
+  const defaultItemCategories: ItemCategory[] = DEFAULT_CATEGORIES.map((cat, index) => ({
+    id: `icat-${index + 1}`,
+    periodId: 'p-1',
+    name: cat
+  }));
 
-  initialPeriods.forEach(p => {
-    DEFAULT_CATEGORIES.forEach((cat, index) => {
-      const catId = `${p.id}-cat-${index}`;
-      defaultItemCategories.push({ id: catId, periodId: p.id, name: cat });
-      defaultDepartments.push({
-        id: catId,
-        periodId: p.id,
-        name: cat,
-        isShared: cat === 'مشترک' || index === 4
-      });
-      defaultProductCategories.push({ id: catId, periodId: p.id, name: cat, departmentId: catId });
-    });
-  });
+  const defaultDepartments: Department[] = DEFAULT_CATEGORIES.map((cat, index) => ({
+    id: `dept-${index + 1}`,
+    periodId: 'p-1',
+    name: cat,
+    isShared: cat === 'مشترک' || index === 4
+  }));
 
-  // Seeds
+  const defaultProductCategories: ProductCategory[] = DEFAULT_CATEGORIES.map((cat, index) => ({
+    id: `pcat-${index + 1}`,
+    periodId: 'p-1',
+    name: cat,
+    departmentId: `dept-${index + 1}`
+  }));
+
+  // Seeds (all scoped strictly to p-1 with simple sequential IDs)
   const defaultItems: Item[] = [
     {
       id: 'item-1',
-      periodId: '1405-01',
+      periodId: 'p-1',
       code: 'R-101',
       accountId: '102001',
       name: 'آرد نول قنادی',
-      categoryId: '1405-01-cat-1', // قنادی
+      categoryId: 'icat-2', // قنادی
       unit: 'کیلویی',
       barcode: '6261012345678',
       packageType: 'گونی',
@@ -70,11 +324,11 @@ export function getInitialDatabase(): AppDatabase {
     },
     {
       id: 'item-2',
-      periodId: '1405-01',
+      periodId: 'p-1',
       code: 'R-102',
       accountId: '102002',
       name: 'شکر سفید دانه‌ریز',
-      categoryId: '1405-01-cat-4', // مشترک
+      categoryId: 'icat-5', // مشترک
       unit: 'کیلویی',
       barcode: '6261012345679',
       packageType: 'گونی',
@@ -86,11 +340,11 @@ export function getInitialDatabase(): AppDatabase {
     },
     {
       id: 'item-3',
-      periodId: '1405-01',
+      periodId: 'p-1',
       code: 'R-103',
       accountId: '102003',
       name: 'کره مارگارین سوئیسی',
-      categoryId: '1405-01-cat-1', // قنادی
+      categoryId: 'icat-2', // قنادی
       unit: 'کیلویی',
       barcode: '6261012345680',
       packageType: 'کارتن',
@@ -105,11 +359,11 @@ export function getInitialDatabase(): AppDatabase {
   const defaultProducts: Product[] = [
     {
       id: 'prod-1',
-      periodId: '1405-01',
+      periodId: 'p-1',
       code: 'P-501',
       accountId: '201001',
       name: 'کروسان شکلاتی اعلا',
-      categoryId: '1405-01-cat-1', // قنادی
+      categoryId: 'pcat-2', // قنادی
       unit: 'عدد',
       barcode: '6262012345001',
       packageType: 'سلفون',
@@ -121,11 +375,11 @@ export function getInitialDatabase(): AppDatabase {
     },
     {
       id: 'prod-2',
-      periodId: '1405-01',
+      periodId: 'p-1',
       code: 'P-502',
       accountId: '201002',
       name: 'فرانسوی تارت سیب',
-      categoryId: '1405-01-cat-1', // قنادی
+      categoryId: 'pcat-2', // قنادی
       unit: 'عدد',
       barcode: '6262012345002',
       packageType: 'شیرینک',
@@ -140,7 +394,7 @@ export function getInitialDatabase(): AppDatabase {
   const defaultSuppliers: Supplier[] = [
     {
       id: 'sup-1',
-      periodId: '1405-01',
+      periodId: 'p-1',
       name: 'تولیدی صنایع غذایی شاهین',
       phone: '۰۲۱۶۶۵۵۴۴۳۳',
       address: 'تهران، شهرک صنعتی بهارستان، خیابان گلستان ۴',
@@ -156,7 +410,7 @@ export function getInitialDatabase(): AppDatabase {
   const defaultPersonnel: Personnel[] = [
     {
       id: 'emp-1',
-      periodId: '1405-01',
+      periodId: 'p-1',
       employeeCode: '1001',
       accountCode: '302001',
       nationalId: '0012345678',
@@ -200,30 +454,32 @@ export function getInitialDatabase(): AppDatabase {
   ];
 
   const defaultUnitsOfMeasurement = [
-    { id: 'unit-1', name: 'کیلوگرم', symbol: 'kg', description: 'واحد سنجش وزنی اصلی انبار', isActive: true },
-    { id: 'unit-2', name: 'عدد', symbol: 'pcs', description: 'واحد شمارش عددی محصولات و کالاها', isActive: true },
-    { id: 'unit-3', name: 'لیتر', symbol: 'L', description: 'واحد سنجش حجم مایعات روغن و اسانس', isActive: true },
-    { id: 'unit-4', name: 'بسته', symbol: 'pack', description: 'بسته‌بندی‌های چندتایی و پک', isActive: true },
-    { id: 'unit-5', name: 'گرم', symbol: 'g', description: 'واحد مصرفی جزئی فرمولاسیون تولید', isActive: true },
-    { id: 'unit-6', name: 'متر', symbol: 'm', description: 'طول نایلون و لفاف', isActive: true },
-    { id: 'unit-7', name: 'کارتن', symbol: 'box', description: 'کارتن‌های مادر تحویلی', isActive: true },
-    { id: 'unit-8', name: 'گونی', symbol: 'sack', description: 'گونی و کیسه مواد اولیه خام', isActive: true }
+    { id: 'unit-1', periodId: 'p-1', name: 'کیلوگرم', symbol: 'kg', description: 'واحد سنجش وزنی اصلی انبار', isActive: true },
+    { id: 'unit-2', periodId: 'p-1', name: 'عدد', symbol: 'pcs', description: 'واحد شمارش عددی محصولات و کالاها', isActive: true },
+    { id: 'unit-3', periodId: 'p-1', name: 'لیتر', symbol: 'L', description: 'واحد سنجش حجم مایعات روغن و اسانس', isActive: true },
+    { id: 'unit-4', periodId: 'p-1', name: 'بسته', symbol: 'pack', description: 'بسته‌بندی‌های چندتایی و پک', isActive: true },
+    { id: 'unit-5', periodId: 'p-1', name: 'گرم', symbol: 'g', description: 'واحد مصرفی جزئی فرمولاسیون تولید', isActive: true },
+    { id: 'unit-6', periodId: 'p-1', name: 'متر', symbol: 'm', description: 'طول نایلون و لفاف', isActive: true },
+    { id: 'unit-7', periodId: 'p-1', name: 'کارتن', symbol: 'box', description: 'کارتن‌های مادر تحویلی', isActive: true },
+    { id: 'unit-8', periodId: 'p-1', name: 'گونی', symbol: 'sack', description: 'گونی و کیسه مواد اولیه خام', isActive: true }
   ];
 
   const defaultPackagingTypes = [
-    { id: 'pkg-1', name: 'سلفون', code: 'PKG-SLF', tareWeightGrams: 5, defaultQtyPerPackage: 1, description: 'پوشش سلفونی تک‌عددی شفاف', isActive: true },
-    { id: 'pkg-2', name: 'شیرینک', code: 'PKG-SHR', tareWeightGrams: 12, defaultQtyPerPackage: 6, description: 'پک شیرینک حرارتی چندتایی', isActive: true },
-    { id: 'pkg-3', name: 'لانچ باکس', code: 'PKG-LNC', tareWeightGrams: 45, defaultQtyPerPackage: 1, description: 'جعبه مقوایی لانچ باکس پذیرایی', isActive: true },
-    { id: 'pkg-4', name: 'جعبه', code: 'PKG-[#fafafa]', tareWeightGrams: 80, defaultQtyPerPackage: 12, description: 'جعبه کادویی مقوایی ۲۴ سانتی', isActive: true },
-    { id: 'pkg-5', name: 'کارتن', code: 'PKG-CRT', tareWeightGrams: 350, defaultQtyPerPackage: 24, description: 'کارتن ۵ لایه صادراتی', isActive: true },
-    { id: 'pkg-6', name: 'وکیوم', code: 'PKG-VAC', tareWeightGrams: 15, defaultQtyPerPackage: 1, description: 'بسته‌بندی وکیوم خالات گاز محافظ', isActive: true },
-    { id: 'pkg-7', name: 'پت', code: 'PKG-PET', tareWeightGrams: 25, defaultQtyPerPackage: 1, description: 'ظروف شفاف پت درب‌دار', isActive: true },
-    { id: 'pkg-8', name: 'نایلون', code: 'PKG-NYL', tareWeightGrams: 8, defaultQtyPerPackage: 1, description: 'کیسه نایلونی دسته‌دار یا زیپ‌کیپ', isActive: true }
+    { id: 'pkg-1', periodId: 'p-1', name: 'سلفون', code: 'PKG-SLF', tareWeightGrams: 5, defaultQtyPerPackage: 1, description: 'پوشش سلفونی تک‌عددی شفاف', isActive: true },
+    { id: 'pkg-2', periodId: 'p-1', name: 'شیرینک', code: 'PKG-SHR', tareWeightGrams: 12, defaultQtyPerPackage: 6, description: 'پک شیرینک حرارتی چندتایی', isActive: true },
+    { id: 'pkg-3', periodId: 'p-1', name: 'لانچ باکس', code: 'PKG-LNC', tareWeightGrams: 45, defaultQtyPerPackage: 1, description: 'جعبه مقوایی لانچ باکس پذیرایی', isActive: true },
+    { id: 'pkg-4', periodId: 'p-1', name: 'جعبه', code: 'PKG-BOX', tareWeightGrams: 80, defaultQtyPerPackage: 12, description: 'جعبه کادویی مقوایی ۲۴ سانتی', isActive: true },
+    { id: 'pkg-5', periodId: 'p-1', name: 'کارتن', code: 'PKG-CRT', tareWeightGrams: 350, defaultQtyPerPackage: 24, description: 'کارتن ۵ لایه صادراتی', isActive: true },
+    { id: 'pkg-6', periodId: 'p-1', name: 'وکیوم', code: 'PKG-VAC', tareWeightGrams: 15, defaultQtyPerPackage: 1, description: 'بسته‌بندی وکیوم خالات گاز محافظ', isActive: true },
+    { id: 'pkg-7', periodId: 'p-1', name: 'پت', code: 'PKG-PET', tareWeightGrams: 25, defaultQtyPerPackage: 1, description: 'ظروف شفاف پت درب‌دار', isActive: true },
+    { id: 'pkg-8', periodId: 'p-1', name: 'نایلون', code: 'PKG-NYL', tareWeightGrams: 8, defaultQtyPerPackage: 1, description: 'کیسه نایلونی دسته‌دار یا زیپ‌کیپ', isActive: true }
   ];
+
+  const defaultBarcode = createDefaultBarcodeSettings();
 
   return {
     periods: initialPeriods,
-    selectedPeriodId: '1405-01',
+    selectedPeriodId: 'p-1',
     itemCategories: defaultItemCategories,
     items: defaultItems,
     suppliers: defaultSuppliers,
@@ -231,48 +487,48 @@ export function getInitialDatabase(): AppDatabase {
     departments: defaultDepartments,
     products: defaultProducts,
     salesPeriods: [
-      { id: 'sp-1', periodId: '1405-01', name: 'فروردین ماه', startDate: '1405/01/01', endDate: '1405/01/31' }
+      { id: 'sp-1', periodId: 'p-1', name: 'فروردین ماه', startDate: '1405/01/01', endDate: '1405/01/31' }
     ],
     productSales: [
-      { id: 'sale-1', salesPeriodId: 'sp-1', periodId: '1405-01', productId: 'prod-1', qtySold: 1200, discount: 2000000, preDiscountAmount: 780000000, netSalesAmount: 778000000 },
-      { id: 'sale-2', salesPeriodId: 'sp-1', periodId: '1405-01', productId: 'prod-2', qtySold: 450, discount: 0, preDiscountAmount: 540000000, netSalesAmount: 540000000 }
+      { id: 'sale-1', salesPeriodId: 'sp-1', periodId: 'p-1', productId: 'prod-1', qtySold: 1200, discount: 2000000, preDiscountAmount: 780000000, netSalesAmount: 778000000 },
+      { id: 'sale-2', salesPeriodId: 'sp-1', periodId: 'p-1', productId: 'prod-2', qtySold: 450, discount: 0, preDiscountAmount: 540000000, netSalesAmount: 540000000 }
     ],
     unitConversions: [
-      { id: 'conv-1', periodId: '1405-01', rawMaterialId: 'item-1', purchaseUnit: 'کیلویی', consumptionUnit: 'گرم', factor: 1000 }
+      { id: 'conv-1', periodId: 'p-1', rawMaterialId: 'item-1', purchaseUnit: 'کیلویی', consumptionUnit: 'گرم', factor: 1000 }
     ],
     productFormulas: [
       {
         id: 'form-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         productId: '201001',
         name: 'فرمول اصلی',
         isActive: true,
         ingredients: [
-          { rawMaterialId: '102001', quantity: 90 }, // 90g out of 1000g (factor)
-          { rawMaterialId: '102002', quantity: 15 }  // 15g out of 1000g
+          { rawMaterialId: '102001', quantity: 90 },
+          { rawMaterialId: '102002', quantity: 15 }
         ]
       }
     ],
     personnel: defaultPersonnel,
     payrollPeriods: [
-      { id: 'pp-1', periodId: '1405-01', title: 'حقوق فروردین ماه پرسنل', dateRange: '01 الی ۳۱ فروردین' }
+      { id: 'pp-1', periodId: 'p-1', title: 'حقوق فروردین ماه پرسنل', dateRange: '01 الی ۳۱ فروردین' }
     ],
     payrollItems: [
-      { id: 'pi-1', payrollPeriodId: 'pp-1', periodId: '1405-01', employeeCode: '1001', payableAmount: 135000000, employerPensionShare: 21000000, employerUnemploymentShare: 3150000, totalPayrollCost: 159150000 }
+      { id: 'pi-1', payrollPeriodId: 'pp-1', periodId: 'p-1', employeeCode: '1001', payableAmount: 135000000, employerPensionShare: 21000000, employerUnemploymentShare: 3150000, totalPayrollCost: 159150000 }
     ],
     personnelAllocations: [
-      { id: 'all-1', periodId: '1405-01', employeeCode: '1001', departmentCategoryId: '1405-01-cat-1', salaryShare: 135000000 }
+      { id: 'alloc-1', periodId: 'p-1', employeeCode: '1001', departmentCategoryId: 'dept-2', salaryShare: 135000000 }
     ],
     periodOverheads: [
-      { id: 'oh-1', periodId: '1405-01', operational: 180000000, distributionSales: 45000000, financial: 12000000, administrative: 64000000, returnsOfExpense: 11000000 }
+      { id: 'oh-1', periodId: 'p-1', operational: 180000000, distributionSales: 45000000, financial: 12000000, administrative: 64000000, returnsOfExpense: 11000000 }
     ],
     procurementOrders: [],
     stockCountAudits: [
-      { id: 'aud-1', periodId: '1405-01', title: 'انبارگردانی پایان فروردین ۱۴۰۵', date: '1405/01/30' }
+      { id: 'aud-1', periodId: 'p-1', title: 'انبارگردانی پایان فروردین ۱۴۰۵', date: '1405/01/30' }
     ],
     stockCounts: [
-      { id: 'sc-1', auditId: 'aud-1', periodId: '1405-01', itemId: 'item-1', fullPackages: 15, looseQty: 10, totalCalculatedQty: 610, value: 231800000 },
-      { id: 'sc-2', auditId: 'aud-1', periodId: '1405-01', itemId: 'item-2', fullPackages: 5, looseQty: 12, totalCalculatedQty: 262, value: 110040000 }
+      { id: 'sc-1', auditId: 'aud-1', periodId: 'p-1', itemId: 'item-1', fullPackages: 15, looseQty: 10, totalCalculatedQty: 610, value: 231800000 },
+      { id: 'sc-2', auditId: 'aud-1', periodId: 'p-1', itemId: 'item-2', fullPackages: 5, looseQty: 12, totalCalculatedQty: 262, value: 110040000 }
     ],
     purchaseInvoices: [],
     dailyProductionSegments: [],
@@ -280,12 +536,12 @@ export function getInitialDatabase(): AppDatabase {
     shiftAssignments: [],
     approvedMismatches: [],
     productionSections: [
-      { id: 'sec-1', name: 'آماده‌سازی مواد اولیه و خمیرگیر', minStaff: 2 },
-      { id: 'sec-2', name: 'بخش پخت و تنور', minStaff: 1 },
-      { id: 'sec-3', name: 'خط تزیین و خنک‌کاری', minStaff: 1 },
-      { id: 'sec-4', name: 'بسته‌بندی و لیبل‌زنی', minStaff: 2 }
+      { id: 'sec-1', periodId: 'p-1', name: 'آماده‌سازی مواد اولیه و خمیرگیر', minStaff: 2 },
+      { id: 'sec-2', periodId: 'p-1', name: 'بخش پخت و تنور', minStaff: 1 },
+      { id: 'sec-3', periodId: 'p-1', name: 'خط تزیین و خنک‌کاری', minStaff: 1 },
+      { id: 'sec-4', periodId: 'p-1', name: 'بسته‌بندی و لیبل‌زنی', minStaff: 2 }
     ],
-    roles: DEFAULT_USER_ROLES.map(r => ({ ...r, permissions: [...r.permissions] })),
+    roles: DEFAULT_USER_ROLES.map((r, idx) => ({ ...r, id: `role-${idx + 1}`, permissions: [...r.permissions] })),
     users: defaultUsers,
     currentUser: defaultUsers[0],
     googleSheetsUrl: '',
@@ -293,10 +549,12 @@ export function getInitialDatabase(): AppDatabase {
     lastSyncTime: '',
     unitsOfMeasurement: defaultUnitsOfMeasurement,
     packagingTypes: defaultPackagingTypes,
+    barcodeSettings: defaultBarcode,
+    barcodeSettingsByPeriod: { 'p-1': defaultBarcode },
     salaryBaseRates: [
       {
         id: 'sbr-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         year: '1405',
         dailyBaseSalary: 3500000,
         hourlyBaseSalary: 477273,
@@ -316,14 +574,15 @@ export function getInitialDatabase(): AppDatabase {
     insuredSalaryItems: [],
     leaveBuyoutSalaryItems: [],
     personnelCategories: [
-      { id: 'cat-pers-1', name: 'پشتیبانی کل' },
-      { id: 'cat-pers-2', name: 'بازاریابی کل' },
-      { id: 'cat-pers-3', name: 'مدیریت و اداری' },
-      { id: 'cat-pers-4', name: 'تولید و کارگاه' }
+      { id: 'pgrp-1', periodId: 'p-1', name: 'پشتیبانی کل' },
+      { id: 'pgrp-2', periodId: 'p-1', name: 'بازاریابی کل' },
+      { id: 'pgrp-3', periodId: 'p-1', name: 'مدیریت و اداری' },
+      { id: 'pgrp-4', periodId: 'p-1', name: 'تولید و کارگاه' }
     ],
     monthlyWorkdaySettings: [
       {
-        id: "mws-1",
+        id: 'mws-1',
+        periodId: 'p-1',
         year: 1405,
         month: 1,
         daysInMonth: 31,
@@ -333,33 +592,25 @@ export function getInitialDatabase(): AppDatabase {
         requiredWorkHours: 176
       }
     ],
-    payrollCalculationRules: {
-      calculateEarlyOvertime: true,
-      calculateLateOvertime: true,
-      calculateHolidayWork: true,
-      calculateFridayWork: true,
-      calculateEntryDelayFine: false,
-      delayFineRate: 1.0,
-      deductClothesChangingTime: false,
-      clothesChangingDuration: 15
-    },
+    payrollCalculationRules: { ...DEFAULT_PAYROLL_CALCULATION_RULES },
+    payrollCalculationRulesByPeriod: { 'p-1': { ...DEFAULT_PAYROLL_CALCULATION_RULES } },
     officialHolidays: [
-      { id: "ohd-1", year: 1405, date: "1405/01/01" },
-      { id: "ohd-2", year: 1405, date: "1405/01/02" },
-      { id: "ohd-3", year: 1405, date: "1405/01/03" }
+      { id: 'ohd-1', periodId: 'p-1', year: 1405, date: '1405/01/01' },
+      { id: 'ohd-2', periodId: 'p-1', year: 1405, date: '1405/01/02' },
+      { id: 'ohd-3', periodId: 'p-1', year: 1405, date: '1405/01/03' }
     ],
     customerCategories: [
-      { id: 'ccat-1', name: 'فروشگاه‌های زنجیره‌ای و هایپرمارکت‌ها', code: 'GRP-01', defaultDiscountPercent: 8, defaultPaymentTerm: 'چک ۳۰ روزه', description: 'مشتریان شبکه توزیع سراسری و هایپرها' },
-      { id: 'ccat-2', name: 'عمده‌فروشان و بنکداران', code: 'GRP-02', defaultDiscountPercent: 12, defaultPaymentTerm: 'چک ۶۰ روزه', description: 'خریداران عمده کارتن و پالتی' },
-      { id: 'ccat-3', name: 'کافه‌ها، رستوران‌ها و هتل‌ها (HoReCa)', code: 'GRP-03', defaultDiscountPercent: 5, defaultPaymentTerm: 'نقدی', description: 'تامین روزانه شیرینی و نان کافه‌ای' },
-      { id: 'ccat-4', name: 'مشتریان سازمانی و ارگانی', code: 'GRP-04', defaultDiscountPercent: 7, defaultPaymentTerm: 'اعتباری', description: 'پک‌های پذیرایی همایش و سازمانی' },
-      { id: 'ccat-5', name: 'خرده‌فروشان و قنادی‌های محلی', code: 'GRP-05', defaultDiscountPercent: 3, defaultPaymentTerm: 'نقدی', description: 'مشتریان خرد فروشگاهی' },
-      { id: 'ccat-6', name: 'مشتریان ویژه (VIP)', code: 'GRP-06', defaultDiscountPercent: 10, defaultPaymentTerm: 'چک ۳۰ روزه', description: 'شرکای تجاری کلیدی و برتر' }
+      { id: 'ccat-1', periodId: 'p-1', name: 'فروشگاه‌های زنجیره‌ای و هایپرمارکت‌ها', code: 'GRP-01', defaultDiscountPercent: 8, defaultPaymentTerm: 'چک ۳۰ روزه', description: 'مشتریان شبکه توزیع سراسری و هایپرها' },
+      { id: 'ccat-2', periodId: 'p-1', name: 'عمده‌فروشان و بنکداران', code: 'GRP-02', defaultDiscountPercent: 12, defaultPaymentTerm: 'چک ۶۰ روزه', description: 'خریداران عمده کارتن و پالتی' },
+      { id: 'ccat-3', periodId: 'p-1', name: 'کافه‌ها، رستوران‌ها و هتل‌ها (HoReCa)', code: 'GRP-03', defaultDiscountPercent: 5, defaultPaymentTerm: 'نقدی', description: 'تامین روزانه شیرینی و نان کافه‌ای' },
+      { id: 'ccat-4', periodId: 'p-1', name: 'مشتریان سازمانی و ارگانی', code: 'GRP-04', defaultDiscountPercent: 7, defaultPaymentTerm: 'اعتباری', description: 'پک‌های پذیرایی همایش و سازمانی' },
+      { id: 'ccat-5', periodId: 'p-1', name: 'خرده‌فروشان و قنادی‌های محلی', code: 'GRP-05', defaultDiscountPercent: 3, defaultPaymentTerm: 'نقدی', description: 'مشتریان خرد فروشگاهی' },
+      { id: 'ccat-6', periodId: 'p-1', name: 'مشتریان ویژه (VIP)', code: 'GRP-06', defaultDiscountPercent: 10, defaultPaymentTerm: 'چک ۳۰ روزه', description: 'شرکای تجاری کلیدی و برتر' }
     ],
     customers: [
       {
         id: 'cust-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'C-1001',
         accountingCode: '103001',
         name: 'هایپرمارکت بزرگ پالادیوم (شعبه زعفرانیه)',
@@ -398,7 +649,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'cust-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'C-1002',
         accountingCode: '103002',
         name: 'بازرگانی شیرینی و نان پارسیان (حاج قاسم مهدوی)',
@@ -435,7 +686,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'cust-3',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'C-1003',
         accountingCode: '103003',
         name: 'مجموعه هتل‌های بین‌المللی اسپیناس پالاس',
@@ -474,7 +725,7 @@ export function getInitialDatabase(): AppDatabase {
     bankAccounts: [
       {
         id: 'bank-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         bankName: 'بانک ملت',
         branchName: 'شعبه مرکزی بازار',
         branchCode: '1234',
@@ -492,7 +743,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'bank-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         bankName: 'بانک سامان',
         branchName: 'شعبه سعادت آباد',
         branchCode: '842',
@@ -510,7 +761,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'bank-3',
-        periodId: '1405-01',
+        periodId: 'p-1',
         bankName: 'بانک پاسارگاد',
         branchName: 'شعبه میرداماد',
         branchCode: '215',
@@ -529,7 +780,7 @@ export function getInitialDatabase(): AppDatabase {
     cashDrawers: [
       {
         id: 'csh-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'CSH-01',
         name: 'صندوق مرکزی فروشگاه',
         location: 'پیشخوان اصلی فروشگاه',
@@ -543,7 +794,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'csh-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'CSH-02',
         name: 'صندوق کافه و پذیرایی',
         location: 'سالن کافه گاتان',
@@ -557,7 +808,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'csh-3',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'CSH-03',
         name: 'تنخواه‌گردان کارگاه و تولید',
         location: 'دفتر کارخانه و سرپرستی',
@@ -572,7 +823,7 @@ export function getInitialDatabase(): AppDatabase {
     posTerminals: [
       {
         id: 'pos-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         terminalId: '14890234',
         merchantId: '984501234455112',
         model: 'PAX D210 (بیسیم وای‌فای)',
@@ -587,7 +838,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'pos-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         terminalId: '23901145',
         merchantId: '776100234511900',
         model: 'Verifone VX680',
@@ -604,7 +855,7 @@ export function getInitialDatabase(): AppDatabase {
     cashiers: [
       {
         id: 'cshr-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'CSHR-101',
         fullName: 'فاطمه رستمی',
         nationalId: '0019876543',
@@ -620,7 +871,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'cshr-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         code: 'CSHR-102',
         fullName: 'رضا ناصری',
         nationalId: '0028765432',
@@ -637,8 +888,8 @@ export function getInitialDatabase(): AppDatabase {
     ],
     chequeBooks: [
       {
-        id: 'chk-bk-1',
-        periodId: '1405-01',
+        id: 'chkb-1',
+        periodId: 'p-1',
         bankAccountId: 'bank-1',
         series: 'الف/1405',
         sayadPrefix: '2105',
@@ -651,8 +902,8 @@ export function getInitialDatabase(): AppDatabase {
         createdAt: '1405/01/01'
       },
       {
-        id: 'chk-bk-2',
-        periodId: '1405-01',
+        id: 'chkb-2',
+        periodId: 'p-1',
         bankAccountId: 'bank-2',
         series: 'ب/1405',
         sayadPrefix: '2106',
@@ -667,8 +918,9 @@ export function getInitialDatabase(): AppDatabase {
     ],
     chequeLeaves: [
       {
-        id: 'leaf-1001',
-        chequeBookId: 'chk-bk-1',
+        id: 'leaf-1',
+        periodId: 'p-1',
+        chequeBookId: 'chkb-1',
         bankAccountId: 'bank-1',
         leafNumber: 1001,
         sayadNo: '2105140501001001',
@@ -686,8 +938,9 @@ export function getInitialDatabase(): AppDatabase {
         createdAt: '1405/01/01'
       },
       {
-        id: 'leaf-1002',
-        chequeBookId: 'chk-bk-1',
+        id: 'leaf-2',
+        periodId: 'p-1',
+        chequeBookId: 'chkb-1',
         bankAccountId: 'bank-1',
         leafNumber: 1002,
         sayadNo: '2105140501001002',
@@ -703,8 +956,9 @@ export function getInitialDatabase(): AppDatabase {
         createdAt: '1405/01/01'
       },
       {
-        id: 'leaf-1003',
-        chequeBookId: 'chk-bk-1',
+        id: 'leaf-3',
+        periodId: 'p-1',
+        chequeBookId: 'chkb-1',
         bankAccountId: 'bank-1',
         leafNumber: 1003,
         sayadNo: '2105140501001003',
@@ -719,72 +973,17 @@ export function getInitialDatabase(): AppDatabase {
         registeredBy: 'حسابدار ارشد',
         createdAt: '1405/01/01'
       },
+      { id: 'leaf-4', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1004, sayadNo: '2105140501001004', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-5', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1005, sayadNo: '2105140501001005', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-6', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1006, sayadNo: '2105140501001006', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-7', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1007, sayadNo: '2105140501001007', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-8', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1008, sayadNo: '2105140501001008', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-9', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1009, sayadNo: '2105140501001009', status: 'blank', createdAt: '1405/01/01' },
+      { id: 'leaf-10', periodId: 'p-1', chequeBookId: 'chkb-1', bankAccountId: 'bank-1', leafNumber: 1010, sayadNo: '2105140501001010', status: 'blank', createdAt: '1405/01/01' },
       {
-        id: 'leaf-1004',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1004,
-        sayadNo: '2105140501001004',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1005',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1005,
-        sayadNo: '2105140501001005',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1006',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1006,
-        sayadNo: '2105140501001006',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1007',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1007,
-        sayadNo: '2105140501001007',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1008',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1008,
-        sayadNo: '2105140501001008',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1009',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1009,
-        sayadNo: '2105140501001009',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-1010',
-        chequeBookId: 'chk-bk-1',
-        bankAccountId: 'bank-1',
-        leafNumber: 1010,
-        sayadNo: '2105140501001010',
-        status: 'blank',
-        createdAt: '1405/01/01'
-      },
-      {
-        id: 'leaf-2001',
-        chequeBookId: 'chk-bk-2',
+        id: 'leaf-11',
+        periodId: 'p-1',
+        chequeBookId: 'chkb-2',
         bankAccountId: 'bank-2',
         leafNumber: 2001,
         sayadNo: '2106140501002001',
@@ -799,38 +998,14 @@ export function getInitialDatabase(): AppDatabase {
         registeredBy: 'مدیر کل سامانه گاتان',
         createdAt: '1405/01/05'
       },
-      {
-        id: 'leaf-2002',
-        chequeBookId: 'chk-bk-2',
-        bankAccountId: 'bank-2',
-        leafNumber: 2002,
-        sayadNo: '2106140501002002',
-        status: 'blank',
-        createdAt: '1405/01/05'
-      },
-      {
-        id: 'leaf-2003',
-        chequeBookId: 'chk-bk-2',
-        bankAccountId: 'bank-2',
-        leafNumber: 2003,
-        sayadNo: '2106140501002003',
-        status: 'blank',
-        createdAt: '1405/01/05'
-      },
-      {
-        id: 'leaf-2004',
-        chequeBookId: 'chk-bk-2',
-        bankAccountId: 'bank-2',
-        leafNumber: 2004,
-        sayadNo: '2106140501002004',
-        status: 'blank',
-        createdAt: '1405/01/05'
-      }
+      { id: 'leaf-12', periodId: 'p-1', chequeBookId: 'chkb-2', bankAccountId: 'bank-2', leafNumber: 2002, sayadNo: '2106140501002002', status: 'blank', createdAt: '1405/01/05' },
+      { id: 'leaf-13', periodId: 'p-1', chequeBookId: 'chkb-2', bankAccountId: 'bank-2', leafNumber: 2003, sayadNo: '2106140501002003', status: 'blank', createdAt: '1405/01/05' },
+      { id: 'leaf-14', periodId: 'p-1', chequeBookId: 'chkb-2', bankAccountId: 'bank-2', leafNumber: 2004, sayadNo: '2106140501002004', status: 'blank', createdAt: '1405/01/05' }
     ],
     treasuryReceipts: [
       {
         id: 'rec-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         receiptNo: 'REC-140501-001',
         date: '1405/01/10',
         time: '11:30',
@@ -850,7 +1025,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'rec-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         receiptNo: 'REC-140501-002',
         date: '1405/01/12',
         time: '16:45',
@@ -871,7 +1046,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'rec-3',
-        periodId: '1405-01',
+        periodId: 'p-1',
         receiptNo: 'REC-140501-003',
         date: '1405/01/14',
         time: '10:00',
@@ -901,7 +1076,7 @@ export function getInitialDatabase(): AppDatabase {
     treasuryPayments: [
       {
         id: 'pay-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         paymentNo: 'PAY-140501-001',
         date: '1405/01/08',
         time: '09:30',
@@ -919,7 +1094,7 @@ export function getInitialDatabase(): AppDatabase {
       },
       {
         id: 'pay-2',
-        periodId: '1405-01',
+        periodId: 'p-1',
         paymentNo: 'PAY-140501-002',
         date: '1405/01/11',
         time: '14:20',
@@ -938,7 +1113,7 @@ export function getInitialDatabase(): AppDatabase {
     barterTransactions: [
       {
         id: 'btr-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         barterNo: 'BTR-1405-001',
         date: '1405/01/12',
         partyAType: 'customer',
@@ -961,7 +1136,7 @@ export function getInitialDatabase(): AppDatabase {
     counterpartySettlements: [
       {
         id: 'set-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         settlementNo: 'SET-140501-001',
         date: '1405/01/10',
         partyType: 'customer',
@@ -989,7 +1164,7 @@ export function getInitialDatabase(): AppDatabase {
     cashierShiftCloseouts: [
       {
         id: 'cls-1',
-        periodId: '1405-01',
+        periodId: 'p-1',
         closeoutNo: 'CLS-140501-001',
         date: '1405/01/12',
         shiftStartTime: '07:30',
@@ -1022,8 +1197,8 @@ export function getInitialDatabase(): AppDatabase {
     ],
     personnelContracts: [
       {
-        id: 'cnt-1001-01',
-        periodId: '1405-01',
+        id: 'cnt-1',
+        periodId: 'p-1',
         employeeCode: '1001',
         role: 'سرپرست خط پخت و تنور',
         contractStartDate: '1404/01/01',
@@ -1045,116 +1220,115 @@ export function getInitialDatabase(): AppDatabase {
 
 let inMemoryDb: AppDatabase | null = null;
 
-export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
+export function sanitizeAndMergeDatabaseWithMeta(raw: any): { db: AppDatabase; migrated: boolean } {
   const schema: AppDatabase = getInitialDatabase();
   if (!raw || typeof raw !== 'object') {
-    return schema;
+    return { db: schema, migrated: false };
   }
-  const merged = { ...schema, ...raw };
-  
-  // Ensure every array collection is definitely an array to block undefined/null issues
+  const merged: any = { ...schema, ...raw };
+
+  // Ensure every array collection (isolated + system-wide) is definitely an array
   const collections: (keyof AppDatabase)[] = [
-    'periods', 'itemCategories', 'items', 'suppliers', 'productCategories', 'departments', 'products',
-    'salesPeriods', 'productSales', 'unitConversions', 'productFormulas', 'personnel',
-    'payrollPeriods', 'payrollItems', 'personnelAllocations', 'periodOverheads',
-    'procurementOrders', 'stockCountAudits', 'stockCounts', 'purchaseInvoices', 'roles', 'users',
-    'dailyProductionSegments', 'shifts', 'shiftAssignments', 'productionSections', 'salaryBaseRates',
-    'personnelContracts', 'insuredSalaryItems', 'leaveBuyoutSalaryItems', 'personnelCategories', 'monthlyWorkdaySettings', 'officialHolidays',
-    'customers', 'customerCategories',
-    'bankAccounts', 'cashDrawers', 'posTerminals', 'cashiers',
-    'chequeBooks', 'chequeLeaves',
-    'treasuryReceipts', 'treasuryPayments', 'barterTransactions',
-    'counterpartySettlements', 'cashierShiftCloseouts', 'personnelSettlements'
+    'periods',
+    'roles',
+    'users',
+    ...ISOLATED_ARRAY_COLLECTIONS,
   ];
-  
+
   collections.forEach(key => {
-    if (!Array.isArray(merged[key]) || ((merged[key] as any[]).length === 0 && schema[key] && (schema[key] as any[]).length > 0 && (key === 'chequeBooks' || key === 'chequeLeaves'))) {
-      merged[key] = (Array.isArray(schema[key]) ? schema[key] : []) as any;
-    } else if (!Array.isArray(merged[key])) {
-      merged[key] = (Array.isArray(schema[key]) ? schema[key] : []) as any;
-    } else {
-      // Deduplicate identical category/department rows (same id + periodId + name) before enforcing unique IDs
-      let arr = merged[key] as any[];
-      if (key === 'productCategories' || key === 'itemCategories' || key === 'customerCategories' || key === 'departments') {
-        const seenExact = new Set<string>();
-        const deduped = arr.filter(item => {
-          if (!item || typeof item !== 'object') return true;
-          const id = item.id ? String(item.id).trim() : '';
-          const periodId = item.periodId ? String(item.periodId).trim() : '';
-          const name = item.name ? String(item.name).trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ') : '';
-          if (!id) return true;
-          const sig = `${id}::${periodId}::${name}`;
-          if (seenExact.has(sig)) return false;
-          seenExact.add(sig);
-          return true;
-        });
-        if (deduped.length !== arr.length) {
-          arr = deduped;
-          merged[key] = deduped as any;
-        }
+    if (!Array.isArray(merged[key])) {
+      // Only fall back to schema defaults if the property was completely absent/invalid (never overwrite intentional empty arrays)
+      merged[key] = raw && Object.prototype.hasOwnProperty.call(raw, key)
+        ? []
+        : ((Array.isArray(schema[key]) ? schema[key] : []) as any);
+      return;
+    }
+
+    // Deduplicate identical category/department rows (same id + periodId + name) before enforcing unique IDs
+    let arr = merged[key] as any[];
+    if (key === 'productCategories' || key === 'itemCategories' || key === 'customerCategories' || key === 'departments') {
+      const seenExact = new Set<string>();
+      const deduped = arr.filter(item => {
+        if (!item || typeof item !== 'object') return true;
+        const id = item.id ? String(item.id).trim() : '';
+        const periodId = item.periodId ? String(item.periodId).trim() : '';
+        const name = item.name ? String(item.name).trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ') : '';
+        if (!id) return true;
+        const sig = `${id}::${periodId}::${name}`;
+        if (seenExact.has(sig)) return false;
+        seenExact.add(sig);
+        return true;
+      });
+      if (deduped.length !== arr.length) {
+        arr = deduped;
+        merged[key] = deduped as any;
       }
-      // Ensure strictly unique IDs across all items in collection without cloning already-valid arrays/items
-      const seenIds = new Set<string>();
-      let modified = false;
-      for (let idx = 0; idx < arr.length; idx++) {
-        const item = arr[idx];
+    }
+
+    // Ensure strictly unique IDs across all items in collection using simple sequential IDs
+    const seenIds = new Set<string>();
+    let modified = false;
+    for (let idx = 0; idx < arr.length; idx++) {
+      const item = arr[idx];
+      if (item && typeof item === 'object') {
+        const rawId = item.id ? String(item.id).trim() : '';
+        if (!rawId || seenIds.has(rawId) || rawId !== item.id) {
+          modified = true;
+          break;
+        }
+        seenIds.add(rawId);
+      }
+    }
+    if (modified) {
+      const seenIdsFull = new Set<string>();
+      const nextId = createSimpleIdGenerator(arr, getPrefixForCollection(key));
+      merged[key] = arr.map((item: any) => {
         if (item && typeof item === 'object') {
-          const rawId = item.id ? String(item.id).trim() : '';
-          if (!rawId || seenIds.has(rawId) || rawId !== item.id) {
-            modified = true;
-            break;
-          }
-          seenIds.add(rawId);
-        }
-      }
-      if (modified) {
-        const seenIdsFull = new Set<string>();
-        merged[key] = arr.map((item: any, idx: number) => {
-          if (item && typeof item === 'object') {
-            let itemId = item.id ? String(item.id).trim() : '';
-            if (!itemId || seenIdsFull.has(itemId)) {
-              itemId = `${String(key)}-${itemId || 'entry'}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
-              seenIdsFull.add(itemId);
-              return { ...item, id: itemId };
-            }
+          let itemId = item.id ? String(item.id).trim() : '';
+          if (!itemId || seenIdsFull.has(itemId)) {
+            itemId = nextId();
+            while (seenIdsFull.has(itemId)) itemId = nextId();
             seenIdsFull.add(itemId);
-            if (itemId !== item.id) {
-              return { ...item, id: itemId };
-            }
+            return { ...item, id: itemId };
           }
-          return item;
-        }) as any;
-      }
+          seenIdsFull.add(itemId);
+          if (itemId !== item.id) {
+            return { ...item, id: itemId };
+          }
+        }
+        return item;
+      }) as any;
     }
   });
 
   if (!merged.payrollCalculationRules) {
-    merged.payrollCalculationRules = schema.payrollCalculationRules;
+    merged.payrollCalculationRules = { ...DEFAULT_PAYROLL_CALCULATION_RULES };
   }
-  
+
   if (!Array.isArray(merged.approvedMismatches)) {
     merged.approvedMismatches = [];
   }
 
-  // Make sure currentUser or sheets is correct
   if (!merged.currentUser) {
     merged.currentUser = schema.currentUser;
   }
 
   // Ensure roles array contains system admin role and any custom roles assigned to users
-  const currentRoles: UserRoleDefinition[] = Array.isArray(merged.roles) && merged.roles.length > 0
-    ? merged.roles.map((r: any) => ({
-        id: String(r.id || `role-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+  const rawRoles = Array.isArray(merged.roles) ? merged.roles : [];
+  const nextRoleId = createSimpleIdGenerator(rawRoles, 'role');
+  const currentRoles: UserRoleDefinition[] = rawRoles.length > 0
+    ? rawRoles.map((r: any) => ({
+        id: String(r.id || nextRoleId()),
         name: String(r.name || '').trim(),
         description: r.description ? String(r.description) : '',
         permissions: normalizePermissions(Array.isArray(r.permissions) ? r.permissions : []),
         isSystem: Boolean(r.isSystem || r.name === 'مدیر ارشد'),
         createdAt: r.createdAt,
       })).filter((r: UserRoleDefinition) => Boolean(r.name))
-    : DEFAULT_USER_ROLES.map(r => ({ ...r, permissions: [...r.permissions] }));
+    : DEFAULT_USER_ROLES.map((r, idx) => ({ ...r, id: `role-${idx + 1}`, permissions: [...r.permissions] }));
 
   if (!currentRoles.some(r => r.name === 'مدیر ارشد')) {
-    currentRoles.unshift({ ...DEFAULT_USER_ROLES[0], permissions: ['*'] });
+    currentRoles.unshift({ ...DEFAULT_USER_ROLES[0], id: nextRoleId(), permissions: ['*'] });
   } else {
     for (let i = 0; i < currentRoles.length; i++) {
       if (currentRoles[i].name === 'مدیر ارشد') {
@@ -1164,12 +1338,12 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
   }
 
   const knownRoleNames = new Set(currentRoles.map(r => r.name));
-  (merged.users || []).forEach((u: any, idx: number) => {
+  (merged.users || []).forEach((u: any) => {
     const rName = String(u?.role || '').trim();
     if (rName && !knownRoleNames.has(rName)) {
       knownRoleNames.add(rName);
       currentRoles.push({
-        id: `role-custom-${idx}-${rName.slice(0, 12)}`,
+        id: nextRoleId(),
         name: rName,
         description: 'نقش بازیابی شده از لیست کاربران',
         permissions: normalizePermissions(Array.isArray(u.permissions) ? u.permissions : []),
@@ -1178,46 +1352,30 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
     }
   });
   merged.roles = currentRoles;
-  // Guarantee default personnel categories are present
+
   const normCatTxt = (s?: string) => String(s || '').trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ');
-  if (!merged.personnelCategories) {
-    merged.personnelCategories = schema.personnelCategories;
-  } else {
-    const defaultCats = [
-      { id: 'cat-pers-1', name: 'پشتیبانی کل' },
-      { id: 'cat-pers-2', name: 'بازاریابی کل' }
-    ];
-    defaultCats.forEach(dc => {
-      if (!merged.personnelCategories!.some(cat => normCatTxt(cat.name) === normCatTxt(dc.name))) {
-        merged.personnelCategories = [...merged.personnelCategories!, dc];
-      }
-    });
-  }
 
-  // Migrate independent Production Departments per period (one-time when period has no departments yet)
-  const rawHadDepartmentsArray = Array.isArray((raw as any).departments) && (raw as any).departments.length > 0;
-  const existingDepts: Department[] = Array.isArray(merged.departments) ? [...merged.departments] : [];
-  const periodsWithDepts = new Set(existingDepts.map(d => d.periodId));
-  const allKnownPeriodIds = new Set<string>([
-    ...(merged.periods || []).map((p: any) => p.id),
-    ...(merged.productCategories || []).map((c: any) => c.periodId).filter(Boolean)
-  ]);
+  // Migrate independent Production Departments ONLY for legacy DBs that had productCategories before departments existed
+  const rawHadDepartmentsArray = Array.isArray((raw as any).departments);
+  if (!rawHadDepartmentsArray) {
+    const existingDepts: Department[] = Array.isArray(merged.departments) ? [...merged.departments] : [];
+    const periodsWithDepts = new Set(existingDepts.map(d => d.periodId));
+    const catPeriods = new Set<string>(
+      (merged.productCategories || []).map((c: any) => c.periodId).filter(Boolean)
+    );
+    let deptsChanged = false;
+    const nextDeptId = createSimpleIdGenerator(existingDepts, 'dept');
 
-  let deptsChanged = !Array.isArray((raw as any).departments);
-  let migratedCats = merged.productCategories || [];
-  let catsChanged = false;
-
-  allKnownPeriodIds.forEach(pid => {
-    if (!periodsWithDepts.has(pid)) {
-      const periodCats = (merged.productCategories || []).filter((c: any) => c.periodId === pid);
-      if (periodCats.length > 0) {
+    catPeriods.forEach(pid => {
+      if (!periodsWithDepts.has(pid)) {
+        const periodCats = (merged.productCategories || []).filter((c: any) => c.periodId === pid);
         const seenNames = new Set<string>();
         periodCats.forEach((cat: any) => {
           const n = normCatTxt(cat.name);
           if (seenNames.has(n)) return;
           seenNames.add(n);
           existingDepts.push({
-            id: cat.id,
+            id: nextDeptId(),
             periodId: pid,
             name: cat.name,
             targetMargin: cat.targetMargin,
@@ -1225,45 +1383,33 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
           });
         });
         deptsChanged = true;
-      } else if (!rawHadDepartmentsArray) {
-        // Fallback default departments for empty period if raw DB didn't have departments
-        DEFAULT_CATEGORIES.forEach((name, idx) => {
-          const did = `${pid}-cat-${idx}`;
-          existingDepts.push({
-            id: did,
-            periodId: pid,
-            name,
-            isShared: name === 'مشترک' || idx === 4
-          });
-        });
-        deptsChanged = true;
       }
-    }
-  });
-
-  if (deptsChanged) {
-    merged.departments = existingDepts;
-  }
-
-  // Link legacy categories lacking the departmentId property (when raw did not have departments yet)
-  if (!rawHadDepartmentsArray && existingDepts.length > 0) {
-    const deptsById = new Map(existingDepts.map(d => [d.id, d]));
-    migratedCats = migratedCats.map((cat: any) => {
-      if (cat && typeof cat === 'object' && !('departmentId' in cat)) {
-        const matchById = deptsById.get(cat.id);
-        const matchByName = !matchById
-          ? existingDepts.find(d => d.periodId === cat.periodId && normCatTxt(d.name) === normCatTxt(cat.name))
-          : undefined;
-        const resolved = matchById || matchByName;
-        if (resolved) {
-          catsChanged = true;
-          return { ...cat, departmentId: resolved.id };
-        }
-      }
-      return cat;
     });
-    if (catsChanged) {
-      merged.productCategories = migratedCats;
+
+    if (deptsChanged) {
+      merged.departments = existingDepts;
+    }
+
+    if (existingDepts.length > 0) {
+      let catsChanged = false;
+      const deptsById = new Map(existingDepts.map(d => [d.id, d]));
+      const migratedCats = (merged.productCategories || []).map((cat: any) => {
+        if (cat && typeof cat === 'object' && !('departmentId' in cat)) {
+          const matchById = deptsById.get(cat.id);
+          const matchByName = !matchById
+            ? existingDepts.find(d => d.periodId === cat.periodId && normCatTxt(d.name) === normCatTxt(cat.name))
+            : undefined;
+          const resolved = matchById || matchByName;
+          if (resolved) {
+            catsChanged = true;
+            return { ...cat, departmentId: resolved.id };
+          }
+        }
+        return cat;
+      });
+      if (catsChanged) {
+        merged.productCategories = migratedCats;
+      }
     }
   }
 
@@ -1296,7 +1442,7 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
     }
   }
 
-  // Migrate ProductFormulas to store کد حسابداری محصول (Product.accountId) & کد معین حسابداری مواد اولیه (Item.accountId)
+  // Migrate ProductFormulas to store کد حسابداری محصول & کد معین حسابداری مواد اولیه
   if (Array.isArray(merged.productFormulas) && merged.productFormulas.length > 0) {
     const prodKeyByPeriodAndId = new Map<string, string>();
     const prodKeyById = new Map<string, string>();
@@ -1317,7 +1463,6 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
       if (item.periodId) matKeyByPeriodAndId.set(`${item.periodId}::${item.id}`, mKey);
       if (!matKeyById.has(item.id)) matKeyById.set(item.id, mKey);
     });
-    // Also index WIP products as ingredients
     (merged.products || []).forEach((p: any) => {
       if (!p || !p.id || !p.isWip) return;
       const mKey = getMaterialFormulaKey(p);
@@ -1370,13 +1515,19 @@ export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
     }
   }
 
-  return merged;
+  // Lossless legacy primary-key & period-isolation migration (idempotent no-op once clean)
+  const { db: finalDb, migrated } = migrateLegacyKeysAndPeriodIsolation(merged as AppDatabase);
+  return { db: finalDb, migrated };
+}
+
+export function sanitizeAndMergeDatabase(raw: any): AppDatabase {
+  return sanitizeAndMergeDatabaseWithMeta(raw).db;
 }
 
 /**
  * Fast incremental sanitizer for live in-app edits:
  * Only inspects array collections whose reference actually changed since prevDb,
- * avoiding full 47-collection scans and cloning on every single edit.
+ * assigning simple sequential IDs (`prefix-N`) if any item lacks or duplicates an ID.
  */
 export function sanitizeChangedCollections(prevDb: AppDatabase | null, updatedDb: AppDatabase): AppDatabase {
   if (!prevDb) {
@@ -1417,11 +1568,13 @@ export function sanitizeChangedCollections(prevDb: AppDatabase | null, updatedDb
 
     if (needsFix) {
       const seenIdsFull = new Set<string>();
-      const fixedArr = arr.map((item: any, idx: number) => {
+      const nextId = createSimpleIdGenerator(arr, getPrefixForCollection(key));
+      const fixedArr = arr.map((item: any) => {
         if (item && typeof item === 'object') {
           let itemId = item.id ? String(item.id).trim() : '';
           if (!itemId || seenIdsFull.has(itemId)) {
-            itemId = `${String(key)}-${itemId || 'entry'}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
+            itemId = nextId();
+            while (seenIdsFull.has(itemId)) itemId = nextId();
             seenIdsFull.add(itemId);
             return { ...item, id: itemId };
           }
@@ -1439,17 +1592,43 @@ export function sanitizeChangedCollections(prevDb: AppDatabase | null, updatedDb
   return result;
 }
 
+function applySharedLocalAuthToDb(db: AppDatabase): AppDatabase {
+  const shared = loadSharedLocalAuth();
+  if (!shared) return db;
+  const users = Array.isArray(shared.users) && shared.users.length > 0
+    ? shared.users.map((u) => ({
+        ...u,
+        allowedBranches: normalizeAllowedBranches(u.allowedBranches, u.role, u.permissions),
+      }))
+    : db.users.map((u) => ({
+        ...u,
+        allowedBranches: normalizeAllowedBranches(u.allowedBranches, u.role, u.permissions),
+      }));
+  const roles = Array.isArray(shared.roles) && shared.roles.length > 0 ? shared.roles : db.roles;
+  return { ...db, users, roles };
+}
+
 /**
- * بارگیری نامتقارن پایگاه داده از IndexedDB (با ظرفیت نامحدود) و مهاجرت خودکار از LocalStorage
+ * بارگیری نامتقارن پایگاه داده شعبه از IndexedDB (با ظرفیت نامحدود) و مهاجرت خودکار از LocalStorage
  */
-export async function loadDatabaseAsync(): Promise<AppDatabase> {
+export async function loadDatabaseAsync(branchId?: string): Promise<AppDatabase> {
+  const targetBranchId = String(branchId || getActiveBranchId() || DEFAULT_BRANCH_ID).trim();
+  const isDefaultBranch = targetBranchId === DEFAULT_BRANCH_ID;
+  const lsKey = getBranchLocalStorageKey(targetBranchId);
+
   // 1. First attempt: Load from high-capacity IndexedDB
   try {
-    const idbData = await loadFromIndexedDB();
+    const idbData = await loadFromIndexedDB(targetBranchId);
     if (idbData) {
-      const merged = sanitizeAndMergeDatabase(idbData);
-      inMemoryDb = merged;
-      return merged;
+      const { db: merged, migrated } = sanitizeAndMergeDatabaseWithMeta(idbData);
+      const withShared = applySharedLocalAuthToDb(merged);
+      if (targetBranchId === getActiveBranchId()) {
+        inMemoryDb = withShared;
+      }
+      if (migrated) {
+        saveToIndexedDB(withShared, targetBranchId).catch(() => {});
+      }
+      return withShared;
     }
   } catch (err) {
     console.warn('Notice reading from IndexedDB on startup:', err);
@@ -1457,110 +1636,149 @@ export async function loadDatabaseAsync(): Promise<AppDatabase> {
 
   // 2. Migration: If not found in IndexedDB, attempt reading from LocalStorage
   try {
-    const localData = localStorage.getItem(STORAGE_KEY);
+    const localData = localStorage.getItem(lsKey);
     if (localData) {
       const parsed = JSON.parse(localData);
-      const merged = sanitizeAndMergeDatabase(parsed);
-      inMemoryDb = merged;
-      // Seamlessly migrate into IndexedDB
-      saveToIndexedDB(merged).catch(() => {});
-      return merged;
+      const { db: merged } = sanitizeAndMergeDatabaseWithMeta(parsed);
+      const withShared = applySharedLocalAuthToDb(merged);
+      if (targetBranchId === getActiveBranchId()) {
+        inMemoryDb = withShared;
+      }
+      saveToIndexedDB(withShared, targetBranchId).catch(() => {});
+      return withShared;
     }
   } catch (err) {
     console.warn('Notice reading from LocalStorage on startup:', err);
   }
 
-  // 3. Fallback: Initialize default database
-  const defaultDb = getInitialDatabase();
-  inMemoryDb = defaultDb;
-  saveDatabase(defaultDb);
-  return defaultDb;
+  // 3. Fallback: Default branch gets starter DB; secondary branches start cleanly blank & isolated
+  const shared = loadSharedLocalAuth();
+  const initialDb = isDefaultBranch
+    ? applySharedLocalAuthToDb(getInitialDatabase())
+    : createBlankBranchDatabase(shared?.users, shared?.roles);
+
+  if (targetBranchId === getActiveBranchId()) {
+    inMemoryDb = initialDb;
+  }
+  saveToIndexedDB(initialDb, targetBranchId).catch(() => {});
+  return initialDb;
 }
 
-export function loadDatabase(): AppDatabase {
-  if (inMemoryDb) {
+export function loadDatabase(branchId?: string): AppDatabase {
+  const targetBranchId = String(branchId || getActiveBranchId() || DEFAULT_BRANCH_ID).trim();
+  if (inMemoryDb && targetBranchId === getActiveBranchId()) {
     return inMemoryDb;
   }
 
+  const lsKey = getBranchLocalStorageKey(targetBranchId);
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
+    const data = localStorage.getItem(lsKey);
     if (data) {
       const parsed = JSON.parse(data);
-      const merged = sanitizeAndMergeDatabase(parsed);
-      inMemoryDb = merged;
+      const merged = applySharedLocalAuthToDb(sanitizeAndMergeDatabase(parsed));
+      if (targetBranchId === getActiveBranchId()) {
+        inMemoryDb = merged;
+      }
       return merged;
     }
   } catch (e) {
     // Graceful fallback
   }
 
-  const defaultDb = getInitialDatabase();
-  inMemoryDb = defaultDb;
+  const shared = loadSharedLocalAuth();
+  const defaultDb =
+    targetBranchId === DEFAULT_BRANCH_ID
+      ? applySharedLocalAuthToDb(getInitialDatabase())
+      : createBlankBranchDatabase(shared?.users, shared?.roles);
+  if (targetBranchId === getActiveBranchId()) {
+    inMemoryDb = defaultDb;
+  }
   return defaultDb;
 }
 
 let sqlServerSaveDebounceTimeout: any = null;
 let browserSaveDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 let pendingBrowserPersistDb: AppDatabase | null = null;
+let pendingBrowserPersistBranchId: string = DEFAULT_BRANCH_ID;
 let isLocalStorageOversized = false;
 let unloadFlushRegistered = false;
 
 let browserSaveSkipLocalStorage = false;
 
-function flushBrowserDatabaseSave() {
+export function flushBrowserDatabaseSaveNow() {
   if (browserSaveDebounceTimeout) {
     clearTimeout(browserSaveDebounceTimeout);
     browserSaveDebounceTimeout = null;
   }
   const dbToFlush = pendingBrowserPersistDb;
+  const branchToFlush = pendingBrowserPersistBranchId || getActiveBranchId();
   if (!dbToFlush) return;
   pendingBrowserPersistDb = null;
 
-  // 1. High-capacity, robust persistence in browser IndexedDB (hundreds of MBs)
-  saveToIndexedDB(dbToFlush).catch(err => {
+  // Keep local shared users/roles synced across all local branches
+  if (!browserSaveSkipLocalStorage) {
+    saveSharedLocalAuth(dbToFlush.users, dbToFlush.roles);
+  }
+
+  // 1. High-capacity, robust persistence in browser IndexedDB (isolated per branch)
+  saveToIndexedDB(dbToFlush, branchToFlush).catch(err => {
     console.warn('IndexedDB save notice:', err);
   });
 
-  // 2. Safe local storage write (skipped in PostgreSQL server mode or once quota is exceeded to avoid main-thread JSON.stringify lag)
+  // 2. Safe local storage write (skipped in PostgreSQL server mode or once quota is exceeded)
+  const lsKey = getBranchLocalStorageKey(branchToFlush);
   if (!isLocalStorageOversized && !browserSaveSkipLocalStorage) {
     try {
       const serialized = JSON.stringify(dbToFlush);
       if (serialized.length > 4_000_000) {
         isLocalStorageOversized = true;
         try {
-          localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(lsKey);
         } catch (_) {}
       } else {
-        localStorage.setItem(STORAGE_KEY, serialized);
+        localStorage.setItem(lsKey, serialized);
       }
     } catch (_quotaErr) {
       isLocalStorageOversized = true;
       try {
-        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(lsKey);
       } catch (_) {}
     }
   }
 }
 
-export function saveDatabase(db: AppDatabase, options?: { skipLocalStorage?: boolean }) {
+export function saveDatabase(
+  db: AppDatabase,
+  options?: { skipLocalStorage?: boolean; branchId?: string; flushImmediate?: boolean }
+) {
   try {
-    inMemoryDb = db;
+    const targetBranch = String(options?.branchId || getActiveBranchId() || DEFAULT_BRANCH_ID).trim();
+    if (targetBranch === getActiveBranchId()) {
+      inMemoryDb = db;
+    }
     pendingBrowserPersistDb = db;
+    pendingBrowserPersistBranchId = targetBranch;
     browserSaveSkipLocalStorage = Boolean(options?.skipLocalStorage);
 
     if (!unloadFlushRegistered && typeof window !== 'undefined') {
       unloadFlushRegistered = true;
-      window.addEventListener('beforeunload', flushBrowserDatabaseSave);
-      window.addEventListener('pagehide', flushBrowserDatabaseSave);
+      window.addEventListener('beforeunload', flushBrowserDatabaseSaveNow);
+      window.addEventListener('pagehide', flushBrowserDatabaseSaveNow);
     }
 
     if (browserSaveDebounceTimeout) {
       clearTimeout(browserSaveDebounceTimeout);
+      browserSaveDebounceTimeout = null;
     }
-    const debounceMs = options?.skipLocalStorage ? 1200 : 350;
-    browserSaveDebounceTimeout = setTimeout(() => {
-      flushBrowserDatabaseSave();
-    }, debounceMs);
+
+    if (options?.flushImmediate) {
+      flushBrowserDatabaseSaveNow();
+    } else {
+      const debounceMs = options?.skipLocalStorage ? 1200 : 350;
+      browserSaveDebounceTimeout = setTimeout(() => {
+        flushBrowserDatabaseSaveNow();
+      }, debounceMs);
+    }
 
     // 3. If google sheets webhook script URL is configured and browser is online, queue/sync background
     const isWebHookUrl = Boolean(

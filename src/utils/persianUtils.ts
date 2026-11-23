@@ -1142,16 +1142,6 @@ export function getDefaultYearMonthFromPeriod(
   activePeriodId?: string
 ): { year: number; month: number } {
   const year = getFiscalYearFromPeriod(period, activePeriodId);
-  let month = 1;
-
-  const pid = period?.id || activePeriodId || '';
-  const pidParts = toEnglishDigits(pid).split('-');
-  if (pidParts.length >= 2) {
-    const pm = parseInt(pidParts[1], 10);
-    if (!isNaN(pm) && pm >= 1 && pm <= 12) {
-      return { year, month: pm };
-    }
-  }
 
   if (period?.startDate) {
     const parsed = parseShamsiYearMonth(period.startDate);
@@ -1160,7 +1150,16 @@ export function getDefaultYearMonthFromPeriod(
     }
   }
 
-  return { year, month };
+  const pid = toEnglishDigits(period?.id || activePeriodId || '');
+  const ymMatch = pid.match(/^(1[34]\d{2})-(\d{1,2})$/);
+  if (ymMatch) {
+    const pm = parseInt(ymMatch[2], 10);
+    if (!isNaN(pm) && pm >= 1 && pm <= 12) {
+      return { year: parseInt(ymMatch[1], 10) || year, month: pm };
+    }
+  }
+
+  return { year, month: 1 };
 }
 
 /**

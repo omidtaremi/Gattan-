@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS app_users (
   full_name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'کاربر انبار',
   permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  allowed_branches JSONB NOT NULL DEFAULT '["*"]'::jsonb,
   password_hash TEXT NOT NULL,
   is_2fa BOOLEAN NOT NULL DEFAULT FALSE,
   secret_code TEXT NOT NULL DEFAULT '',
@@ -18,7 +19,25 @@ CREATE TABLE IF NOT EXISTS app_users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS allowed_branches JSONB NOT NULL DEFAULT '["*"]'::jsonb;
+
 CREATE INDEX IF NOT EXISTS idx_app_users_username ON app_users (username);
+
+-- 1a. جدول رجیستری شعبه‌ها و دیتابیس مستقل هر شعبه (Multi-Branch Registry)
+CREATE TABLE IF NOT EXISTS app_branches (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  db_name TEXT NOT NULL UNIQUE,
+  address TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_branches_slug ON app_branches (slug);
 
 -- 1b. جدول تعریف نقش‌های کاربری و دسترسی‌های پیش‌فرض (Custom User Roles)
 CREATE TABLE IF NOT EXISTS app_roles (

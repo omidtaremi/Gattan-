@@ -16,6 +16,7 @@ import {
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate, numberToWordsPersian
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface ReceiptsTabProps {
   db: AppDatabase;
@@ -81,14 +82,14 @@ export default function ReceiptsTab({ db, onUpdateDb, activePeriodId, askConfirm
   const [isGuaranteed, setIsGuaranteed] = useState(true);
 
   const receipts = useMemo(() => {
-    return db.treasuryReceipts || [];
-  }, [db.treasuryReceipts]);
+    return (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId);
+  }, [db.treasuryReceipts, activePeriodId]);
 
-  const bankAccounts = useMemo(() => db.bankAccounts || [], [db.bankAccounts]);
-  const cashDrawers = useMemo(() => db.cashDrawers || [], [db.cashDrawers]);
-  const posTerminals = useMemo(() => db.posTerminals || [], [db.posTerminals]);
-  const cashiers = useMemo(() => db.cashiers || [], [db.cashiers]);
-  const customers = useMemo(() => db.customers || [], [db.customers]);
+  const bankAccounts = useMemo(() => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId), [db.bankAccounts, activePeriodId]);
+  const cashDrawers = useMemo(() => (db.cashDrawers || []).filter(d => d.periodId === activePeriodId), [db.cashDrawers, activePeriodId]);
+  const posTerminals = useMemo(() => (db.posTerminals || []).filter(p => p.periodId === activePeriodId), [db.posTerminals, activePeriodId]);
+  const cashiers = useMemo(() => (db.cashiers || []).filter(c => c.periodId === activePeriodId), [db.cashiers, activePeriodId]);
+  const customers = useMemo(() => (db.customers || []).filter(c => c.periodId === activePeriodId), [db.customers, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = receipts.length;
@@ -240,7 +241,7 @@ export default function ReceiptsTab({ db, onUpdateDb, activePeriodId, askConfirm
     }
 
     const receiptObj: TreasuryReceipt = {
-      id: editingReceipt ? editingReceipt.id : `rec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: editingReceipt ? editingReceipt.id : nextSimpleId(currentList, getPrefixForCollection('treasuryReceipts')),
       periodId: activePeriodId,
       receiptNo: receiptNo.trim(),
       date,

@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { AppDatabase, MonthlyWorkdaySetting, PayrollCalculationRules, OfficialHoliday } from '../types';
-import { toPersianDigits, toEnglishDigits, parseNumber, formatWithCommas } from '../utils/persianUtils';
+import { toPersianDigits, toEnglishDigits, parseNumber, formatWithCommas, getFiscalYearFromPeriod } from '../utils/persianUtils';
+import { getPeriodPayrollRules, setPeriodPayrollRules } from '../utils/periodIsolation';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
 import * as XLSX from 'xlsx';
 import { 
   Calendar, Clock, Plus, Trash2, Edit3, Settings, X, Check, FileSpreadsheet, Download, Search, AlertTriangle, CheckSquare, Square, Info
@@ -9,12 +11,17 @@ import {
 interface AttendanceSettingsFormProps {
   db: AppDatabase;
   onUpdateDb: (updated: AppDatabase) => void;
+  activePeriodId?: string;
 }
 
-export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSettingsFormProps) {
+export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId }: AttendanceSettingsFormProps) {
+  const effectivePeriodId = activePeriodId || db.periods?.[0]?.id || 'p-1';
+  const activePeriodObj = useMemo(() => (db.periods || []).find(p => p.id === effectivePeriodId), [db.periods, effectivePeriodId]);
+  const defaultFiscalYearStr = String(getFiscalYearFromPeriod(activePeriodObj, effectivePeriodId));
+
   // Search and Filter states
-  const [workdayYearFilter, setWorkdayYearFilter] = useState<string>('1405');
-  const [holidayYearFilter, setHolidayYearFilter] = useState<string>('1405');
+  const [workdayYearFilter, setWorkdayYearFilter] = useState<string>(defaultFiscalYearStr);
+  const [holidayYearFilter, setHolidayYearFilter] = useState<string>(defaultFiscalYearStr);
 
   // Workday form states
   const [editingWorkdayId, setEditingWorkdayId] = useState<string | null>(null);
@@ -45,28 +52,16 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
   const [bracketRate, setBracketRate] = useState<string>('');
   const [bracketSearchQuery, setBracketSearchQuery] = useState<string>('');
 
-  // Rules states
+  // Rules states (strictly period-isolated)
   const rules = useMemo<PayrollCalculationRules>(() => {
-    const baseRules = db.payrollCalculationRules || {
-      calculateEarlyOvertime: true,
-      calculateLateOvertime: true,
-      calculateHolidayWork: true,
-      calculateFridayWork: true,
-      calculateEntryDelayFine: false,
-      delayFineRate: 1.0,
-      deductClothesChangingTime: false,
-      clothesChangingDuration: 15,
-      deductDailyBreakTime: true,
-      dailyBreakDurationMinutes: 40,
-      calculatePayrollTax: false
-    };
+    const baseRules = getPeriodPayrollRules(db, effectivePeriodId);
     return {
       ...baseRules,
       deductDailyBreakTime: baseRules.deductDailyBreakTime ?? true,
       dailyBreakDurationMinutes: baseRules.dailyBreakDurationMinutes ?? 40,
       calculatePayrollTax: baseRules.calculatePayrollTax ?? false
     };
-  }, [db.payrollCalculationRules]);
+  }, [db, effectivePeriodId]);
 
   const [calcNotification, setCalcNotification] = useState<string | null>(null);
 
@@ -83,13 +78,10 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
     setWorkdayRequiredWorkHours(requiredHours.toString());
   };
 
-  // Update calculation rules in database
+  // Update calculation rules in database (scoped to effectivePeriodId)
   const updateRule = <K extends keyof PayrollCalculationRules>(key: K, value: PayrollCalculationRules[K]) => {
     const updatedRules = { ...rules, [key]: value };
-    onUpdateDb({
-      ...db,
-      payrollCalculationRules: updatedRules
-    });
+    onUpdateDb(setPeriodPayrollRules(db, effectivePeriodId, updatedRules));
     setCalcNotification('تغییرات محاسبات حقوق با موفقیت در دیتابیس ثبت گردید.');
     setTimeout(() => setCalcNotification(null), 3000);
   };
@@ -105,9 +97,10 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
     const workingDays = parseInt(toEnglishDigits(workdayWorkingDaysCount)) || 0;
     const reqHours = parseInt(toEnglishDigits(workdayRequiredWorkHours)) || 0;
 
-    const currentList = db.monthlyWorkdaySettings || [];
+    const allList = db.monthlyWorkdaySettings || [];
+    const currentList = allList.filter(item => item.periodId === effectivePeriodId);
 
-    // Check if duplicate month for the same year
+    // Check if duplicate month for the same year within active period
     const isDuplicate = currentList.some(
       item => item.year === year && item.month === month && item.id !== editingWorkdayId
     );
@@ -119,15 +112,16 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
 
     let updatedList: MonthlyWorkdaySetting[];
     if (editingWorkdayId) {
-      updatedList = currentList.map(item => 
+      updatedList = allList.map(item => 
         item.id === editingWorkdayId 
-          ? { id: editingWorkdayId, year, month, daysInMonth: days, fridaysCount: fridays, nonFridayHolidays: nonFridays, workingDaysCount: workingDays, requiredWorkHours: reqHours }
+          ? { id: editingWorkdayId, periodId: effectivePeriodId, year, month, daysInMonth: days, fridaysCount: fridays, nonFridayHolidays: nonFridays, workingDaysCount: workingDays, requiredWorkHours: reqHours }
           : item
       );
       setEditingWorkdayId(null);
     } else {
       const newSetting: MonthlyWorkdaySetting = {
-        id: `mws-${Date.now()}`,
+        id: nextSimpleId(allList, getPrefixForCollection('monthlyWorkdaySettings')),
+        periodId: effectivePeriodId,
         year,
         month,
         daysInMonth: days,
@@ -136,7 +130,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
         workingDaysCount: workingDays,
         requiredWorkHours: reqHours
       };
-      updatedList = [...currentList, newSetting];
+      updatedList = [...allList, newSetting];
     }
 
     onUpdateDb({
@@ -183,9 +177,10 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
       return;
     }
 
-    const currentList = db.officialHolidays || [];
+    const allList = db.officialHolidays || [];
+    const currentList = allList.filter(item => item.periodId === effectivePeriodId);
 
-    // Check duplicate
+    // Check duplicate within active period
     if (currentList.some(item => item.date === dateStr && item.id !== editingHolidayId)) {
       alert('این تاریخ تعطیلی قبلاً ثبت شده است.');
       return;
@@ -193,19 +188,20 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
 
     let updatedList: OfficialHoliday[];
     if (editingHolidayId) {
-      updatedList = currentList.map(item => 
+      updatedList = allList.map(item => 
         item.id === editingHolidayId 
-          ? { id: editingHolidayId, year, date: dateStr }
+          ? { id: editingHolidayId, periodId: effectivePeriodId, year, date: dateStr }
           : item
       );
       setEditingHolidayId(null);
     } else {
       const newHoliday: OfficialHoliday = {
-        id: `ohd-${Date.now()}`,
+        id: nextSimpleId(allList, getPrefixForCollection('officialHolidays')),
+        periodId: effectivePeriodId,
         year,
         date: dateStr
       };
-      updatedList = [...currentList, newHoliday];
+      updatedList = [...allList, newHoliday];
     }
 
     onUpdateDb({
@@ -243,7 +239,8 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
       return;
     }
 
-    const currentList = db.taxExemptions || [];
+    const allList = db.taxExemptions || [];
+    const currentList = allList.filter(item => item.periodId === effectivePeriodId);
     const isDuplicate = currentList.some(item => Number(item.fiscalYear) === year && item.id !== editingExId);
     if (isDuplicate) {
       alert(`سقف معافیت برای سال مالی ${toPersianDigits(year)} قبلاً ثبت شده است.`);
@@ -252,13 +249,13 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
 
     let updatedList: any[];
     if (editingExId) {
-      updatedList = currentList.map(item =>
-        item.id === editingExId ? { ...item, fiscalYear: year.toString(), exemptionLimit: limitNum } : item
+      updatedList = allList.map(item =>
+        item.id === editingExId ? { ...item, periodId: effectivePeriodId, fiscalYear: year.toString(), exemptionLimit: limitNum } : item
       );
     } else {
       updatedList = [
-        ...currentList,
-        { id: `ex-${Date.now()}`, fiscalYear: year.toString(), exemptionLimit: limitNum }
+        ...allList,
+        { id: nextSimpleId(allList, getPrefixForCollection('taxExemptions')), periodId: effectivePeriodId, fiscalYear: year.toString(), exemptionLimit: limitNum }
       ];
     }
 
@@ -303,17 +300,17 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
       return;
     }
 
-    const currentList = db.taxBrackets || [];
+    const allList = db.taxBrackets || [];
 
     let updatedList: any[];
     if (editingBracketId) {
-      updatedList = currentList.map(item =>
-        item.id === editingBracketId ? { ...item, fiscalYear: year.toString(), fromAmount: fromVal, toAmount: toVal, taxRate: rateVal } : item
+      updatedList = allList.map(item =>
+        item.id === editingBracketId ? { ...item, periodId: effectivePeriodId, fiscalYear: year.toString(), fromAmount: fromVal, toAmount: toVal, taxRate: rateVal } : item
       );
     } else {
       updatedList = [
-        ...currentList,
-        { id: `br-${Date.now()}`, fiscalYear: year.toString(), fromAmount: fromVal, toAmount: toVal, taxRate: rateVal }
+        ...allList,
+        { id: nextSimpleId(allList, getPrefixForCollection('taxBrackets')), periodId: effectivePeriodId, fiscalYear: year.toString(), fromAmount: fromVal, toAmount: toVal, taxRate: rateVal }
       ];
     }
 
@@ -348,9 +345,9 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
     }
   };
 
-  // EXCEL EXPORTS
+  // EXCEL EXPORTS (period-isolated)
   const handleExportWorkdaysExcel = () => {
-    const list = db.monthlyWorkdaySettings || [];
+    const list = (db.monthlyWorkdaySettings || []).filter(item => item.periodId === effectivePeriodId);
     const formatted = list.map(item => ({
       'سال': item.year,
       'ماه': item.month,
@@ -368,7 +365,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
   };
 
   const handleExportHolidaysExcel = () => {
-    const list = db.officialHolidays || [];
+    const list = (db.officialHolidays || []).filter(item => item.periodId === effectivePeriodId);
     const formatted = list.map(item => ({
       'سال': item.year,
       'تاریخ': item.date
@@ -403,7 +400,8 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
         const rows = XLSX.utils.sheet_to_json<any>(sheet);
 
         const imported: MonthlyWorkdaySetting[] = [];
-        let index = 0;
+        const allCurrentWorkdays = db.monthlyWorkdaySettings || [];
+        const genMwsId = createSimpleIdGenerator(allCurrentWorkdays, getPrefixForCollection('monthlyWorkdaySettings'));
 
         const getRowVal = (row: any, possibleKeys: string[]) => {
           const keys = Object.keys(row);
@@ -434,7 +432,8 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
             const rawRequiredWorkHours = getRowVal(row, ['ساعت کار موظفی', 'requiredWorkHours', 'required_work_hours', 'ساعت موظفی']);
 
             imported.push({
-              id: `mws-imported-${Date.now()}-${index++}`,
+              id: genMwsId(),
+              periodId: effectivePeriodId,
               year,
               month,
               daysInMonth: parseInt(toEnglishDigits(rawDaysInMonth !== undefined && rawDaysInMonth !== null ? rawDaysInMonth.toString() : '')) || 30,
@@ -451,13 +450,12 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
           return;
         }
 
-        const currentList = db.monthlyWorkdaySettings || [];
-        // Merge without duplicates (by year and month)
-        const merged = [...currentList];
+        // Merge without duplicates within effectivePeriodId (preserving other periods)
+        const merged = [...allCurrentWorkdays];
         imported.forEach(imp => {
-          const idx = merged.findIndex(c => c.year === imp.year && c.month === imp.month);
+          const idx = merged.findIndex(c => c.periodId === effectivePeriodId && c.year === imp.year && c.month === imp.month);
           if (idx >= 0) {
-            merged[idx] = imp; // update
+            merged[idx] = { ...imp, id: merged[idx].id }; // update preserving id
           } else {
             merged.push(imp); // add new
           }
@@ -500,7 +498,8 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
         const rows = XLSX.utils.sheet_to_json<any>(sheet);
 
         const imported: OfficialHoliday[] = [];
-        let index = 0;
+        const allCurrentHolidays = db.officialHolidays || [];
+        const genOhdId = createSimpleIdGenerator(allCurrentHolidays, getPrefixForCollection('officialHolidays'));
 
         const getRowVal = (row: any, possibleKeys: string[]) => {
           const keys = Object.keys(row);
@@ -528,7 +527,8 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
 
           if (year && dateStr && /^\d{4}\/\d{2}\/\d{2}$/.test(dateStr)) {
             imported.push({
-              id: `ohd-imported-${Date.now()}-${index++}`,
+              id: genOhdId(),
+              periodId: effectivePeriodId,
               year,
               date: dateStr
             });
@@ -540,11 +540,10 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
           return;
         }
 
-        const currentList = db.officialHolidays || [];
-        // Merge based on unique dates
-        const merged = [...currentList];
+        // Merge based on unique dates within effectivePeriodId (preserving other periods)
+        const merged = [...allCurrentHolidays];
         imported.forEach(imp => {
-          if (!merged.some(m => m.date === imp.date)) {
+          if (!merged.some(m => m.periodId === effectivePeriodId && m.date === imp.date)) {
             merged.push(imp);
           }
         });
@@ -564,18 +563,18 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
     e.target.value = ''; // reset file input
   };
 
-  // Filtered lists
+  // Filtered lists (strictly period-isolated)
   const filteredWorkdays = useMemo(() => {
-    const list = db.monthlyWorkdaySettings || [];
+    const list = (db.monthlyWorkdaySettings || []).filter(item => item.periodId === effectivePeriodId);
     if (!workdayYearFilter) return list;
     return list.filter(item => item.year.toString() === workdayYearFilter);
-  }, [db.monthlyWorkdaySettings, workdayYearFilter]);
+  }, [db.monthlyWorkdaySettings, effectivePeriodId, workdayYearFilter]);
 
   const filteredHolidays = useMemo(() => {
-    const list = db.officialHolidays || [];
+    const list = (db.officialHolidays || []).filter(item => item.periodId === effectivePeriodId);
     if (!holidayYearFilter) return list;
     return list.filter(item => item.year.toString() === holidayYearFilter);
-  }, [db.officialHolidays, holidayYearFilter]);
+  }, [db.officialHolidays, effectivePeriodId, holidayYearFilter]);
 
   const persianMonths = [
     'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
@@ -1365,6 +1364,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb }: AttendanceSet
                   <tbody className="divide-y divide-slate-800/60 bg-slate-950/20">
                     {(() => {
                       const brackets = (db.taxBrackets || []).filter(item => 
+                        item.periodId === effectivePeriodId &&
                         String(item.fiscalYear).includes(toEnglishDigits(bracketSearchQuery))
                       ).sort((a, b) => Number(a.fiscalYear) - Number(b.fiscalYear) || a.fromAmount - b.fromAmount);
 

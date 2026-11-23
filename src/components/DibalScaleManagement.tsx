@@ -3,13 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   AppDatabase, Product, Item, DibalScaleConfig, DibalPLUMapping, DibalWeighingTicket
 } from '../types';
 import { 
   toPersianDigits, formatWithCommas, parseNumber, matchPersianString, toEnglishDigits
 } from '../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../utils/simpleId';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import { 
   Scale, Wifi, WifiOff, RefreshCw, Send, Download, Settings, Database, CheckCircle, 
   AlertTriangle, Play, Terminal, Layers, Tag, FileText, Cpu, Server, Activity, 
@@ -57,6 +61,7 @@ export function cleanIpAddress(ip: string): string {
 
 export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }: DibalScaleManagementProps) {
   const [activeTab, setActiveTab] = useState<'config' | 'plus' | 'keypad' | 'tickets' | 'reports' | 'label_design' | 'terminal' | 'manual'>('config');
+  const [showCopyModal, setShowCopyModal] = useState(false);
 
   // Keypad Shift Page State (Shift A / Shift B)
   const [keypadShiftPage, setKeypadShiftPage] = useState<'A' | 'B'>('A');
@@ -236,13 +241,19 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     }
   ]);
 
-  // Default Scale Config Initializer
+  // Default Scale Config Initializer (strictly period-isolated)
+  const periodScales = useMemo(
+    () => (db.dibalScales || []).filter(s => s.periodId === activePeriodId),
+    [db.dibalScales, activePeriodId]
+  );
+
   const scaleConfig: DibalScaleConfig = useMemo(() => {
-    if (db.dibalScales && db.dibalScales.length > 0) {
-      return db.dibalScales[0];
+    if (periodScales.length > 0) {
+      return periodScales[0];
     }
     return {
-      id: 'dibal-1',
+      id: nextSimpleId(db.dibalScales || [], getPrefixForCollection('dibalScales')),
+      periodId: activePeriodId,
       name: 'ترازوی دیبال فروشگاهی - Dibal 500-SW',
       model: 'Dibal 500-SW',
       scaleId: 1,
@@ -262,9 +273,26 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
       lastSyncTime: '۱۴۰۵/۰۱/۱۵ - ۱۴:۳۰',
       autoSyncReceipts: true
     };
-  }, [db.dibalScales]);
+  }, [periodScales, db.dibalScales, activePeriodId]);
 
   const [configForm, setConfigForm] = useState<DibalScaleConfig>(scaleConfig);
+
+  useEffect(() => {
+    setConfigForm(scaleConfig);
+  }, [scaleConfig]);
+
+  // Period-safe update helpers (never overwrite other fiscal periods)
+  const savePeriodPluList = (nextPeriodPlus: DibalPLUMapping[]) => {
+    const otherPeriods = (db.dibalPLUs || []).filter(p => p.periodId !== activePeriodId);
+    const stamped = nextPeriodPlus.map(p => ({ ...p, periodId: activePeriodId }));
+    onUpdateDb({ ...db, dibalPLUs: [...otherPeriods, ...stamped] });
+  };
+
+  const savePeriodTicketList = (nextPeriodTickets: DibalWeighingTicket[]) => {
+    const otherPeriods = (db.dibalTickets || []).filter(t => t.periodId !== activePeriodId);
+    const stamped = nextPeriodTickets.map(t => ({ ...t, periodId: activePeriodId }));
+    onUpdateDb({ ...db, dibalTickets: [...otherPeriods, ...stamped] });
+  };
 
   // Sync state & connection tests
   const [isTestingConnection, setIsTestingConnection] = useState(false);
@@ -308,40 +336,10 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
 
   const [customTerminalCommand, setCustomTerminalCommand] = useState('');
 
-  // PLU Mappings State
+  // PLU Mappings State (strictly period-isolated)
   const pluList: DibalPLUMapping[] = useMemo(() => {
-    if (db.dibalPLUs && db.dibalPLUs.length > 0) {
-      return db.dibalPLUs;
-    }
-    // Generate initial PLU items from products if empty
-    const activeProducts = db.products.filter(p => p.periodId === activePeriodId);
-    return activeProducts.slice(0, 15).map((prod, idx) => {
-      const isUnitItem = prod.unit === 'عدد' || (prod.unit as string) === 'بسته' || idx % 4 === 3;
-      return {
-        id: `plu-${idx + 1}`,
-        pluCode: idx + 1,
-        productId: prod.id,
-        name: prod.name,
-        secondName: `کد بخش: A${(idx % 3) + 1}`,
-        pricePerKg: prod.salePrice || 150000,
-        promoPrice: idx % 3 === 0 ? Math.round((prod.salePrice || 150000) * 0.9) : undefined,
-        itemType: isUnitItem ? ('unit' as const) : ('weighted' as const),
-        priceType: 'variable' as const,
-        directKeyNumber: idx < 12 ? idx + 1 : undefined,
-        departmentCode: 1,
-        sectionCode: (idx % 3) + 1,
-        tareWeight: isUnitItem ? 0 : (idx % 2 === 0 ? 15 : 0),
-        expiryDays: 5,
-        packOffsetDays: 0,
-        vatRate: 0,
-        ingredientsText: `مواد اولیه: ${prod.name}، آرد نول، شکر، کره حیوان، تولید روز قنادی گاتان`,
-        barcodeFormat: '21PPPWWWWWC',
-        barcodeType: 'EAN-13' as const,
-        lastSentAt: '۱۴۰۵/۰۱/۱۵ - ۰۹:۰۰',
-        status: 'synced' as const
-      };
-    });
-  }, [db.dibalPLUs, db.products, activePeriodId]);
+    return (db.dibalPLUs || []).filter(p => p.periodId === activePeriodId);
+  }, [db.dibalPLUs, activePeriodId]);
 
   const [pluSearch, setPluSearch] = useState('');
   const [pluTypeFilter, setPluTypeFilter] = useState<'all' | 'weighted' | 'unit'>('all');
@@ -415,72 +413,10 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     };
   }, [pluList]);
 
-  // Tickets State
+  // Tickets State (strictly period-isolated)
   const ticketList: DibalWeighingTicket[] = useMemo(() => {
-    if (db.dibalTickets && db.dibalTickets.length > 0) {
-      return db.dibalTickets;
-    }
-    return [
-      {
-        id: 't-101',
-        scaleId: 1,
-        ticketNumber: 1001,
-        date: '1405/01/15',
-        time: '11:15:20',
-        pluCode: 1,
-        itemName: 'کروسان شکلاتی اعلا',
-        itemType: 'weighted',
-        netWeightKg: 1.450,
-        unitPrice: 220000,
-        totalPrice: 319000,
-        status: 'raw'
-      },
-      {
-        id: 't-102',
-        scaleId: 1,
-        ticketNumber: 1002,
-        date: '1405/01/15',
-        time: '11:28:45',
-        pluCode: 2,
-        itemName: 'نان باگت فرانسوی (تعدادی)',
-        itemType: 'unit',
-        quantity: 4,
-        netWeightKg: 0,
-        unitPrice: 95000,
-        totalPrice: 380000,
-        status: 'raw'
-      },
-      {
-        id: 't-103',
-        scaleId: 1,
-        ticketNumber: 1003,
-        date: '1405/01/15',
-        time: '12:05:10',
-        pluCode: 3,
-        itemName: 'شیرینی دانمارکی داغ',
-        itemType: 'weighted',
-        netWeightKg: 2.100,
-        unitPrice: 310000,
-        totalPrice: 651000,
-        status: 'converted_to_sale'
-      },
-      {
-        id: 't-104',
-        scaleId: 1,
-        ticketNumber: 1004,
-        date: '1405/01/15',
-        time: '12:30:15',
-        pluCode: 4,
-        itemName: 'کیک تولد تصویری سفارشی (تعدادی)',
-        itemType: 'unit',
-        quantity: 1,
-        netWeightKg: 0,
-        unitPrice: 4500000,
-        totalPrice: 4500000,
-        status: 'raw'
-      }
-    ];
-  }, [db.dibalTickets]);
+    return (db.dibalTickets || []).filter(t => t.periodId === activePeriodId);
+  }, [db.dibalTickets, activePeriodId]);
 
   const [ticketSearch, setTicketSearch] = useState('');
   const [isSyncingTickets, setIsSyncingTickets] = useState(false);
@@ -497,13 +433,19 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     setConfirmModal({ title, message, onConfirm: action });
   };
 
-  // Handle saving network settings
+  // Handle saving network settings (period-isolated)
   const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
     const sanitizedIp = cleanIpAddress(configForm.ipAddress);
-    const updatedForm = { ...configForm, ipAddress: sanitizedIp };
+    const updatedForm: DibalScaleConfig = {
+      ...configForm,
+      id: configForm.id || nextSimpleId(db.dibalScales || [], getPrefixForCollection('dibalScales')),
+      periodId: activePeriodId,
+      ipAddress: sanitizedIp,
+    };
     setConfigForm(updatedForm);
-    const updatedScales = [updatedForm];
+    const otherPeriodScales = (db.dibalScales || []).filter(s => s.periodId !== activePeriodId);
+    const updatedScales = [...otherPeriodScales, updatedForm];
     onUpdateDb({ ...db, dibalScales: updatedScales });
     alert(`تنظیمات شبکه و پورت‌های ترازو دیبال Tower M-525 با موفقیت در سامانه ذخیره گردید.\nآدرس IP استاندارد: ${sanitizedIp}`);
   };
@@ -612,12 +554,19 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
         barcodeFormat: editingPlu.barcodeFormat || '21PPPWWWWWC',
         status: 'pending' as const
       } : p);
-      onUpdateDb({ ...db, dibalPLUs: updatedList });
+      onUpdateDb({
+        ...db,
+        dibalPLUs: [
+          ...(db.dibalPLUs || []).filter(p => p.periodId !== activePeriodId),
+          ...updatedList.map(p => ({ ...p, periodId: activePeriodId }))
+        ]
+      });
       setEditingPlu(null);
     } else {
       if (!newPlu.name?.trim()) return;
       const created: DibalPLUMapping = {
-        id: `plu-${Date.now()}`,
+        id: nextSimpleId(db.dibalPLUs || [], getPrefixForCollection('dibalPLUs')),
+        periodId: activePeriodId,
         pluCode: Number(newPlu.pluCode) || 1,
         name: newPlu.name.trim(),
         secondName: newPlu.secondName?.trim() || '',
@@ -637,8 +586,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
         barcodeFormat: newPlu.barcodeFormat || '21PPPWWWWWC',
         status: 'pending'
       };
-      const updatedList = [...pluList, created];
-      onUpdateDb({ ...db, dibalPLUs: updatedList });
+      savePeriodPluList([...pluList, created]);
       setNewPlu({
         pluCode: created.pluCode + 1,
         name: '',
@@ -663,8 +611,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
 
   const handleDeletePlu = (id: string) => {
     askConfirm('حذف کد PLU', 'آیا از حذف این کد کالا از حافظه ترازو اطمینان دارید؟', () => {
-      const updatedList = pluList.filter(p => p.id !== id);
-      onUpdateDb({ ...db, dibalPLUs: updatedList });
+      savePeriodPluList(pluList.filter(p => p.id !== id));
     });
   };
 
@@ -709,7 +656,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
         }
         return p;
       });
-      onUpdateDb({ ...db, dibalPLUs: updatedPLUs });
+      savePeriodPluList(updatedPLUs);
       setSelectedPluIds([]);
 
       const logItem = {
@@ -743,7 +690,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
           }
           return p;
         });
-        onUpdateDb({ ...db, dibalPLUs: updatedPLUs });
+        savePeriodPluList(updatedPLUs);
         setSelectedPluIds([]);
       });
     }
@@ -787,10 +734,16 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     }
   };
 
-  // Excel Backup Export & Import Handlers for Dibal Management
+  // Excel Backup Export & Import Handlers for Dibal Management (period-isolated)
   const handleExportToExcel = () => {
     try {
-      exportDibalDataToExcel(db);
+      const scopedDb: AppDatabase = {
+        ...db,
+        dibalScales: periodScales,
+        dibalPLUs: pluList,
+        dibalTickets: ticketList,
+      };
+      exportDibalDataToExcel(scopedDb);
     } catch (e) {
       alert('خطا در خروجی گرفتن اکسل ترازو دیبال: ' + String(e));
     }
@@ -804,8 +757,22 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
       const buffer = event.target?.result as ArrayBuffer;
       if (!buffer) return;
       try {
-        const updatedDb = importDibalDataFromExcel(buffer, db);
-        onUpdateDb(updatedDb);
+        const scopedInputDb: AppDatabase = {
+          ...db,
+          dibalScales: periodScales,
+          dibalPLUs: pluList,
+          dibalTickets: ticketList,
+        };
+        const importedDb = importDibalDataFromExcel(buffer, scopedInputDb);
+        const otherScales = (db.dibalScales || []).filter(s => s.periodId !== activePeriodId);
+        const otherPlus = (db.dibalPLUs || []).filter(p => p.periodId !== activePeriodId);
+        const otherTickets = (db.dibalTickets || []).filter(t => t.periodId !== activePeriodId);
+        onUpdateDb({
+          ...db,
+          dibalScales: [...otherScales, ...(importedDb.dibalScales || []).map(s => ({ ...s, periodId: activePeriodId }))],
+          dibalPLUs: [...otherPlus, ...(importedDb.dibalPLUs || []).map(p => ({ ...p, periodId: activePeriodId }))],
+          dibalTickets: [...otherTickets, ...(importedDb.dibalTickets || []).map(t => ({ ...t, periodId: activePeriodId }))],
+        });
         alert('اطلاعات فرم مدیریت ترازو دیبال با موفقیت از فایل اکسل بازیابی و همگام گردید.');
       } catch (err) {
         console.error('Excel Import Error:', err);
@@ -852,7 +819,8 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     const tPrice = isUnitItem ? qty * uPrice : Math.floor(weight * uPrice);
 
     const newTicket: DibalWeighingTicket = {
-      id: `t-${Date.now()}`,
+      id: nextSimpleId(db.dibalTickets || [], getPrefixForCollection('dibalTickets')),
+      periodId: activePeriodId,
       scaleId: configForm.scaleId,
       ticketNumber: 1000 + ticketList.length + 1,
       date: new Date().toLocaleDateString('fa-IR'),
@@ -867,8 +835,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
       status: 'raw'
     };
 
-    const updatedTickets = [newTicket, ...ticketList];
-    onUpdateDb({ ...db, dibalTickets: updatedTickets });
+    savePeriodTicketList([newTicket, ...ticketList]);
 
     if (bridgeResult.success) {
       alert(`قبض زنده شماره ${toPersianDigits(newTicket.ticketNumber)} از ترازوی دیبال با موفقیت دریافت و همگام شد.\nپاسخ سوکت: ${bridgeResult.responseHex}`);
@@ -880,7 +847,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
   // Convert Ticket to Sales Transaction
   const handleConvertTicketToSale = (ticket: DibalWeighingTicket) => {
     const updatedTickets = ticketList.map(t => t.id === ticket.id ? { ...t, status: 'converted_to_sale' as const } : t);
-    onUpdateDb({ ...db, dibalTickets: updatedTickets });
+    savePeriodTicketList(updatedTickets);
     alert(`قبض شماره ${toPersianDigits(ticket.ticketNumber)} با مبلغ ${formatWithCommas(ticket.totalPrice)} ریال با موفقیت به بخش ثبت فروش سامانه متصل شد.`);
   };
 
@@ -961,49 +928,43 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     );
   }, [ticketList, ticketSearch]);
 
+  const activeCopySection: CopySectionKey =
+    activeTab === 'config' ? 'dibalScales' :
+    activeTab === 'tickets' || activeTab === 'reports' ? 'dibalTickets' :
+    'dibalPLUs';
+
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-4 sm:space-y-6 animate-fade-in selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl min-h-[600px] shadow-xl font-sans p-3 sm:p-6 text-right space-y-5 animate-fade-in selection:bg-emerald-500 selection:text-white" dir="rtl">
       
-      {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-rose-950/30 to-slate-900 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-rose-900/40 shadow-2xl relative overflow-hidden">
-        <div className="absolute -left-10 -top-10 w-40 h-40 bg-rose-600/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 relative z-10">
-          <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-rose-600/20 border border-rose-500/30 text-rose-400 rounded-2xl shadow-inner">
-              <Scale className="h-7 w-7" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-black text-white">
-                  مدیریت و همگام‌سازی ترازوی دیبال ({configForm.model || 'Dibal 500-SW'})
-                </h2>
-                <span className="bg-rose-950/80 border border-rose-500/40 text-rose-300 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full font-mono">
-                  DIBAL Series 500
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1">
-                ارتباط مستقیم شبکه با‌سیم (Ethernet TCP/IP)، ارسال و دریافت کاتالوگ کالاها (PLU) و مدیریت قبوض وزن‌کشی
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto justify-end">
-            <button
-              type="button"
-              onClick={handleExportToExcel}
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-              title="ارسال کلیه اطلاعات فرم مدیریت ترازو به فایل اکسل"
+      {/* Unified Header */}
+      <ModuleHeader
+        title={`مدیریت ترازوی دیبال (${configForm.model || 'Dibal 500-SW'})`}
+        subtitle="ارتباط شبکه Ethernet TCP/IP، مدیریت کاتالوگ کالاها (PLU)، کیپد مستقیم و قبوض وزن‌کشی"
+        icon={<Scale className="w-5 h-5" />}
+        actions={
+          <>
+            <ErpButton
+              variant="secondary"
+              size="sm"
+              icon={<Copy className="w-4 h-4" />}
+              onClick={() => setShowCopyModal(true)}
             >
-              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
-              <span>ارسال به اکسل</span>
-            </button>
-
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+            <ErpButton
+              variant="secondary"
+              size="sm"
+              icon={<FileSpreadsheet className="w-4 h-4" />}
+              onClick={handleExportToExcel}
+            >
+              {ERP_BUTTON_LABELS.exportExcel}
+            </ErpButton>
             <label
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-xs font-bold border border-slate-700 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               title="دریافت اطلاعات فرم مدیریت ترازو از فایل اکسل"
             >
-              <Upload className="h-3.5 w-3.5 text-indigo-400" />
-              <span>دریافت از اکسل</span>
+              <Upload className="h-3.5 w-3.5 shrink-0" />
+              <span>{ERP_BUTTON_LABELS.importExcel}</span>
               <input
                 type="file"
                 accept=".xlsx, .xls"
@@ -1011,126 +972,34 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
                 className="hidden"
               />
             </label>
-
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold transition-all ${
-              configForm.isOnline 
-                ? 'bg-emerald-950/50 text-emerald-300 border-emerald-500/40' 
-                : 'bg-slate-900 text-slate-400 border-slate-800'
-            }`}>
-              <span className={`h-2.5 w-2.5 rounded-full ${configForm.isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-              <span>{configForm.isOnline ? 'شبکه متصل' : 'عدم اتصال'}</span>
-            </div>
-
-            <button
+            <ErpButton
+              variant="primary"
+              size="sm"
+              icon={<RefreshCw className={`w-4 h-4 ${isTestingConnection ? 'animate-spin' : ''}`} />}
               onClick={handleTestConnection}
               disabled={isTestingConnection}
-              className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-rose-600/20 transition-all cursor-pointer flex items-center gap-1.5"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
-              <span>{isTestingConnection ? 'تست پکت...' : 'تست PING'}</span>
-            </button>
-          </div>
-        </div>
-      </div>
+              {isTestingConnection ? 'تست پکت...' : 'تست PING'}
+            </ErpButton>
+          </>
+        }
+      />
 
-      {/* Tabs Navigation */}
-      <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 sm:gap-2 bg-slate-950 p-1.5 sm:p-2 rounded-2xl border border-slate-800/80 shadow-lg">
-        <button
-          onClick={() => setActiveTab('config')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'config'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <Settings className="h-4 w-4 shrink-0" />
-          تنظیمات شبکه و پورت‌های RX / TX
-        </button>
-
-        <button
-          onClick={() => setActiveTab('plus')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'plus'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <Tag className="h-4 w-4 shrink-0" />
-          مدیریت کالاها و حافظه PLU ({toPersianDigits(pluList.length)})
-        </button>
-
-        <button
-          onClick={() => setActiveTab('keypad')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'keypad'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <Grid3x3 className="h-4 w-4 shrink-0" />
-          کلیدهای مستقیم کیپد (Preset Keys 1-70)
-        </button>
-
-        <button
-          onClick={() => setActiveTab('tickets')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'tickets'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <FileText className="h-4 w-4 shrink-0" />
-          قبوض وزن‌کشی ({toPersianDigits(ticketList.length)})
-        </button>
-
-        <button
-          onClick={() => setActiveTab('reports')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'reports'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <BarChart3 className="h-4 w-4 text-emerald-400 shrink-0" />
-          گزارشات فروش و آمار ترازو (Sales Reports)
-        </button>
-
-        <button
-          onClick={() => setActiveTab('label_design')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'label_design'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <Printer className="h-4 w-4 shrink-0" />
-          طراحی قالب چاپ و لیبل (Label Designer)
-        </button>
-
-        <button
-          onClick={() => setActiveTab('terminal')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'terminal'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-          }`}
-        >
-          <Terminal className="h-4 w-4 shrink-0" />
-          ترمینال دستورات و بازرس پروتکل
-        </button>
-
-        <button
-          onClick={() => setActiveTab('manual')}
-          className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'manual'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-              : 'text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 border border-amber-500/30'
-          }`}
-        >
-          <BookOpen className="h-4 w-4 text-amber-400 shrink-0" />
-          آموزش و دفترچه راهنمای Dibal 500-SW
-        </button>
-      </div>
+      {/* Unified Primary Tabs */}
+      <ModulePrimaryTabs
+        activeTab={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+        tabs={[
+          { id: 'config', label: 'تنظیمات شبکه و پورت', icon: <Settings className="w-4 h-4" /> },
+          { id: 'plus', label: 'حافظه کالاها (PLU)', icon: <Tag className="w-4 h-4" />, count: pluList.length },
+          { id: 'keypad', label: 'کلیدهای مستقیم کیپد', icon: <Grid3x3 className="w-4 h-4" /> },
+          { id: 'tickets', label: 'قبوض وزن‌کشی', icon: <FileText className="w-4 h-4" />, count: ticketList.length },
+          { id: 'reports', label: 'گزارشات ترازو', icon: <BarChart3 className="w-4 h-4" /> },
+          { id: 'label_design', label: 'طراحی قالب لیبل', icon: <Printer className="w-4 h-4" /> },
+          { id: 'terminal', label: 'ترمینال پروتکل', icon: <Terminal className="w-4 h-4" /> },
+          { id: 'manual', label: 'راهنمای Dibal', icon: <BookOpen className="w-4 h-4" /> },
+        ]}
+      />
 
       {/* ================= TAB 1: NETWORK & PORT CONFIG ================= */}
       {activeTab === 'config' && (
@@ -2594,7 +2463,7 @@ app.listen(8080, () => {
                             if (p.id === pluId) return { ...p, directKeyNumber: keyNum };
                             return p;
                           });
-                          onUpdateDb({ ...db, dibalPLUs: updated });
+                          savePeriodPluList(updated);
                         }}
                       >
                         <option value="">انتخاب کالا...</option>
@@ -4969,6 +4838,14 @@ app.listen(8080, () => {
         </div>
       )}
 
+      <CopyFromPeriodModal
+        isOpen={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        activePeriodId={activePeriodId}
+        section={activeCopySection}
+        onUpdateDb={onUpdateDb}
+      />
     </div>
   );
 }

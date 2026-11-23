@@ -13,6 +13,7 @@ import {
 import { 
   toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
 } from '../../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface CashiersTabProps {
   db: AppDatabase;
@@ -51,12 +52,12 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
   const [notes, setNotes] = useState('');
 
   const cashiers = useMemo(() => {
-    return db.cashiers || [];
-  }, [db.cashiers]);
+    return (db.cashiers || []).filter(c => c.periodId === activePeriodId);
+  }, [db.cashiers, activePeriodId]);
 
   const cashDrawers = useMemo(() => {
-    return db.cashDrawers || [];
-  }, [db.cashDrawers]);
+    return (db.cashDrawers || []).filter(d => d.periodId === activePeriodId);
+  }, [db.cashDrawers, activePeriodId]);
 
   const cashDrawerMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -64,16 +65,18 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
     return map;
   }, [cashDrawers]);
 
-  // Cashier shift closeout count
+  // Cashier shift closeout count (active period only)
   const cashierStats = useMemo(() => {
     const map: Record<string, { closeoutsCount: number; receiptsCount: number }> = {};
+    const periodCloseouts = (db.cashierShiftCloseouts || []).filter(cl => cl.periodId === activePeriodId);
+    const periodReceipts = (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId);
     cashiers.forEach(c => {
-      let closeoutsCount = (db.cashierShiftCloseouts || []).filter(cl => cl.cashierId === c.id).length;
-      let receiptsCount = (db.treasuryReceipts || []).filter(r => r.cashierId === c.id).length;
+      const closeoutsCount = periodCloseouts.filter(cl => cl.cashierId === c.id).length;
+      const receiptsCount = periodReceipts.filter(r => r.cashierId === c.id).length;
       map[c.id] = { closeoutsCount, receiptsCount };
     });
     return map;
-  }, [cashiers, db.cashierShiftCloseouts, db.treasuryReceipts]);
+  }, [cashiers, db.cashierShiftCloseouts, db.treasuryReceipts, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = cashiers.length;
@@ -171,7 +174,7 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
       } : c);
     } else {
       const newCashier: Cashier = {
-        id: `cshr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: nextSimpleId(currentList, getPrefixForCollection('cashiers')),
         periodId: activePeriodId,
         code: code.trim(),
         fullName: fullName.trim(),

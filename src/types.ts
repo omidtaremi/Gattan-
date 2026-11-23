@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export type { BranchDefinition } from './shared/branches';
+
 export interface Period {
   id: string; // e.g., "1405-01"
   name: string; // e.g., "دوره فروردین ۱۴۰۵"
@@ -257,6 +259,7 @@ export interface PersonnelChild {
 
 export interface PersonnelCategory {
   id: string;
+  periodId?: string;
   name: string;
 }
 
@@ -386,6 +389,7 @@ export interface PersonnelContract {
 
 export interface Shift {
   id: string;
+  periodId?: string;
   name: string;
   startTime: string;
   endTime: string;
@@ -410,6 +414,7 @@ export interface ShiftAssignment {
 
 export interface ProductionSection {
   id: string;
+  periodId?: string;
   name: string;
   minStaff: number; // minimum staff requirement
   startTime?: string; // added start time for section
@@ -420,6 +425,7 @@ export interface ProductionSection {
 
 export interface ShiftScheme {
   id: string;
+  periodId?: string;
   name: string;
   isActive: boolean;
   productionSections?: ProductionSection[];
@@ -530,6 +536,7 @@ export interface SalaryBaseRate {
 
 export interface SeniorityRateRule {
   id: string;
+  periodId?: string;
   seniorityYears: number; // سابقه (سال)
   dailyRate: number;      // مبلغ پایه سنوات روزانه
   fiscalYear: string;     // سال مالی
@@ -673,11 +680,13 @@ export interface AppDatabase {
   contractPersonnelText?: string;
   taxExemptions?: {
     id: string;
+    periodId?: string;
     fiscalYear: string;
     exemptionLimit: number;
   }[];
   taxBrackets?: {
     id: string;
+    periodId?: string;
     fiscalYear: string;
     fromAmount: number;
     toAmount: number;
@@ -692,6 +701,7 @@ export interface AppDatabase {
     itemName: string;
   }[];
   productionPlanningSettings?: any;
+  productionPlanningSettingsByPeriod?: Record<string, ProductionPlanningSettings>;
   productionPlanningOrders?: any[];
   customerProductionOrders?: CustomerProductionOrder[];
   customerOrderPurposes?: string[];
@@ -699,6 +709,9 @@ export interface AppDatabase {
   dibalPLUs?: DibalPLUMapping[];
   dibalTickets?: DibalWeighingTicket[];
   barcodeSettings?: BarcodeSettings;
+  barcodeSettingsByPeriod?: Record<string, BarcodeSettings>;
+  payrollCalculationRulesByPeriod?: Record<string, PayrollCalculationRules>;
+  personnelCapabilitiesByPeriod?: Record<string, Record<string, string[]>>;
   customers?: Customer[];
   customerCategories?: CustomerCategory[];
   bankAccounts?: BankAccount[];
@@ -761,6 +774,7 @@ export interface BarcodeSettings {
 
 export interface MonthlyWorkdaySetting {
   id: string;
+  periodId?: string;
   year: number;
   month: number;
   daysInMonth: number;
@@ -786,6 +800,7 @@ export interface PayrollCalculationRules {
 
 export interface OfficialHoliday {
   id: string;
+  periodId?: string;
   year: number;
   date: string; // YYYY/MM/DD
 }
@@ -945,6 +960,7 @@ export interface User {
   name?: string; // added to support name fallback
   role: string;
   permissions: string[];
+  allowedBranches?: string[];
   password: string;
   is2FA: boolean;
   secretCode: string;
@@ -1029,6 +1045,7 @@ export interface ProductionPlanningOrder {
 
 export interface DibalScaleConfig {
   id: string;
+  periodId?: string;
   name: string; // e.g. "ترازوی دیبال بخش فروشگاه - Tower M-525"
   model: string; // e.g. "Dibal Tower M-525"
   scaleId: number; // e.g. 1
@@ -1072,6 +1089,7 @@ export interface AttendanceDeviceConfig {
 
 export interface DibalPLUMapping {
   id: string;
+  periodId?: string;
   pluCode: number; // 1 to 9999
   productId?: string; // linked to db.products
   itemId?: string; // linked to db.items
@@ -1097,6 +1115,7 @@ export interface DibalPLUMapping {
 
 export interface DibalWeighingTicket {
   id: string;
+  periodId?: string;
   scaleId: number;
   ticketNumber: number;
   date: string; // "1405/01/15"
@@ -1206,6 +1225,7 @@ export interface ChequeBook {
 
 export interface ChequeLeaf {
   id: string;
+  periodId?: string;
   chequeBookId: string;
   bankAccountId: string;
   leafNumber: number; // شماره سریال برگه چک e.g. 1001

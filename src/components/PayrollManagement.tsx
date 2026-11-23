@@ -38,6 +38,24 @@ import {
   ProvisionalSettlementPreview,
   resolveDepartedMonthAttendancePerf
 } from '../utils/payrollSettlementSync';
+import {
+  getPeriodPayrollRules,
+  getPeriodPersonnelCapabilities,
+  setPeriodPersonnelCapabilities
+} from '../utils/periodIsolation';
+import {
+  nextSimpleId,
+  createSimpleIdGenerator,
+  getPrefixForCollection
+} from '../utils/simpleId';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS
+} from './ui/UnifiedErpUi';
+import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
 import { 
   Users, Search, Plus, Trash, Trash2, Printer, CheckCircle, FileSpreadsheet, Sparkles, Layers,
   DollarSign, Briefcase, Calendar, ShieldCheck, Download, Award, ChevronLeft, CreditCard, ChevronDown, CheckSquare, Square, RefreshCcw, AlertTriangle, Tag, Copy,
@@ -426,49 +444,37 @@ export const getSalaryBaseRateForYearMonth = (
   month?: number | string,
   activePeriodId?: string
 ): SalaryBaseRate | undefined => {
-  const rates = db.salaryBaseRates || [];
+  const allRates = db.salaryBaseRates || [];
+  const rates = activePeriodId ? allRates.filter((r: any) => r.periodId === activePeriodId) : allRates;
   if (rates.length === 0) return undefined;
 
-  const targetYearStr = year 
-    ? toEnglishDigits(String(year)).trim() 
-    : (activePeriodId && activePeriodId.includes('-') && activePeriodId.split('-')[0].length === 4 
-        ? toEnglishDigits(activePeriodId.split('-')[0]).trim() 
-        : '');
-  const targetMonthStr = month 
-    ? String(month).padStart(2, '0') 
-    : (activePeriodId && activePeriodId.includes('-') ? activePeriodId.split('-')[1].padStart(2, '0') : '');
+  const activePeriodObj = activePeriodId ? (db.periods || []).find(p => p.id === activePeriodId) : undefined;
+  const targetYearStr = year
+    ? toEnglishDigits(String(year)).trim()
+    : (activePeriodId ? String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId)) : '');
+  const targetMonthStr = month ? String(month).padStart(2, '0') : '';
 
-  // 1. If targetYearStr is provided, ALWAYS match a rate corresponding strictly to that year first!
   if (targetYearStr) {
-    // 1a. Match exact year AND month/period (e.g. periodId === `${targetYearStr}-${targetMonthStr}`)
+    if (activePeriodId) {
+      const matchedByActivePeriod = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === activePeriodId);
+      if (matchedByActivePeriod) return matchedByActivePeriod;
+    }
+
     if (targetMonthStr) {
       const periodYM = `${targetYearStr}-${targetMonthStr}`;
       const matchedByYM = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === periodYM);
       if (matchedByYM) return matchedByYM;
     }
 
-    // 1b. Match exact year AND activePeriodId (if activePeriodId belongs to that year)
-    if (activePeriodId && activePeriodId.startsWith(targetYearStr)) {
-      const matchedByActivePeriod = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === activePeriodId);
-      if (matchedByActivePeriod) return matchedByActivePeriod;
-    }
-
-    // 1c. Match by year registered in "قوانین و ثوابت دستمزد"
     const matchedByYear = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr);
     if (matchedByYear) return matchedByYear;
-
-    // 1d. Match by periodId prefix with targetYearStr
-    const matchedByPeriodPrefix = rates.find((r: any) => r.periodId && toEnglishDigits(String(r.periodId)).startsWith(targetYearStr));
-    if (matchedByPeriodPrefix) return matchedByPeriodPrefix;
   }
 
-  // 2. Only if no targetYear was provided, match by activePeriodId if available
   if (activePeriodId) {
     const matchedByActivePeriod = rates.find((r: any) => r.periodId === activePeriodId);
     if (matchedByActivePeriod) return matchedByActivePeriod;
   }
 
-  // 3. Fallback: return the latest defined rate by year
   const sorted = [...rates].sort((a: any, b: any) => (Number(toEnglishDigits(String(b.year || ''))) || 0) - (Number(toEnglishDigits(String(a.year || ''))) || 0));
   return sorted[0] || rates[0];
 };
@@ -528,21 +534,20 @@ export const getSalaryBaseRateForContract = (
   activePeriodId: string,
   calcYear?: number | string
 ): SalaryBaseRate | undefined => {
-  const rates = db.salaryBaseRates || [];
+  const rates = (db.salaryBaseRates || []).filter((r: any) => !activePeriodId || r.periodId === activePeriodId);
   if (rates.length === 0) return undefined;
 
-  const activeYear = activePeriodId && activePeriodId.includes('-') && activePeriodId.split('-')[0].length === 4 
-    ? activePeriodId.split('-')[0].trim() 
-    : '';
-  const periodYear = c?.periodId && c.periodId.includes('-') ? c.periodId.split('-')[0].trim() : '';
+  const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
+  const activeYear = activePeriodId ? String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId)) : '';
+  const contractPeriodObj = c?.periodId ? (db.periods || []).find(p => p.id === c.periodId) : undefined;
+  const periodYear = c?.periodId ? String(getFiscalYearFromPeriod(contractPeriodObj, c.periodId)) : '';
   const startDateStr = c?.contractStartDate || emp?.contractStartDate || emp?.entryDate || '';
   const endDateStr = c?.contractEndDate || emp?.contractEndDate || '';
   const startYear = getJalaliYear(startDateStr);
   const endYear = getJalaliYear(endDateStr);
 
-  // If a calculation/payslip year is specified or activePeriod has a year, use it; otherwise use contract start year
-  const targetYear = calcYear 
-    ? String(calcYear).trim() 
+  const targetYear = calcYear
+    ? String(calcYear).trim()
     : (activeYear || periodYear || startYear || endYear);
 
   if (targetYear) {
@@ -614,12 +619,12 @@ export const getInsuredSalaryItemsForContract = (
   db: AppDatabase,
   fallbackPeriodId: string
 ): { periodId: string; items: any[] } => {
-  const allInsured = db.insuredSalaryItems || [];
+  const allInsured = (db.insuredSalaryItems || []).filter((item: any) => !fallbackPeriodId || item.periodId === fallbackPeriodId);
   if (allInsured.length === 0) {
     return { periodId: fallbackPeriodId, items: [] };
   }
 
-  const targetPeriodId = getContractPeriodId(c, emp, db, fallbackPeriodId);
+  const targetPeriodId = fallbackPeriodId || getContractPeriodId(c, emp, db, fallbackPeriodId);
   const conStartRaw = c?.contractStartDate || emp?.contractStartDate || emp?.entryDate || c?.date || c?.monthDate || '';
   const conEndRaw = c?.contractEndDate || emp?.contractEndDate || '';
   const monthDateRaw = c?.monthDate || c?.date || '';
@@ -698,12 +703,12 @@ export const getTaxableSalaryItemsForContract = (
   db: AppDatabase,
   fallbackPeriodId: string
 ): { periodId: string; items: any[] } => {
-  const allTaxable = db.taxableSalaryItems || [];
+  const allTaxable = (db.taxableSalaryItems || []).filter((item: any) => !fallbackPeriodId || item.periodId === fallbackPeriodId);
   if (allTaxable.length === 0) {
     return { periodId: fallbackPeriodId, items: [] };
   }
 
-  const targetPeriodId = getContractPeriodId(c, emp, db, fallbackPeriodId);
+  const targetPeriodId = fallbackPeriodId || getContractPeriodId(c, emp, db, fallbackPeriodId);
   const conStartRaw = c?.contractStartDate || emp?.contractStartDate || emp?.entryDate || c?.date || c?.monthDate || '';
   const conEndRaw = c?.contractEndDate || emp?.contractEndDate || '';
   const monthDateRaw = c?.monthDate || c?.date || '';
@@ -798,13 +803,14 @@ export function findMatchingContractForDate(
   
   const cleanTargetCode = toEnglishDigits(String(employeeCode)).trim();
   const empContracts = contracts.filter(c => {
+    if (periodId && c.periodId !== periodId) return false;
     const cCode = toEnglishDigits(String(c.employeeCode || '')).trim();
     return cCode === cleanTargetCode;
   });
   if (empContracts.length === 0) return undefined;
 
-  const yNum = Number(year) || (periodId ? Number(periodId.split('-')[0]) : 1403);
-  const mNum = Number(month) || (periodId ? Number(periodId.split('-')[1]) : 1);
+  const yNum = Number(year) || 1403;
+  const mNum = Number(month) || 1;
   const targetPeriodId = periodId || `${yNum}-${String(mNum).padStart(2, '0')}`;
   const targetYearStr = String(yNum);
   const daysInTargetMonth = getShamsiMonthDaysHelper(yNum, mNum);
@@ -938,17 +944,18 @@ const getContractNetPayableHelper = (c: any, emp: any, db: AppDatabase, activePe
     return empTaxableItems.some((item: any) => item.itemKey === key);
   };
 
-  const contractStartYear = getJalaliYear(c?.contractStartDate) || (activeRates ? String(activeRates.year) : '') || activePeriodId.split('-')[0] || '1403';
+  const activePeriodObjForTax = (db.periods || []).find(p => p.id === activePeriodId);
+  const contractStartYear = getJalaliYear(c?.contractStartDate) || (activeRates ? String(activeRates.year) : '') || String(getFiscalYearFromPeriod(activePeriodObjForTax, activePeriodId));
   const currentFiscalYear = Number(contractStartYear) || 1403;
   const monthlyExemption = (activeRates && activeRates.taxableAmount !== undefined && activeRates.taxableAmount !== null && Number(activeRates.taxableAmount) > 0)
     ? Number(activeRates.taxableAmount)
     : 120000000;
 
   const yearBrackets = (db.taxBrackets || [])
-    .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+    .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
     .sort((a, b) => a.fromAmount - b.fromAmount);
 
-  const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+  const isTaxCalculationEnabled = getPeriodPayrollRules(db, activePeriodId)?.calculatePayrollTax || false;
 
   const explicitContractSeniorityCandidates = [
     c?.contractSeniorityBase,
@@ -1240,18 +1247,19 @@ const calculateContractFieldsForDb = (
     return empTaxableItems.some((item: any) => item.itemKey === key);
   };
 
+  const activePeriodObjForTax2 = (db.periods || []).find(p => p.id === activePeriodId);
   const contractStartDateStr = c?.contractStartDate || emp?.contractStartDate || '';
-  const startYear = getJalaliYear(contractStartDateStr) || (activeRates ? String(activeRates.year) : '') || activePeriodId.split('-')[0] || '1403';
+  const startYear = getJalaliYear(contractStartDateStr) || (activeRates ? String(activeRates.year) : '') || String(getFiscalYearFromPeriod(activePeriodObjForTax2, activePeriodId));
   const currentFiscalYear = Number(startYear) || 1403;
   const monthlyExemption = (activeRates && activeRates.taxableAmount !== undefined && activeRates.taxableAmount !== null && Number(activeRates.taxableAmount) > 0)
     ? Number(activeRates.taxableAmount)
     : 120000000;
 
   const yearBrackets = (db.taxBrackets || [])
-    .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+    .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
     .sort((a, b) => a.fromAmount - b.fromAmount);
 
-  const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+  const isTaxCalculationEnabled = getPeriodPayrollRules(db, activePeriodId)?.calculatePayrollTax || false;
 
   const getJalaliDateDifferenceHelper = (d1: string, d2: string) => {
     if (!d1 || !d2) return null;
@@ -1644,9 +1652,13 @@ const renderPersonnelTemplate = (template: string, data: any) => {
 };
 
 export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, activePeriodId }: PayrollManagementProps) {
-  
+  const [showCopyModal, setShowCopyModal] = useState(false);
+  const periodPayrollRules = useMemo(() => getPeriodPayrollRules(db, activePeriodId), [db, activePeriodId]);
+  const periodPersonnelCapabilities = useMemo(() => getPeriodPersonnelCapabilities(db, activePeriodId), [db, activePeriodId]);
+
   const onUpdateDb = (updated: AppDatabase) => {
-    const hasExistingSchemes = Array.isArray(updated.shiftSchemes) && updated.shiftSchemes.length > 0;
+    const periodSchemes = (updated.shiftSchemes || []).filter(s => s.periodId === activePeriodId);
+    const hasExistingSchemes = periodSchemes.length > 0;
     const baseShiftDepsUnchanged =
       hasExistingSchemes &&
       updated.productionSections === db.productionSections &&
@@ -1658,13 +1670,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         onUpdateDbOriginal(updated);
         return;
       }
-      // Personnel array changed: only touch shiftSchemes if any employee's capabilities actually changed
       const prevCapsByCode = new Map<string, string[]>();
-      (db.personnel || []).forEach(p => {
+      (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
         if (p.employeeCode) prevCapsByCode.set(p.employeeCode, p.capabilities || []);
       });
       let capabilitiesChanged = false;
-      const nextPersonnel = updated.personnel || [];
+      const nextPersonnel = (updated.personnel || []).filter(p => p.periodId === activePeriodId);
       let nextCodedCount = 0;
       for (let i = 0; i < nextPersonnel.length; i++) {
         const p = nextPersonnel[i];
@@ -1690,38 +1701,37 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
 
-    let schemes = updated.shiftSchemes ? [...updated.shiftSchemes] : [];
-    if (schemes.length === 0) {
-      const currentCapabilities: Record<string, string[]> = {};
-      (updated.personnel || []).forEach(p => {
-        if (p.employeeCode) {
-          currentCapabilities[p.employeeCode] = p.capabilities || [];
-        }
-      });
-      schemes = [
+    const otherPeriodSchemes = (updated.shiftSchemes || []).filter(s => s.periodId !== activePeriodId);
+    const periodSections = (updated.productionSections || []).filter(s => s.periodId === activePeriodId);
+    const periodAssigns = (updated.shiftAssignments || []).filter(a => a.periodId === activePeriodId);
+    let currentPeriodSchemes = [...periodSchemes];
+    const currentCapabilities: Record<string, string[]> = {};
+    (updated.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
+      if (p.employeeCode) {
+        currentCapabilities[p.employeeCode] = p.capabilities || [];
+      }
+    });
+
+    if (currentPeriodSchemes.length === 0) {
+      currentPeriodSchemes = [
         {
-          id: 'default-scheme',
+          id: nextSimpleId(updated.shiftSchemes || [], getPrefixForCollection('shiftSchemes')),
+          periodId: activePeriodId,
           name: 'شیفت‌بندی اصلی کارگاه',
           isActive: true,
-          productionSections: updated.productionSections || [],
-          shiftAssignments: updated.shiftAssignments || [],
+          productionSections: periodSections,
+          shiftAssignments: periodAssigns,
           personnelCapabilities: currentCapabilities
         }
       ];
     } else {
-      const activeIdx = schemes.findIndex(s => s.isActive);
+      const activeIdx = currentPeriodSchemes.findIndex(s => s.isActive);
       if (activeIdx !== -1) {
-        const activeScheme = schemes[activeIdx];
-        const currentCapabilities: Record<string, string[]> = {};
-        (updated.personnel || []).forEach(p => {
-          if (p.employeeCode) {
-            currentCapabilities[p.employeeCode] = p.capabilities || [];
-          }
-        });
-        schemes[activeIdx] = {
-          ...activeScheme,
-          productionSections: updated.productionSections || [],
-          shiftAssignments: updated.shiftAssignments || [],
+        currentPeriodSchemes[activeIdx] = {
+          ...currentPeriodSchemes[activeIdx],
+          periodId: activePeriodId,
+          productionSections: periodSections,
+          shiftAssignments: periodAssigns,
           personnelCapabilities: currentCapabilities
         };
       }
@@ -1729,11 +1739,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     onUpdateDbOriginal({
       ...updated,
-      shiftSchemes: schemes
+      shiftSchemes: [...otherPeriodSchemes, ...currentPeriodSchemes]
     });
   };
 
   const [activeTab, setActiveTab] = useState<'employees' | 'payroll' | 'payrollConstants' | 'contracts' | 'attendanceSettings' | 'settlement'>('employees');
+  const [employeesSubTab, setEmployeesSubTab] = useState<'roster' | 'departments' | 'personnel_categories'>('roster');
+  const personnelFormTopRef = React.useRef<HTMLDivElement | null>(null);
   const [settlementPreselectEmpCode, setSettlementPreselectEmpCode] = useState<string>('');
   const [settlementPreselectContext, setSettlementPreselectContext] = useState<{ year: number; month: number; readOnly?: boolean } | null>(null);
   const [pendingSettlementPreview, setPendingSettlementPreview] = useState<ProvisionalSettlementPreview | null>(null);
@@ -1748,6 +1760,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [payrollSubTab, setPayrollSubTab] = useState<'shifts' | 'attendance_records' | 'calc_attendance' | 'excel'>('shifts');
   // Fiscal year is determined automatically based on Time and Fiscal Periods Management
   const activePeriod = db.periods.find(p => p.id === activePeriodId);
+  const activeFiscalYearStr = String(getFiscalYearFromPeriod(activePeriod, activePeriodId));
   const [calcYear, setCalcYear] = useState<number>(() => {
     return getFiscalYearFromPeriod(activePeriod, activePeriodId);
   });
@@ -1800,12 +1813,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         }
       }
 
-      if (activePeriodId) {
-        const parts = activePeriodId.split('-');
-        if (parts.length >= 2) {
-          const m = parseInt(parts[1], 10);
-          if (!isNaN(m) && m >= 1 && m <= 12) setCalcMonth(m);
-        }
+      const defYm = getDefaultYearMonthFromPeriod(currentActivePeriod, activePeriodId);
+      if (defYm.month >= 1 && defYm.month <= 12) {
+        setCalcMonth(defYm.month);
       }
     }
   }, [activePeriodId, db.periods]);
@@ -1958,7 +1968,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
     const newDept: Department = {
-      id: `dept-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextSimpleId(existingDepts, getPrefixForCollection('departments')),
       periodId: activePeriodId,
       name
     };
@@ -2385,27 +2395,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   // Shift Scheme Selectors & Memoized Lists
   const schemesList = useMemo(() => {
-    const sList = db.shiftSchemes || [];
+    const sList = (db.shiftSchemes || []).filter(s => s.periodId === activePeriodId);
     if (sList.length === 0) {
       const currentCapabilities: Record<string, string[]> = {};
-      (db.personnel || []).forEach(p => {
+      (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
         if (p.employeeCode) {
           currentCapabilities[p.employeeCode] = p.capabilities || [];
         }
       });
       return [
         {
-          id: 'default-scheme',
+          id: `scheme-default-${activePeriodId}`,
+          periodId: activePeriodId,
           name: 'شیفت‌بندی اصلی کارگاه',
           isActive: true,
-          productionSections: db.productionSections || [],
-          shiftAssignments: db.shiftAssignments || [],
+          productionSections: (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+          shiftAssignments: (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId),
           personnelCapabilities: currentCapabilities
         }
       ];
     }
     return sList;
-  }, [db.shiftSchemes, db.productionSections, db.shiftAssignments, db.personnel]);
+  }, [db.shiftSchemes, db.productionSections, db.shiftAssignments, db.personnel, activePeriodId]);
 
   const activeScheme = useMemo(() => {
     return schemesList.find(s => s.isActive) || schemesList[0];
@@ -2418,46 +2429,49 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   }, [activeScheme, selectedSchemeId]);
 
   const handleSwitchScheme = (targetSchemeId: string) => {
-    let schemes = db.shiftSchemes ? [...db.shiftSchemes] : [];
+    const otherPeriodSchemes = (db.shiftSchemes || []).filter(s => s.periodId !== activePeriodId);
+    const otherPeriodSections = (db.productionSections || []).filter(s => s.periodId !== activePeriodId);
+    const otherPeriodAssignments = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId);
+    let schemes = (db.shiftSchemes || []).filter(s => s.periodId === activePeriodId);
     if (schemes.length === 0) {
       const currentCapabilities: Record<string, string[]> = {};
-      (db.personnel || []).forEach(p => {
+      (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
         if (p.employeeCode) {
           currentCapabilities[p.employeeCode] = p.capabilities || [];
         }
       });
       schemes = [
         {
-          id: 'default-scheme',
+          id: nextSimpleId(db.shiftSchemes || [], getPrefixForCollection('shiftSchemes')),
+          periodId: activePeriodId,
           name: 'شیفت‌بندی اصلی کارگاه',
           isActive: true,
-          productionSections: db.productionSections || [],
-          shiftAssignments: db.shiftAssignments || [],
+          productionSections: (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+          shiftAssignments: (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId),
           personnelCapabilities: currentCapabilities
         }
       ];
     }
 
-    // A. Save current root data to currently active scheme
     const currentActiveIdx = schemes.findIndex(s => s.isActive);
     if (currentActiveIdx !== -1) {
       const activeSch = schemes[currentActiveIdx];
       const currentCapabilities: Record<string, string[]> = {};
-      (db.personnel || []).forEach(p => {
+      (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
         if (p.employeeCode) {
           currentCapabilities[p.employeeCode] = p.capabilities || [];
         }
       });
       schemes[currentActiveIdx] = {
         ...activeSch,
-        productionSections: db.productionSections || [],
-        shiftAssignments: db.shiftAssignments || [],
+        periodId: activePeriodId,
+        productionSections: (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+        shiftAssignments: (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId),
         personnelCapabilities: currentCapabilities,
         isActive: false
       };
     }
 
-    // B. Activate target
     const targetIdx = schemes.findIndex(s => s.id === targetSchemeId);
     if (targetIdx !== -1) {
       schemes[targetIdx] = {
@@ -2466,12 +2480,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       };
 
       const targetScheme = schemes[targetIdx];
-      const targetSections = targetScheme.productionSections || [];
-      const targetAssignments = targetScheme.shiftAssignments || [];
+      const targetSections = (targetScheme.productionSections || []).map(s => ({ ...s, periodId: activePeriodId }));
+      const targetAssignments = (targetScheme.shiftAssignments || []).map(a => ({ ...a, periodId: activePeriodId }));
       const targetCapabilities = targetScheme.personnelCapabilities || {};
 
       const updatedPersonnel = (db.personnel || []).map(p => {
-        if (p.employeeCode) {
+        if (p.periodId === activePeriodId && p.employeeCode) {
           return {
             ...p,
             capabilities: targetCapabilities[p.employeeCode] || []
@@ -2482,9 +2496,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       onUpdateDbOriginal({
         ...db,
-        shiftSchemes: schemes,
-        productionSections: targetSections,
-        shiftAssignments: targetAssignments,
+        shiftSchemes: [...otherPeriodSchemes, ...schemes],
+        productionSections: [...otherPeriodSections, ...targetSections],
+        shiftAssignments: [...otherPeriodAssignments, ...targetAssignments],
         personnel: updatedPersonnel
       });
 
@@ -2496,43 +2510,48 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     e.preventDefault();
     if (!newSchemeName.trim()) return;
 
-    let schemes = db.shiftSchemes ? [...db.shiftSchemes] : [];
+    const allExistingSchemes = db.shiftSchemes ? [...db.shiftSchemes] : [];
+    const nextSchemeId = createSimpleIdGenerator(allExistingSchemes, getPrefixForCollection('shiftSchemes'));
+    const otherPeriodSchemes = allExistingSchemes.filter(s => s.periodId !== activePeriodId);
+    let schemes = allExistingSchemes.filter(s => s.periodId === activePeriodId);
     if (schemes.length === 0) {
       const currentCapabilities: Record<string, string[]> = {};
-      (db.personnel || []).forEach(p => {
+      (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
         if (p.employeeCode) {
           currentCapabilities[p.employeeCode] = p.capabilities || [];
         }
       });
       schemes = [
         {
-          id: 'default-scheme',
+          id: nextSchemeId(),
+          periodId: activePeriodId,
           name: 'شیفت‌بندی اصلی کارگاه',
           isActive: true,
-          productionSections: db.productionSections || [],
-          shiftAssignments: db.shiftAssignments || [],
+          productionSections: (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+          shiftAssignments: (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId),
           personnelCapabilities: currentCapabilities
         }
       ];
     }
 
     const currentCapabilities: Record<string, string[]> = {};
-    (db.personnel || []).forEach(p => {
+    (db.personnel || []).filter(p => p.periodId === activePeriodId).forEach(p => {
       if (p.employeeCode) {
         currentCapabilities[p.employeeCode] = p.capabilities || [];
       }
     });
 
     const newSchemeObj: ShiftScheme = {
-      id: `scheme-${Date.now()}`,
+      id: nextSchemeId(),
+      periodId: activePeriodId,
       name: newSchemeName.trim(),
       isActive: false,
-      productionSections: db.productionSections || [],
+      productionSections: (db.productionSections || []).filter(s => s.periodId === activePeriodId),
       shiftAssignments: [],
       personnelCapabilities: currentCapabilities
     };
 
-    const updatedSchemes = [...schemes, newSchemeObj];
+    const updatedSchemes = [...otherPeriodSchemes, ...schemes, newSchemeObj];
     onUpdateDbOriginal({
       ...db,
       shiftSchemes: updatedSchemes
@@ -2540,14 +2559,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     setNewSchemeName('');
     setSelectedSchemeId(newSchemeObj.id);
-    // Switch to it immediately after creation
     setTimeout(() => {
       handleSwitchScheme(newSchemeObj.id);
     }, 50);
   };
 
   const handleDeleteScheme = (schemeId: string) => {
-    let schemes = db.shiftSchemes ? [...db.shiftSchemes] : [];
+    const otherPeriodSchemes = (db.shiftSchemes || []).filter(s => s.periodId !== activePeriodId);
+    const schemes = (db.shiftSchemes || []).filter(s => s.periodId === activePeriodId);
     if (schemes.length <= 1) {
       alert('امکان حذف تنها شیفت‌بندی تعریف شده وجود ندارد.');
       return;
@@ -2565,7 +2584,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       'حذف شیفت‌بندی',
       `آیا از حذف شیفت‌بندی "${schemeToDelete.name}" اطمینان دارید؟`,
       () => {
-        const updatedSchemes = schemes.filter(s => s.id !== schemeId);
+        const updatedSchemes = [...otherPeriodSchemes, ...schemes.filter(s => s.id !== schemeId)];
         onUpdateDbOriginal({
           ...db,
           shiftSchemes: updatedSchemes
@@ -2612,18 +2631,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   const filteredRates = useMemo(() => {
-    const list = db.salaryBaseRates || [];
-    // Deduplicate by fiscal year so every registered year is always displayed in the table
+    const list = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const yearMap = new Map<string, SalaryBaseRate>();
     list.forEach(r => {
       const y = String(r.year || '').trim();
       if (!y) return;
-      const existing = yearMap.get(y);
-      if (!existing) {
-        yearMap.set(y, r);
-      } else if (r.periodId === activePeriodId) {
-        yearMap.set(y, r);
-      }
+      yearMap.set(y, r);
     });
 
     let result = Array.from(yearMap.values()).sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0));
@@ -2635,16 +2648,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   }, [db.salaryBaseRates, activePeriodId, rateSearchQuery]);
 
   const filteredSeniorityRateRules = useMemo(() => {
-    const list = db.seniorityRateRules || [];
+    const list = (db.seniorityRateRules || []).filter(r => r.periodId === activePeriodId);
     if (!seniorityYearFilter) return list;
     return list.filter(r => r.fiscalYear === seniorityYearFilter);
-  }, [db.seniorityRateRules, seniorityYearFilter]);
+  }, [db.seniorityRateRules, activePeriodId, seniorityYearFilter]);
 
   const seniorityFiscalYears = useMemo(() => {
-    const list = db.seniorityRateRules || [];
+    const list = (db.seniorityRateRules || []).filter(r => r.periodId === activePeriodId);
     const years = Array.from(new Set(list.map(r => r.fiscalYear))).sort();
     return years;
-  }, [db.seniorityRateRules]);
+  }, [db.seniorityRateRules, activePeriodId]);
 
   const handleCancelEditRate = () => {
     setEditingRateId(null);
@@ -2706,12 +2719,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ? parsedHolidayInput
       : resolvedOvertimeWork;
 
-    const resolvedPeriodId = (activePeriodId && activePeriodId.startsWith(rateYear.trim())) 
-      ? activePeriodId 
-      : `${rateYear.trim()}-01`;
+    const resolvedPeriodId = activePeriodId;
 
     const newRate: SalaryBaseRate = {
-      id: editingRateId || `sbr-${Date.now()}`,
+      id: editingRateId || nextSimpleId(currentRates, getPrefixForCollection('salaryBaseRates')),
       periodId: resolvedPeriodId,
       year: rateYear.trim(),
       dailyBaseSalary: finalDailyBase,
@@ -2731,9 +2742,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let updatedRates: SalaryBaseRate[];
     if (editingRateId) {
-      updatedRates = currentRates.map(r => (r.id === editingRateId || String(r.year).trim() === rateYear.trim()) ? newRate : r);
+      updatedRates = currentRates.map(r => (r.id === editingRateId || (r.periodId === activePeriodId && String(r.year).trim() === rateYear.trim())) ? newRate : r);
     } else {
-      const filtered = currentRates.filter(r => String(r.year).trim() !== rateYear.trim());
+      const filtered = currentRates.filter(r => !(r.periodId === activePeriodId && String(r.year).trim() === rateYear.trim()));
       updatedRates = [newRate, ...filtered];
     }
 
@@ -2752,7 +2763,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       `آیا از حذف آیتم‌های دستمزد مربوط به سال ${year} اطمینان دارید؟ این عملیات غیر قابل بازگشت است.`,
       () => {
         const currentRates = db.salaryBaseRates || [];
-        const updated = currentRates.filter(r => r.id !== id && String(r.year).trim() !== String(year).trim());
+        const updated = currentRates.filter(r => !(r.id === id || (r.periodId === activePeriodId && String(r.year).trim() === String(year).trim())));
         onUpdateDb({
           ...db,
           salaryBaseRates: updated
@@ -2794,13 +2805,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     
     let addedCount = 0;
     const newRates: SalaryBaseRate[] = [];
+    const nextRateId = createSimpleIdGenerator(db.salaryBaseRates || [], getPrefixForCollection('salaryBaseRates'));
 
     prevRates.forEach(rate => {
       const isDup = activeRates.some(r => r.year.trim() === rate.year.trim());
       if (!isDup) {
         newRates.push({
           ...rate,
-          id: `rate-${Date.now()}-${addedCount}-${Math.random().toString(36).substring(2, 10)}`,
+          id: nextRateId(),
           periodId: activePeriodId
         });
         addedCount++;
@@ -2809,12 +2821,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let addedInsuredCount = 0;
     const newInsuredItems: any[] = [];
+    const nextInsuredId = createSimpleIdGenerator(db.insuredSalaryItems || [], getPrefixForCollection('insuredSalaryItems'));
     prevInsured.forEach(item => {
       const isDup = activeInsured.some(i => i.itemKey === item.itemKey);
       if (!isDup) {
         newInsuredItems.push({
           ...item,
-          id: `insured-item-${Date.now()}-${addedInsuredCount}-${Math.random().toString(36).substring(2, 10)}`,
+          id: nextInsuredId(),
           periodId: activePeriodId
         });
         addedInsuredCount++;
@@ -2823,12 +2836,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let addedLeaveBuyoutCount = 0;
     const newLeaveBuyoutItems: any[] = [];
+    const nextLeaveBuyoutId = createSimpleIdGenerator(db.leaveBuyoutSalaryItems || [], getPrefixForCollection('leaveBuyoutSalaryItems'));
     prevLeaveBuyout.forEach(item => {
       const isDup = activeLeaveBuyout.some(i => i.itemKey === item.itemKey);
       if (!isDup) {
         newLeaveBuyoutItems.push({
           ...item,
-          id: `leave-buyout-item-${Date.now()}-${addedLeaveBuyoutCount}-${Math.random().toString(36).substring(2, 10)}`,
+          id: nextLeaveBuyoutId(),
           periodId: activePeriodId
         });
         addedLeaveBuyoutCount++;
@@ -2837,12 +2851,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let addedTaxableCount = 0;
     const newTaxableItems: any[] = [];
+    const nextTaxableId = createSimpleIdGenerator(db.taxableSalaryItems || [], getPrefixForCollection('taxableSalaryItems'));
     prevTaxable.forEach(item => {
       const isDup = activeTaxable.some(i => i.itemKey === item.itemKey);
       if (!isDup) {
         newTaxableItems.push({
           ...item,
-          id: `taxable-${Date.now()}-${addedTaxableCount}-${Math.random().toString(36).substring(2, 10)}`,
+          id: nextTaxableId(),
           periodId: activePeriodId
         });
         addedTaxableCount++;
@@ -2888,13 +2903,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let addedCount = 0;
     const newContracts: PersonnelContract[] = [];
+    const nextContractId = createSimpleIdGenerator(db.personnelContracts || [], getPrefixForCollection('personnelContracts'));
 
     prevContracts.forEach(contract => {
       const isDup = activeContracts.some(c => c.employeeCode === contract.employeeCode);
       if (!isDup) {
         newContracts.push({
           ...contract,
-          id: `contract-${Date.now()}-${addedCount}-${Math.random().toString(36).substring(2, 10)}`,
+          id: nextContractId(),
           periodId: activePeriodId,
           isActive: true
         });
@@ -2909,7 +2925,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const copiedEmpCodes = new Set(newContracts.map(nc => nc.employeeCode.trim()));
     const updatedExistingContracts = (db.personnelContracts || []).map(c => {
-      if (copiedEmpCodes.has(c.employeeCode.trim())) {
+      if (c.periodId === activePeriodId && copiedEmpCodes.has(c.employeeCode.trim())) {
         return { ...c, isActive: false };
       }
       return c;
@@ -2941,6 +2957,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     let addedCount = 0;
     const newPersonnel: Personnel[] = [];
     const newAllocations: PersonnelAllocation[] = [];
+    const nextPersonnelId = createSimpleIdGenerator(db.personnel || [], getPrefixForCollection('personnel'));
+    const nextAllocId = createSimpleIdGenerator(db.personnelAllocations || [], getPrefixForCollection('personnelAllocations'));
 
     prevPersonnel.forEach(p => {
       const isDup = activePersonnel.some(ap => {
@@ -2950,19 +2968,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       });
 
       if (!isDup) {
-        const newId = `p-${Date.now()}-${addedCount}-${Math.random().toString(36).substring(2, 6)}`;
         newPersonnel.push({
           ...p,
-          id: newId,
+          id: nextPersonnelId(),
           periodId: activePeriodId
         });
 
-        // Also copy their allocations for this period if any exist in the previous period
         const prevAllocations = (db.personnelAllocations || []).filter(pa => pa.employeeCode === p.employeeCode && pa.periodId === prevId);
         prevAllocations.forEach(alloc => {
           newAllocations.push({
             ...alloc,
-            id: `pa-${Date.now()}-${addedCount}-${Math.random().toString(36).substring(2, 6)}`,
+            id: nextAllocId(),
             periodId: activePeriodId
           });
         });
@@ -3052,9 +3068,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
 
-    // Check duplicate combination of year + seniority
     const duplicate = currentRules.some(
-      r => r.id !== editingSeniorityId && r.seniorityYears === parsedYears && r.fiscalYear === cleanFiscalYear
+      r => r.periodId === activePeriodId && r.id !== editingSeniorityId && r.seniorityYears === parsedYears && r.fiscalYear === cleanFiscalYear
     );
     if (duplicate) {
       alert(`قبلا برای سابقه ${parsedYears} سال در سال مالی ${cleanFiscalYear} نرخ پایه سنوات روزانه ثبت شده است. از ویرایش استفاده کنید.`);
@@ -3062,7 +3077,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const newRule: SeniorityRateRule = {
-      id: editingSeniorityId || `srr-${Date.now()}`,
+      id: editingSeniorityId || nextSimpleId(currentRules, getPrefixForCollection('seniorityRateRules')),
+      periodId: activePeriodId,
       seniorityYears: parsedYears,
       dailyRate: parsedDailyRate,
       fiscalYear: cleanFiscalYear
@@ -3183,30 +3199,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const payrollItems = useMemo(() => db.payrollItems.filter(p => p.periodId === activePeriodId), [db.payrollItems, activePeriodId]);
 
   const productionSectionsList = useMemo(() => {
-    return db.productionSections || [
-      { id: 'sec-1', name: 'آماده‌سازی مواد اولیه و خمیرگیر', minStaff: 2 },
-      { id: 'sec-2', name: 'بخش پخت و تنور', minStaff: 1 },
-      { id: 'sec-3', name: 'خط تزیین و خنک‌کاری', minStaff: 1 },
-      { id: 'sec-4', name: 'بسته‌بندی و لیبل‌زنی', minStaff: 2 }
-    ];
-  }, [db.productionSections]);
+    return (db.productionSections || []).filter(s => s.periodId === activePeriodId);
+  }, [db.productionSections, activePeriodId]);
 
   const shiftsList = useMemo(() => {
-    return db.shifts || [
-      { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-      { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-      { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-    ];
-  }, [db.shifts]);
+    return (db.shifts || []).filter(s => s.periodId === activePeriodId);
+  }, [db.shifts, activePeriodId]);
 
   const shiftAssignmentsList = useMemo(() => {
-    return (db.shiftAssignments || []).filter(a => !a.date && isShiftAssignmentInActiveMonth(a));
-  }, [db.shiftAssignments, isShiftAssignmentInActiveMonth]);
+    return (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId && !a.date && isShiftAssignmentInActiveMonth(a));
+  }, [db.shiftAssignments, activePeriodId, isShiftAssignmentInActiveMonth]);
 
   // --- Stage 1: Heavy Attendance, Shift, Leave History & Contract Base Memo (Isolated from user cell edits) ---
   const attendanceBaseCalculations = useMemo(() => {
     const targetSetting = (db.monthlyWorkdaySettings || []).find(
-      s => Number(s.year) === Number(calcYear) && Number(s.month) === Number(calcMonth)
+      s => s.periodId === activePeriodId && Number(s.year) === Number(calcYear) && Number(s.month) === Number(calcMonth)
     );
     const requiredHours = targetSetting ? Number(targetSetting.requiredWorkHours) : 192;
 
@@ -3334,7 +3341,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return result;
     };
 
-    const rawRules = (db.payrollCalculationRules || {}) as PayrollCalculationRules;
+    const rawRules = periodPayrollRules as PayrollCalculationRules;
     const rulesObj = {
       calculateEarlyOvertime: rawRules.calculateEarlyOvertime ?? true,
       calculateLateOvertime: rawRules.calculateLateOvertime ?? true,
@@ -3354,15 +3361,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const calChildRate = activeRates ? Number(activeRates.childAllowance || 7166184) : 7166184;
     const calMarriageRate = activeRates ? Number(activeRates.marriageAllowance || 5000000) : 5000000;
 
-    // Pre-index holidays once
+    // Pre-index holidays once (strictly period-isolated)
     const officialHolidaysSet = new Set<string>();
-    (db.officialHolidays || []).forEach(h => {
+    (db.officialHolidays || []).filter(h => h.periodId === activePeriodId).forEach(h => {
       if (h?.date) {
         officialHolidaysSet.add(toEnglishDigits(h.date).replace(/[-\/]/g, '/'));
       }
     });
 
-    // Read approved mismatches from localStorage ONCE outside loops
     let localApprovedMismatches: string[] = [];
     try {
       const stored = localStorage.getItem('approved_mismatches');
@@ -3373,18 +3379,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ...(Array.isArray(localApprovedMismatches) ? localApprovedMismatches : [])
     ]);
 
-    // Pre-index shifts, sections, allocations, and shift assignments once
-    const shiftsSource = db.shifts || [
-      { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-      { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-      { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-    ];
+    const shiftsSource = (db.shifts || []).filter(sh => sh.periodId === activePeriodId);
     const shiftsById = new Map<string, any>();
     shiftsSource.forEach(sh => {
       if (sh?.id) shiftsById.set(sh.id, sh);
     });
 
-    const sectionsSource = db.productionSections || [];
+    const sectionsSource = (db.productionSections || []).filter(sec => sec.periodId === activePeriodId);
     const sectionsById = new Map<string, any>();
     const sectionsByDeptCat = new Map<string, any>();
     sectionsSource.forEach(sec => {
@@ -3404,14 +3405,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const dateAssignmentsByDate = new Map<string, any[]>();
     const weeklyPeriodAssignmentsByDay = new Map<string, any[]>();
     const weeklyGlobalAssignmentsByDay = new Map<string, any[]>();
-    (db.shiftAssignments || []).forEach(a => {
+    (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId).forEach(a => {
       if (!isShiftAssignmentInMonth(a, activePeriodId, Number(calcYear), Number(calcMonth), fallbackShiftYearMonth)) {
-        if (!a.date && !a.periodId && a.year === undefined) {
-          const wKey = normalizeWeekday(a.dayName);
-          const list = weeklyGlobalAssignmentsByDay.get(wKey);
-          if (list) list.push(a);
-          else weeklyGlobalAssignmentsByDay.set(wKey, [a]);
-        }
         return;
       }
       if (a.date) {
@@ -3538,22 +3533,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return resolved;
     };
 
+    const splitEmpAttTokens = (raw: any): string[] => {
+      const s = toEnglishDigits(String(raw ?? '')).trim();
+      if (!s) return [];
+      return s.split(/[\s,،;|/\\]+/).map(t => cleanAttCode(t)).filter(Boolean);
+    };
+
     const isRecordForEmployee = (rec: any, empObj: any) => {
       if (!empObj || !rec) return false;
       const recCode = cleanAttCode(rec.attendanceCode);
-      const empAttCode = cleanAttCode(empObj.attendanceCode);
-      const empCode = cleanAttCode(empObj.employeeCode);
+      const empAttTokens = splitEmpAttTokens(empObj.attendanceCode);
 
-      if (recCode && empAttCode) {
-        return recCode === empAttCode;
+      // Strictly match punch code ONLY against personnel.attendanceCode (never employeeCode)
+      if (recCode) {
+        return empAttTokens.includes(recCode);
       }
-      if (recCode && empCode && !empAttCode) {
-        if (recCode === empCode) return true;
-      }
+      // Fallback to employeeId ONLY when the attendance record has no attendanceCode
       if (rec.employeeId && rec.employeeId === empObj.id) {
-        if (!recCode || !empAttCode || recCode === empAttCode) return true;
+        return true;
       }
-      if (cleanAttCode(empObj.id) === recCode) return true;
       return false;
     };
 
@@ -3595,13 +3593,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           }
         }
       };
-      const empAttCode = cleanAttCode(empObj.attendanceCode);
-      const empCode = cleanAttCode(empObj.employeeCode);
-      const empIdClean = cleanAttCode(empObj.id);
-      if (empAttCode) addBucket(index.byAttCode.get(empAttCode));
-      else if (empCode) addBucket(index.byAttCode.get(empCode));
+      const empAttTokens = splitEmpAttTokens(empObj.attendanceCode);
+      for (let i = 0; i < empAttTokens.length; i++) {
+        addBucket(index.byAttCode.get(empAttTokens[i]));
+      }
       if (empObj.id) addBucket(index.byEmpId.get(empObj.id));
-      if (empIdClean) addBucket(index.byAttCode.get(empIdClean));
       return candidates.filter(rec => isRecordForEmployee(rec, empObj));
     };
 
@@ -3704,7 +3700,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
 
       const setting = (db.monthlyWorkdaySettings || []).find(
-        s => Number(s.year) === pYear && Number(s.month) === pMonth
+        s => s.periodId === activePeriodId && Number(s.year) === pYear && Number(s.month) === pMonth
       );
       const reqHours = setting ? Number(setting.requiredWorkHours) : 192;
       const reqMinutes = reqHours * 60;
@@ -4010,9 +4006,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
 
-    // Pre-index contracts by normalized employeeCode once
+    // Pre-index contracts by normalized employeeCode once (strictly period-isolated)
     const contractsByEmpCode = new Map<string, any[]>();
-    (db.personnelContracts || []).forEach(c => {
+    (db.personnelContracts || []).filter(c => c.periodId === activePeriodId).forEach(c => {
       const cCode = toEnglishDigits(String(c?.employeeCode || '')).trim();
       if (!cCode) return;
       const list = contractsByEmpCode.get(cCode);
@@ -4025,9 +4021,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ? Number(activeRates.taxableAmount)
       : 120000000;
     const yearBrackets = (db.taxBrackets || [])
-      .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+      .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
       .sort((a, b) => a.fromAmount - b.fromAmount);
-    const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+    const isTaxCalculationEnabled = periodPayrollRules?.calculatePayrollTax || false;
 
     const totalDaysInMonth = (targetSetting && Number(targetSetting.daysInMonth) > 0)
       ? Number(targetSetting.daysInMonth)
@@ -4585,7 +4581,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     isSmartCalcRequired,
     db.attendanceRecords,
     db.monthlyWorkdaySettings,
-    db.payrollCalculationRules,
+    periodPayrollRules,
     db.salaryBaseRates,
     db.officialHolidays,
     db.payrollItems,
@@ -5494,12 +5490,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (!resolvedDate && emp?.employeeCode && db.personnelSettlements && db.personnelSettlements.length > 0) {
       const empCodeNorm = toEnglishDigits(String(emp.employeeCode)).trim();
       const empSettlements = db.personnelSettlements.filter(s =>
+        s.periodId === activePeriodId &&
         (s.settlementType || 'with_departure') !== 'without_departure' &&
         toEnglishDigits(String(s.employeeCode || '')).trim() === empCodeNorm &&
         Boolean(s.endDate && String(s.endDate).trim())
       );
-      const matchedSettlement = empSettlements.find(s => !activePeriodId || !s.periodId || s.periodId === activePeriodId)
-        || empSettlements[empSettlements.length - 1];
+      const matchedSettlement = empSettlements[empSettlements.length - 1];
       if (matchedSettlement?.endDate) {
         resolvedDate = String(matchedSettlement.endDate).trim();
       }
@@ -6475,9 +6471,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (caps.includes(sectionId)) return true;
     const isDeparted = (emp as any).isDeparted === true || !!emp.departureDate || emp.isActive === false;
     if (isDeparted && caps.length === 0 && emp.employeeCode) {
-      const dbCaps = db.personnelCapabilities?.[emp.employeeCode] || [];
+      const dbCaps = periodPersonnelCapabilities?.[emp.employeeCode] || [];
       if (dbCaps.includes(sectionId)) return true;
-      if (db.shiftSchemes?.some(s => (s.personnelCapabilities?.[emp.employeeCode] || []).includes(sectionId))) return true;
+      if (db.shiftSchemes?.some(s => s.periodId === activePeriodId && (s.personnelCapabilities?.[emp.employeeCode] || []).includes(sectionId))) return true;
     }
     return false;
   };
@@ -6541,27 +6537,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     e.preventDefault();
     if (!shiftName.trim()) return;
 
-    let updatedShifts;
+    const otherPeriodShifts = (db.shifts || []).filter(s => s.periodId !== activePeriodId);
+    let updatedPeriodShifts;
     let updatedAssigns = [...shiftAssignmentsList];
     if (editingShiftId) {
-      updatedShifts = shiftsList.map(s => 
-        s.id === editingShiftId 
-          ? { ...s, name: shiftName.trim(), startTime: shiftStart, endTime: shiftEnd } 
+      updatedPeriodShifts = shiftsList.map(s =>
+        s.id === editingShiftId
+          ? { ...s, periodId: activePeriodId, name: shiftName.trim(), startTime: shiftStart, endTime: shiftEnd }
           : s
       );
-      // Clear assignments associated with this edited shift in active month
       updatedAssigns = shiftAssignmentsList.filter(a => a.shiftId !== editingShiftId);
     } else {
       const newShift = {
-        id: `sh-${Date.now()}`,
+        id: nextSimpleId(db.shifts || [], getPrefixForCollection('shifts')),
+        periodId: activePeriodId,
         name: shiftName.trim(),
         startTime: shiftStart || '۰۰:۰۰',
         endTime: shiftEnd || '۰۰:۰۰'
       };
-      updatedShifts = [...shiftsList, newShift];
+      updatedPeriodShifts = [...shiftsList, newShift];
     }
 
-    const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+    const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
     const stampedUpdated = updatedAssigns.map(a => ({
       ...a,
       periodId: activePeriodId,
@@ -6570,7 +6567,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }));
     onUpdateDb({
       ...db,
-      shifts: updatedShifts,
+      shifts: [...otherPeriodShifts, ...updatedPeriodShifts],
       shiftAssignments: [...otherMonthAssigns, ...stampedUpdated]
     });
 
@@ -6592,14 +6589,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       'حذف شیفت کاری',
       'آیا از حذف این شیفت کاری اطمینان دارید؟ تمام تخصیص پرسنلی مرتبط با این شیفت در روزهای مختلف این ماه نیز باطل خواهند شد.',
       () => {
-        const updatedShifts = shiftsList.filter(s => s.id !== id);
+        const otherPeriodShifts = (db.shifts || []).filter(s => s.periodId !== activePeriodId);
+        const updatedPeriodShifts = shiftsList.filter(s => s.id !== id);
         const updatedAssigns = shiftAssignmentsList
           .filter(a => a.shiftId !== id)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
-        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         onUpdateDb({
           ...db,
-          shifts: updatedShifts,
+          shifts: [...otherPeriodShifts, ...updatedPeriodShifts],
           shiftAssignments: [...otherMonthAssigns, ...updatedAssigns]
         });
       }
@@ -6634,9 +6632,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
 
-    const existingAssignOnDay = shiftAssignmentsList.find(a => 
+    const existingAssignOnDay = shiftAssignmentsList.find(a =>
       !a.date &&
-      a.dayName === day && 
+      a.dayName === day &&
       (a.employeeCode === empCode || a.substitutedEmployeeCode === empCode)
     );
     if (existingAssignOnDay) {
@@ -6646,7 +6644,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const newAssign: ShiftAssignment = {
-      id: `assign-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      id: nextSimpleId(db.shiftAssignments || [], getPrefixForCollection('shiftAssignments')),
       dayName: day,
       shiftId,
       deptId,
@@ -6657,7 +6655,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       month: Number(calcMonth),
     };
 
-    const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+    const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
     const currentMonthStamped = shiftAssignmentsList.map(a => ({
       ...a,
       periodId: activePeriodId,
@@ -7369,12 +7367,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       `تایید و اعمال برنامه هفتگی هوشمند (${curMonthName} ${toPersianDigits(calcYear)})`,
       `آیا از رونویسی و اعمال این برنامه زمان‌بندی جدید در جدول ماه «${curMonthName} ${toPersianDigits(calcYear)}» اطمینان دارید؟ برنامه هفتگی قبلی این ماه جایگزین می‌شود (شیفت سایر ماه‌ها دست‌نخورده می‌ماند).`,
       () => {
+        const nextAssignId = createSimpleIdGenerator(db.shiftAssignments || [], getPrefixForCollection('shiftAssignments'));
         const liveAssigns: ShiftAssignment[] = draftAssignments
           .filter(a => !a.isPlaceholder)
           .map(a => {
             const matchedEmp = personnel.find(p => p.employeeCode === a.employeeCode);
             return {
-              id: `assign-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+              id: nextAssignId(),
               dayName: a.dayName,
               shiftId: a.shiftId,
               deptId: a.deptId,
@@ -7387,7 +7386,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             };
           });
 
-        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         const sameMonthDateOverrides = shiftAssignmentsList
           .filter(a => !!a.date)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
@@ -7582,14 +7581,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     let clearedSubsCount = 0;
-    const copied: ShiftAssignment[] = eligibleCopySource.map((a, idx) => {
+    const nextCopyAssignId = createSimpleIdGenerator(db.shiftAssignments || [], getPrefixForCollection('shiftAssignments'));
+    const copied: ShiftAssignment[] = eligibleCopySource.map((a) => {
       const hasValidSub = Boolean(a.substitutedEmployeeCode && eligibleInTargetSet.has(a.substitutedEmployeeCode));
       if (a.substitutedEmployeeCode && !hasValidSub) {
         clearedSubsCount += 1;
       }
       return {
         ...a,
-        id: `copy-m-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+        id: nextCopyAssignId(),
         periodId: activePeriodId,
         year: Number(calcYear),
         month: Number(calcMonth),
@@ -7602,7 +7602,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       `کپی شیفت‌بندی از ماه قبل (${srcMonthName} ${toPersianDigits(srcYear)})`,
       `آیا مایلید تعداد ${toPersianDigits(copied.length)} انتساب شیفت هفتگی مربوط به پرسنل مشترک را از «${srcMonthName} ${toPersianDigits(srcYear)}» به «${curMonthName} ${toPersianDigits(calcYear)}» کپی و جایگزین برنامه هفتگی این ماه کنید؟${clearedSubsCount > 0 ? `\n\n(تعداد ${toPersianDigits(clearedSubsCount)} مورد جانشینی که پرسنل جانشین در ماه جدید فعال نیستند، به صورت خودکار پاک‌سازی می‌شوند.)` : ''}`,
       () => {
-        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         const sameMonthDateOverrides = shiftAssignmentsList
           .filter(a => !!a.date)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
@@ -7641,14 +7641,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       `کپی برنامه از دوره قبل برای ${curMonthName} ${toPersianDigits(calcYear)}`,
       `آیا مایلید برنامه زمان‌بندی هفتگی ماه ${curMonthName} ${toPersianDigits(calcYear)} را با کپی از دوره قبلی (${previousPeriod.name}) به تعداد ${toPersianDigits(eligibleCopySource.length)} انتساب مجاز، جایگزین کنید؟`,
       () => {
-        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         const sameMonthDateOverrides = shiftAssignmentsList
           .filter(a => !!a.date)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
 
-        const copied: ShiftAssignment[] = eligibleCopySource.map((a, idx) => ({
+        const nextPrevAssignId = createSimpleIdGenerator(db.shiftAssignments || [], getPrefixForCollection('shiftAssignments'));
+        const copied: ShiftAssignment[] = eligibleCopySource.map((a) => ({
           ...a,
-          id: `copy-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`,
+          id: nextPrevAssignId(),
           periodId: activePeriodId,
           year: Number(calcYear),
           month: Number(calcMonth),
@@ -8044,19 +8045,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       updatedSections = productionSectionsList.map(sec => 
         sec.id === editingSectionId 
           ? { 
-              ...sec, 
-              name: sectionName.trim(), 
+              ...sec,
+              periodId: activePeriodId,
+              name: sectionName.trim(),
               minStaff: Number(sectionMinStaff) || 1,
               startTime: sectionStartTime || '۰۶:۰۰',
               endTime: sectionEndTime || '۱۴:۰۰',
               canBeEmpty: sectionCanBeEmpty,
               departmentCategoryId: sectionDeptId || undefined
-            } 
+            }
           : sec
       );
     } else {
       const newSec = {
-        id: `sec-${Date.now()}`,
+        id: nextSimpleId(db.productionSections || [], getPrefixForCollection('productionSections')),
+        periodId: activePeriodId,
         name: sectionName.trim(),
         minStaff: Number(sectionMinStaff) || 1,
         startTime: sectionStartTime || '۰۶:۰۰',
@@ -8067,9 +8070,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       updatedSections = [...productionSectionsList, newSec];
     }
 
+    const otherPeriodSections = (db.productionSections || []).filter(s => s.periodId !== activePeriodId);
     onUpdateDb({
       ...db,
-      productionSections: updatedSections
+      productionSections: [...otherPeriodSections, ...updatedSections]
     });
 
     setEditingSectionId(null);
@@ -8096,14 +8100,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       'حذف بخش تولیدی',
       'آیا از حذف این بخش مستقل تولیدی شیفت‌بندی اطمینان دارید؟ تمامی تخصیص پرسنل گماشته شده به این بخش در ماه جاری حذف خواهند شد.',
       () => {
+        const otherPeriodSections = (db.productionSections || []).filter(s => s.periodId !== activePeriodId);
         const updatedSections = productionSectionsList.filter(sec => sec.id !== id);
-        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => !!a.date || !isShiftAssignmentInActiveMonth(a));
+        const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         const updatedAssigns = shiftAssignmentsList
           .filter(a => a.deptId !== id)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
         onUpdateDb({
           ...db,
-          productionSections: updatedSections,
+          productionSections: [...otherPeriodSections, ...updatedSections],
           shiftAssignments: [...otherMonthAssigns, ...updatedAssigns]
         });
       }
@@ -8960,9 +8965,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         tempSeniorityYears = tDiff.years;
       }
     }
-    const startYear = getJalaliYear(tStartDate) || activePeriodId.split('-')[0] || '';
+    const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
     const foundSeniorityRule = (db.seniorityRateRules || []).find(
-      (r: any) => r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
+      (r: any) => r.periodId === activePeriodId && r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
     );
     const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
 
@@ -9035,27 +9040,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const matchedOption = INSURED_ITEM_OPTIONS.find(opt => opt.key === insuredItemKey);
     const label = insuredItemCustomName.trim() || matchedOption?.defaultLabel || insuredItemKey;
-    const year = getJalaliYear(sDate) || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
 
+    let updatedList = [...(db.insuredSalaryItems || [])];
     const newItem = {
-      id: editingInsuredItemId || `insured-item-${Date.now()}`,
+      id: editingInsuredItemId || nextSimpleId(updatedList, getPrefixForCollection('insuredSalaryItems')),
       startDate: sDate,
       endDate: eDate,
-      periodId: year,
+      periodId: activePeriodId,
       itemKey: insuredItemKey,
       itemName: label,
     };
 
-    let updatedList = [...(db.insuredSalaryItems || [])];
     if (editingInsuredItemId) {
       updatedList = updatedList.map(item => item.id === editingInsuredItemId ? newItem : item);
     } else {
-      // Check for exact duplicate of itemKey and date range
       const exists = updatedList.some(item => {
+        if (item.periodId !== activePeriodId) return false;
         if (item.id === editingInsuredItemId) return false;
         if (item.itemKey !== insuredItemKey) return false;
-        const iStart = item.startDate ? normalizeDateStr(item.startDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '');
-        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '');
+        const iStart = item.startDate ? normalizeDateStr(item.startDate) : '';
+        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : '';
         return iStart === sDate && iEnd === eDate;
       });
       if (exists) {
@@ -9070,7 +9074,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       insuredSalaryItems: updatedList
     });
 
-    // Reset
     setEditingInsuredItemId(null);
     setInsuredItemKey('dailyBaseSalary');
     setInsuredItemCustomName('');
@@ -9079,8 +9082,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const handleEditInsuredItem = (item: any) => {
     setEditingInsuredItemId(item.id);
-    const sDate = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
-    const eDate = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+    const sDate = item.startDate || `${activeFiscalYearStr}/01/01`;
+    const eDate = item.endDate || `${activeFiscalYearStr}/12/29`;
     setInsuredItemStartDate(sDate);
     setInsuredItemEndDate(eDate);
     setInsuredItemKey(item.itemKey);
@@ -9120,26 +9123,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const matchedOption = INSURED_ITEM_OPTIONS.find(opt => opt.key === leaveBuyoutItemKey);
     const label = leaveBuyoutItemCustomName.trim() || matchedOption?.defaultLabel || leaveBuyoutItemKey;
-    const year = getJalaliYear(sDate) || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
 
+    let updatedList = [...(db.leaveBuyoutSalaryItems || [])];
     const newItem = {
-      id: editingLeaveBuyoutItemId || `leave-buyout-item-${Date.now()}`,
+      id: editingLeaveBuyoutItemId || nextSimpleId(updatedList, getPrefixForCollection('leaveBuyoutSalaryItems')),
       startDate: sDate,
       endDate: eDate,
-      periodId: year,
+      periodId: activePeriodId,
       itemKey: leaveBuyoutItemKey,
       itemName: label,
     };
 
-    let updatedList = [...(db.leaveBuyoutSalaryItems || [])];
     if (editingLeaveBuyoutItemId) {
       updatedList = updatedList.map(item => item.id === editingLeaveBuyoutItemId ? newItem : item);
     } else {
       const exists = updatedList.some(item => {
+        if (item.periodId !== activePeriodId) return false;
         if (item.id === editingLeaveBuyoutItemId) return false;
         if (item.itemKey !== leaveBuyoutItemKey) return false;
-        const iStart = item.startDate ? normalizeDateStr(item.startDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '');
-        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '');
+        const iStart = item.startDate ? normalizeDateStr(item.startDate) : '';
+        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : '';
         return iStart === sDate && iEnd === eDate;
       });
       if (exists) {
@@ -9162,8 +9165,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const handleEditLeaveBuyoutItem = (item: any) => {
     setEditingLeaveBuyoutItemId(item.id);
-    const sDate = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
-    const eDate = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+    const sDate = item.startDate || `${activeFiscalYearStr}/01/01`;
+    const eDate = item.endDate || `${activeFiscalYearStr}/12/29`;
     setLeaveBuyoutItemStartDate(sDate);
     setLeaveBuyoutItemEndDate(eDate);
     setLeaveBuyoutItemKey(item.itemKey);
@@ -9201,28 +9204,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const defaultName = TAXABLE_ITEM_OPTIONS.find(o => o.key === taxableItemKey)?.defaultLabel || taxableItemKey;
-    const year = getJalaliYear(sDate) || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
 
+    let updatedList = [...(db.taxableSalaryItems || [])];
     const newItem = {
-      id: editingTaxableItemId || `taxable-${Date.now()}`,
+      id: editingTaxableItemId || nextSimpleId(updatedList, getPrefixForCollection('taxableSalaryItems')),
       startDate: sDate,
       endDate: eDate,
-      periodId: year,
+      periodId: activePeriodId,
       itemKey: taxableItemKey,
       itemName: taxableItemCustomName || defaultName
     };
 
-    let updatedList = [...(db.taxableSalaryItems || [])];
-
     if (editingTaxableItemId) {
       updatedList = updatedList.map(item => item.id === editingTaxableItemId ? newItem : item);
     } else {
-      // Check duplicate for same key and range
       const exists = updatedList.some(item => {
+        if (item.periodId !== activePeriodId) return false;
         if (item.id === editingTaxableItemId) return false;
         if (item.itemKey !== taxableItemKey) return false;
-        const iStart = item.startDate ? normalizeDateStr(item.startDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '');
-        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '');
+        const iStart = item.startDate ? normalizeDateStr(item.startDate) : '';
+        const iEnd = item.endDate ? normalizeDateStr(item.endDate) : '';
         return iStart === sDate && iEnd === eDate;
       });
       if (exists) {
@@ -9328,14 +9329,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       alert('بازه زمانی شروع و پایان قرارداد الزامی است.');
       return;
     }
-    const emp = db.personnel.find(p => p.employeeCode === selContractEmpCode && p.periodId === activePeriodId) || db.personnel.find(p => p.employeeCode === selContractEmpCode);
+    const emp = db.personnel.find(p => p.employeeCode === selContractEmpCode && p.periodId === activePeriodId);
     if (!emp) {
       alert('پرسنل انتخاب شده یافت نشد.');
       return;
     }
 
     const startYear = getJalaliYear(conStartDate);
-    const hasRateForYear = (db.salaryBaseRates || []).some((r: any) => String(r.year).trim() === String(startYear).trim());
+    const hasRateForYear = (db.salaryBaseRates || []).some((r: any) => r.periodId === activePeriodId && String(r.year).trim() === String(startYear).trim());
     if (!hasRateForYear) {
       alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای سال ${toPersianDigits(startYear)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات سال ${toPersianDigits(startYear)} را ثبت نمایید.`);
       return;
@@ -9380,7 +9381,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     if (hasCodeChanged) {
       const collision = (db.personnel || []).some(
-        p => p.employeeCode.trim() === targetEmpCode && p.employeeCode.trim() !== oldEmpCode
+        p => p.periodId === activePeriodId && p.employeeCode.trim() === targetEmpCode && p.employeeCode.trim() !== oldEmpCode
       );
       if (collision) {
         alert(`کد پرسنلی «${toPersianDigits(targetEmpCode)}» قبلاً برای پرسنل دیگری تعریف شده است. لطفاً یک کد یکتا وارد فرمایید.`);
@@ -9389,7 +9390,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const contractData: PersonnelContract = {
-      id: editContractId || `contract-${Date.now()}`,
+      id: editContractId || nextSimpleId(db.personnelContracts || [], getPrefixForCollection('personnelContracts')),
       employeeCode: targetEmpCode,
       periodId: activePeriodId,
       contractStartDate: conStartDate,
@@ -9415,8 +9416,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       if (editContractId && c.id === editContractId) {
         return contractData;
       }
+      if (c.periodId !== activePeriodId) return c;
       const isTargetPersonnel = (c.employeeCode.trim() === targetEmpCode || (hasCodeChanged && c.employeeCode.trim() === oldEmpCode));
-      // If saving this contract as active, deactivate previous contracts of this personnel
       if (isTargetPersonnel && conIsActive) {
         return {
           ...c,
@@ -9433,9 +9434,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       updatedContracts.push(contractData);
     }
 
-    // 1. Cascade update to Personnel
+    // 1. Cascade update to Personnel (strictly activePeriodId)
     const updatedPersonnel = (db.personnel || []).map(p => {
-      if (p.employeeCode.trim() === oldEmpCode) {
+      if (p.periodId === activePeriodId && p.employeeCode.trim() === oldEmpCode) {
         const nextP = {
           ...p,
           employeeCode: targetEmpCode,
@@ -9459,25 +9460,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return p;
     });
 
-    // 2. Cascade update to Department Allocations
+    // 2. Cascade update to Department Allocations (strictly activePeriodId)
     const updatedAllocations = (db.personnelAllocations || []).map(a => {
-      if (hasCodeChanged && a.employeeCode.trim() === oldEmpCode) {
+      if (hasCodeChanged && a.periodId === activePeriodId && a.employeeCode.trim() === oldEmpCode) {
         return { ...a, employeeCode: targetEmpCode };
       }
       return a;
     });
 
-    // 3. Cascade update to Payroll Items
+    // 3. Cascade update to Payroll Items (strictly activePeriodId)
     const updatedPayrollItems = (db.payrollItems || []).map(pi => {
-      if (hasCodeChanged && pi.employeeCode.trim() === oldEmpCode) {
+      if (hasCodeChanged && pi.periodId === activePeriodId && pi.employeeCode.trim() === oldEmpCode) {
         return { ...pi, employeeCode: targetEmpCode };
       }
       return pi;
     });
 
-    // 4. Cascade update to Shift Assignments
+    // 4. Cascade update to Shift Assignments (strictly activePeriodId)
     const updatedShiftAssignments = (db.shiftAssignments || []).map(sa => {
-      if (!hasCodeChanged) return sa;
+      if (!hasCodeChanged || sa.periodId !== activePeriodId) return sa;
       let modified = false;
       let newSa = { ...sa };
       if (sa.employeeCode && sa.employeeCode.trim() === oldEmpCode) {
@@ -9491,31 +9492,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return modified ? newSa : sa;
     });
 
-    // 5. Cascade update to Attendance Records
-    const updatedAttendanceRecords = (db.attendanceRecords || []).map(ar => {
-      if (hasCodeChanged && ar.attendanceCode && ar.attendanceCode.trim() === oldEmpCode) {
-        return { ...ar, attendanceCode: targetEmpCode };
-      }
-      return ar;
-    });
+    const updatedAttendanceRecords = db.attendanceRecords || [];
 
-    // 6. Cascade update to Settlements
+    // 6. Cascade update to Settlements (strictly activePeriodId)
     const updatedSettlements = (db.personnelSettlements || []).map(s => {
-      if (hasCodeChanged && s.employeeCode && s.employeeCode.trim() === oldEmpCode) {
+      if (hasCodeChanged && s.periodId === activePeriodId && s.employeeCode && s.employeeCode.trim() === oldEmpCode) {
         return { ...s, employeeCode: targetEmpCode };
       }
       return s;
     });
 
-    // 7. Cascade update to Capabilities
-    let updatedCapabilities = { ...(db.personnelCapabilities || {}) };
+    // 7. Cascade update to Capabilities (period-isolated)
+    let updatedCapabilities = { ...periodPersonnelCapabilities };
     if (hasCodeChanged && updatedCapabilities[oldEmpCode]) {
       updatedCapabilities[targetEmpCode] = updatedCapabilities[oldEmpCode];
       delete updatedCapabilities[oldEmpCode];
     }
 
     const updatedShiftSchemes = (db.shiftSchemes || []).map(sc => {
-      if (!hasCodeChanged) return sc;
+      if (!hasCodeChanged || sc.periodId !== activePeriodId) return sc;
       let newSc = { ...sc };
       if (sc.personnelCapabilities && sc.personnelCapabilities[oldEmpCode]) {
         const caps = { ...sc.personnelCapabilities };
@@ -9526,8 +9521,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return newSc;
     });
 
+    const dbWithCaps = setPeriodPersonnelCapabilities(db, activePeriodId, updatedCapabilities);
     onUpdateDb({
-      ...db,
+      ...dbWithCaps,
       personnelContracts: updatedContracts,
       personnel: updatedPersonnel,
       personnelAllocations: updatedAllocations,
@@ -9535,8 +9531,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       shiftAssignments: updatedShiftAssignments,
       shiftSchemes: updatedShiftSchemes,
       attendanceRecords: updatedAttendanceRecords,
-      personnelSettlements: updatedSettlements,
-      personnelCapabilities: updatedCapabilities
+      personnelSettlements: updatedSettlements
     });
 
     // Reset Form
@@ -9739,6 +9734,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const newContracts: PersonnelContract[] = [];
+    const nextBatchContractId = createSimpleIdGenerator(db.personnelContracts || [], getPrefixForCollection('personnelContracts'));
     const updatedPersonnel = db.personnel.map(p => {
       const isToProcess = employeesToProcess.some(emp => emp.employeeCode === p.employeeCode && emp.periodId === p.periodId);
       if (p.periodId === activePeriodId && isToProcess) {
@@ -9753,7 +9749,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           finalDailySalaryNum
         );
 
-        const contractId = `contract-batch-${p.employeeCode}-${Date.now()}`;
+        const contractId = nextBatchContractId();
         
         const contractObject = {
           role: p.role || 'کارگر خط تولید',
@@ -9803,7 +9799,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const newEmpCodes = new Set(newContracts.map(nc => nc.employeeCode.trim()));
     const existingContractsDeactivated = (db.personnelContracts || []).map(c => {
-      if (newEmpCodes.has(c.employeeCode.trim())) {
+      if (c.periodId === activePeriodId && newEmpCodes.has(c.employeeCode.trim())) {
         return { ...c, isActive: false };
       }
       return c;
@@ -9836,26 +9832,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     
     const isRecordForEmployeeHelper = (rec: any, empObj: any) => {
       if (!empObj || !rec) return false;
-      const clean = (c: any) => toEnglishDigits(String(c || '')).trim().toLowerCase().replace(/^0+/, '');
+      const clean = (c: any) => {
+        const s = toEnglishDigits(String(c || '')).trim().toLowerCase();
+        const noZeros = s.replace(/^0+/, '');
+        return noZeros === '' && s !== '' ? '0' : noZeros;
+      };
       const recCode = clean(rec.attendanceCode);
-      const empAttCode = clean(empObj.attendanceCode);
-      const empCode = clean(empObj.employeeCode);
+      const rawEmpAtt = toEnglishDigits(String(empObj.attendanceCode || '')).trim();
+      const empAttTokens = rawEmpAtt ? rawEmpAtt.split(/[\s,،;|/\\]+/).map(t => clean(t)).filter(Boolean) : [];
 
-      if (recCode && empAttCode) {
-        return recCode === empAttCode;
-      }
-      if (recCode && empCode && !empAttCode) {
-        if (recCode === empCode) return true;
+      if (recCode) {
+        return empAttTokens.includes(recCode);
       }
       if (rec.employeeId && rec.employeeId === empObj.id) {
-        if (!recCode || !empAttCode || recCode === empAttCode) return true;
+        return true;
       }
-      if (clean(empObj.id) === recCode) return true;
       return false;
     };
 
     const existingIndex = updatedRecords.findIndex(
-      r => isRecordForEmployeeHelper(r, emp) && normalizeDateStr(r.date) === normalizeDateStr(dateStr)
+      r => r.periodId === activePeriodId && isRecordForEmployeeHelper(r, emp) && normalizeDateStr(r.date) === normalizeDateStr(dateStr)
     );
 
     if (existingIndex > -1) {
@@ -9869,11 +9865,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     } else if (updatedTimes.length > 0) {
       updatedRecords.push({
-        id: `rec-manual-${Date.now()}`,
+        id: nextSimpleId(updatedRecords, getPrefixForCollection('attendanceRecords')),
         periodId: activePeriodId,
         year: Number(calcYear),
         month: Number(calcMonth),
-        attendanceCode: emp.attendanceCode || emp.employeeCode,
+        attendanceCode: emp.attendanceCode || '',
         employeeId: emp.id,
         date: dateStr,
         times: updatedTimes
@@ -9954,24 +9950,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     );
   };
 
-  // Personnel Category memo helper
+  // Personnel Category memo helper (strictly period-isolated)
   const listPersonnelCategories = useMemo(() => {
-    const list = db.personnelCategories || [];
+    const list = (db.personnelCategories || []).filter(c => c.periodId === activePeriodId);
     if (!searchPersonnelCatQuery) return list;
     return list.filter(c => c.name.includes(searchPersonnelCatQuery));
-  }, [db.personnelCategories, searchPersonnelCatQuery]);
+  }, [db.personnelCategories, activePeriodId, searchPersonnelCatQuery]);
 
   const handleAddPersonnelCategory = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPersonnelCatName.trim()) return;
     const name = newPersonnelCatName.trim();
     const normNew = normCatName(name);
-    if ((db.personnelCategories || []).some(c => normCatName(c.name) === normNew)) {
+    if ((db.personnelCategories || []).some(c => c.periodId === activePeriodId && normCatName(c.name) === normNew)) {
       alert('این دسته‌بندی پرسنل قبلاً تعریف شده است.');
       return;
     }
     const newCat = {
-      id: `perscat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextSimpleId(db.personnelCategories || [], getPrefixForCollection('personnelCategories')),
+      periodId: activePeriodId,
       name: name
     };
     onUpdateDb({
@@ -9985,11 +9982,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const trimmed = newName.trim();
     if (!trimmed) return;
     const normEdited = normCatName(trimmed);
-    if ((db.personnelCategories || []).some(c => c.id !== id && normCatName(c.name) === normEdited)) {
+    if ((db.personnelCategories || []).some(c => c.periodId === activePeriodId && c.id !== id && normCatName(c.name) === normEdited)) {
       alert('دسته‌بندی دیگری با این نام وجود دارد.');
       return;
     }
-    const updated = (db.personnelCategories || []).map(c => 
+    const updated = (db.personnelCategories || []).map(c =>
       c.id === id ? { ...c, name: trimmed } : c
     );
     onUpdateDb({
@@ -10005,9 +10002,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       `آیا از حذف دسته‌بندی "${name}" پرسنل اطمینان دارید؟`,
       () => {
         const updated = (db.personnelCategories || []).filter(c => c.id !== id);
-        // Clean assignments
-        const cleanedPersonnel = (db.personnel || []).map(p => 
-          p.personnelCategoryId === id ? { ...p, personnelCategoryId: '' } : p
+        const cleanedPersonnel = (db.personnel || []).map(p =>
+          p.periodId === activePeriodId && p.personnelCategoryId === id ? { ...p, personnelCategoryId: '' } : p
         );
         onUpdateDb({
           ...db,
@@ -10234,7 +10230,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const personnelRow: Personnel = {
       ...(isEdit && editingEmp ? editingEmp : {}),
       ...personnelInfo,
-      id: isEdit ? editingEmp!.id : `emp-${Date.now()}`,
+      id: isEdit ? editingEmp!.id : nextSimpleId(db.personnel || [], getPrefixForCollection('personnel')),
       periodId: activePeriodId,
       personnel: {
         ...(isEdit && editingEmp?.personnel ? editingEmp.personnel : {}),
@@ -10244,7 +10240,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     if (isEdit) {
       if (hasCodeChanged) {
-        // 1. Cascade update to Personnel
         const updatedPersonnel = (db.personnel || []).map(p => {
           if (p.id === editingEmp.id) {
             const nextP = {
@@ -10259,7 +10254,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return p;
         });
 
-        // 2. Cascade update to Department Allocations (deduplicate in activePeriodId)
         const existingAllocId = (db.personnelAllocations || []).find(
           a => a.periodId === activePeriodId && (normEmpCodeStr(a.employeeCode) === normEmpCodeStr(oldEmpCode) || normEmpCodeStr(a.employeeCode) === normEmpCodeStr(targetEmpCode))
         )?.id;
@@ -10267,30 +10261,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           a => !(a.periodId === activePeriodId && (normEmpCodeStr(a.employeeCode) === normEmpCodeStr(oldEmpCode) || normEmpCodeStr(a.employeeCode) === normEmpCodeStr(targetEmpCode)))
         );
         updatedAllocations.push({
-          id: existingAllocId || `alloc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: existingAllocId || nextSimpleId(db.personnelAllocations || [], getPrefixForCollection('personnelAllocations')),
           periodId: activePeriodId,
           employeeCode: targetEmpCode,
           departmentCategoryId: newDeptId || 'cat-4'
         });
 
-        // 3. Cascade update to Contracts
         const updatedContracts = (db.personnelContracts || []).map(c => {
-          if (c.employeeCode.trim() === oldEmpCode) {
+          if (c.periodId === activePeriodId && c.employeeCode.trim() === oldEmpCode) {
             return { ...c, employeeCode: targetEmpCode };
           }
           return c;
         });
 
-        // 4. Cascade update to Payroll Items
         const updatedPayrollItems = (db.payrollItems || []).map(pi => {
-          if (pi.employeeCode.trim() === oldEmpCode) {
+          if (pi.periodId === activePeriodId && pi.employeeCode.trim() === oldEmpCode) {
             return { ...pi, employeeCode: targetEmpCode };
           }
           return pi;
         });
 
-        // 5. Cascade update to Shift Assignments
         const updatedShiftAssignments = (db.shiftAssignments || []).map(sa => {
+          if (sa.periodId !== activePeriodId) return sa;
           let modified = false;
           let newSa = { ...sa };
           if (sa.employeeCode && sa.employeeCode.trim() === oldEmpCode) {
@@ -10304,35 +10296,23 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return modified ? newSa : sa;
         });
 
-        // 6. Cascade update to Attendance Records
-        const updatedAttendanceRecords = (db.attendanceRecords || []).map(ar => {
-          if ((ar.attendanceCode && ar.attendanceCode.trim() === oldEmpCode) || ar.employeeId === editingEmp.id) {
-            return {
-              ...ar,
-              attendanceCode: targetEmpCode,
-              employeeId: editingEmp.id
-            };
-          }
-          return ar;
-        });
+        const updatedAttendanceRecords = db.attendanceRecords || [];
 
-        // 7. Cascade update to Settlements
         const updatedSettlements = (db.personnelSettlements || []).map(s => {
-          if (s.employeeCode && s.employeeCode.trim() === oldEmpCode) {
+          if (s.periodId === activePeriodId && s.employeeCode && s.employeeCode.trim() === oldEmpCode) {
             return { ...s, employeeCode: targetEmpCode };
           }
           return s;
         });
 
-        // 8. Cascade update to Capabilities
-        let updatedCapabilities = { ...(db.personnelCapabilities || {}) };
+        let updatedCapabilities = { ...periodPersonnelCapabilities };
         if (updatedCapabilities[oldEmpCode]) {
           updatedCapabilities[targetEmpCode] = updatedCapabilities[oldEmpCode];
           delete updatedCapabilities[oldEmpCode];
         }
 
-        // 9. Cascade update to Shift Schemes
         const updatedShiftSchemes = (db.shiftSchemes || []).map(sc => {
+          if (sc.periodId !== activePeriodId) return sc;
           let newSc = { ...sc };
           if (sc.personnelCapabilities && sc.personnelCapabilities[oldEmpCode]) {
             const caps = { ...sc.personnelCapabilities };
@@ -10343,8 +10323,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return newSc;
         });
 
+        const dbWithCaps = setPeriodPersonnelCapabilities(db, activePeriodId, updatedCapabilities);
         onUpdateDb({
-          ...db,
+          ...dbWithCaps,
           personnel: updatedPersonnel,
           personnelAllocations: updatedAllocations,
           personnelContracts: updatedContracts,
@@ -10352,8 +10333,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           shiftAssignments: updatedShiftAssignments,
           shiftSchemes: updatedShiftSchemes,
           attendanceRecords: updatedAttendanceRecords,
-          personnelSettlements: updatedSettlements,
-          personnelCapabilities: updatedCapabilities
+          personnelSettlements: updatedSettlements
         });
 
         setEditingEmp(null);
@@ -10362,7 +10342,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         alert(`اطلاعات پرونده پرسنلی با موفقیت ذخیره شد و کد پرسنلی با موفقیت از «${toPersianDigits(oldEmpCode)}» به «${toPersianDigits(targetEmpCode)}» اصلاح گردید.\n\nکلیه ارجاعات در پرونده پرسنلی، قراردادها، تخصیص بخش‌ها، سوابق تردد حضور و غیاب، شیفت‌ها و فیش‌های حقوقی به طور خودکار اصلاح و همگام‌سازی شدند.`);
         return;
       } else {
-        // Standard edit without code change
         let updatedPersonnel = db.personnel.map(p => p.id === editingEmp.id ? personnelRow : p);
         const existingAllocId = (db.personnelAllocations || []).find(
           a => a.periodId === activePeriodId && (normEmpCodeStr(a.employeeCode) === normEmpCodeStr(editingEmp.employeeCode) || normEmpCodeStr(a.employeeCode) === normEmpCodeStr(targetEmpCode))
@@ -10371,7 +10350,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           a => !(a.periodId === activePeriodId && (normEmpCodeStr(a.employeeCode) === normEmpCodeStr(editingEmp.employeeCode) || normEmpCodeStr(a.employeeCode) === normEmpCodeStr(targetEmpCode)))
         );
         updatedAllocations.push({
-          id: existingAllocId || `alloc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: existingAllocId || nextSimpleId(db.personnelAllocations || [], getPrefixForCollection('personnelAllocations')),
           periodId: activePeriodId,
           employeeCode: targetEmpCode,
           departmentCategoryId: newDeptId || 'cat-4'
@@ -10389,13 +10368,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         return;
       }
     } else {
-      // New Personnel registration with custom code
       let updatedPersonnel = [...db.personnel, personnelRow];
       let updatedAllocations = (db.personnelAllocations || []).filter(
         a => !(a.periodId === activePeriodId && normEmpCodeStr(a.employeeCode) === normEmpCodeStr(targetEmpCode))
       );
       updatedAllocations.push({
-        id: `alloc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextSimpleId(db.personnelAllocations || [], getPrefixForCollection('personnelAllocations')),
         periodId: activePeriodId,
         employeeCode: targetEmpCode,
         departmentCategoryId: newDeptId || 'cat-4'
@@ -10485,6 +10463,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setContractEndDate(emp.contractEndDate || '');
     setContractDurationMonths(emp.contractDurationMonths ? String(emp.contractDurationMonths) : '');
     setContractBaseSalary(emp.contractBaseSalary ? formatWithCommas(emp.contractBaseSalary) : '');
+
+    // Switch to roster sub-tab and smoothly scroll to the top of the page / edit form
+    setEmployeesSubTab('roster');
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      personnelFormTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   };
 
   const handleOpenContractModal = () => {
@@ -10659,6 +10644,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       const updatedPersonnel = [...db.personnel];
       const updatedAllocations = [...db.personnelAllocations];
+      const nextImportPersId = createSimpleIdGenerator(updatedPersonnel, getPrefixForCollection('personnel'));
+      const nextImportAllocId = createSimpleIdGenerator(updatedAllocations, getPrefixForCollection('personnelAllocations'));
       let importCount = 0;
 
       rows.forEach((row, index) => {
@@ -10714,7 +10701,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         let targetPersCatId = undefined;
         if (catNameText) {
           const normPersCat = normCatName(catNameText);
-          const matched = (db.personnelCategories || []).find(c => normCatName(c.name) === normPersCat);
+          const matched = (db.personnelCategories || []).find(c => c.periodId === activePeriodId && normCatName(c.name) === normPersCat);
           if (matched) {
             targetPersCatId = matched.id;
           }
@@ -10722,8 +10709,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         const computedFullName = `${fNameVal} ${lNameVal}`;
 
+        const dupIndex = updatedPersonnel.findIndex(p => p.employeeCode === codeVal && p.periodId === activePeriodId);
         const personRow: Personnel = {
-          id: `emp-imported-${Date.now()}-${index}`,
+          id: dupIndex >= 0 ? updatedPersonnel[dupIndex].id : nextImportPersId(),
           periodId: activePeriodId,
           employeeCode: codeVal,
           accountCode: accCodeVal,
@@ -10756,8 +10744,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           attractionAllowance: attractionAllowanceVal || undefined
         };
 
-        // Prevent duplicates
-        const dupIndex = updatedPersonnel.findIndex(p => p.employeeCode === codeVal && p.periodId === activePeriodId);
         if (dupIndex >= 0) {
           updatedPersonnel[dupIndex] = {
             ...updatedPersonnel[dupIndex],
@@ -10767,11 +10753,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           updatedPersonnel.push(personRow);
         }
 
-        // Department allocation (upsert deduplicated)
         const normImportCode = normEmpCodeStr(codeVal);
         const allocIndex = updatedAllocations.findIndex(a => normEmpCodeStr(a.employeeCode) === normImportCode && a.periodId === activePeriodId);
         const allocationRow = {
-          id: allocIndex >= 0 ? updatedAllocations[allocIndex].id : `alloc-imported-${Date.now()}-${index}`,
+          id: allocIndex >= 0 ? updatedAllocations[allocIndex].id : nextImportAllocId(),
           periodId: activePeriodId,
           employeeCode: codeVal,
           departmentCategoryId: targetDeptId
@@ -10910,7 +10895,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const headers = [
       'سال مالی', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
     ];
-    const rates = db.salaryBaseRates || [];
+    const rates = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const rows = rates.map(r => [
       r.year,
       String(r.dailyBaseSalary || 0),
@@ -10958,14 +10943,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
 
       const updatedRates = [...(db.salaryBaseRates || [])];
+      const nextImportRateId = createSimpleIdGenerator(updatedRates, getPrefixForCollection('salaryBaseRates'));
       let importCount = 0;
 
-      rows.forEach((row, index) => {
+      rows.forEach((row) => {
         if (!row || row.length === 0) return;
         const col0 = String(row[0] || '').trim();
         const col1 = String(row[1] || '').trim();
 
-        // Skip header rows
         if (col0.includes('سال') || col0.includes('ردیف') || col1.includes('سال')) return;
 
         let sYear = '';
@@ -11000,7 +10985,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         const matchIndex = updatedRates.findIndex(r => r.periodId === activePeriodId && r.year === sYear);
         const rateObj: SalaryBaseRate = {
-          id: matchIndex >= 0 ? updatedRates[matchIndex].id : `rate-${Date.now()}-${importCount}`,
+          id: matchIndex >= 0 ? updatedRates[matchIndex].id : nextImportRateId(),
           periodId: activePeriodId,
           year: sYear,
           dailyBaseSalary: dailyBase,
@@ -11044,13 +11029,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
     const ymPrefix = `${calcYear}/${String(calcMonth).padStart(2, '0')}`;
     const updatedAssignments = (db.shiftAssignments || []).filter(a => {
+      if (a.periodId !== activePeriodId) return true;
       if (!a.date) return true;
       const cleanDate = normalizeDateStr(a.date);
       return !cleanDate.startsWith(ymPrefix);
     });
 
     const updatedAttendance = (db.attendanceRecords || []).map(r => {
-      if (!r.date) return r;
+      if (r.periodId !== activePeriodId || !r.date) return r;
       const cleanDate = normalizeDateStr(r.date);
       if (cleanDate.startsWith(ymPrefix)) {
         return {
@@ -11164,36 +11150,31 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const cleanCode = normAttCode(codeRaw);
       const cleanNoZero = stripZeros(cleanCode);
       if (!cleanCode) return undefined;
-      const periodStaff = finalPersonnelList.filter(p => !p.periodId || p.periodId === activePeriodId);
+      const periodStaff = finalPersonnelList.filter(p => p.periodId === activePeriodId);
       const genuine = periodStaff.filter(p => !isDummyUnknownEmp(p));
-      const scanList = (list: Personnel[], withDummyFallback: boolean) => {
+      const scanList = (list: Personnel[]) => {
         for (let i = 0; i < list.length; i++) {
           const p = list[i];
           const tokens = splitAttTokens(p.attendanceCode);
           if (tokens.some(tok => tok === cleanCode || (cleanNoZero && stripZeros(tok) === cleanNoZero))) {
             return p;
           }
-          if (tokens.length === 0) {
-            const empC = normAttCode(p.employeeCode);
-            if (empC && (empC === cleanCode || (cleanNoZero && stripZeros(empC) === cleanNoZero))) {
-              return p;
-            }
-          }
         }
         return undefined;
       };
-      return scanList(genuine, false) || scanList(periodStaff, true);
+      return scanList(genuine) || scanList(periodStaff);
     };
 
     if (targetMonthAttendanceRecs.length > 0) {
       const unmatchedCodes = Array.from(
         new Set(
           targetMonthAttendanceRecs
-            .filter(r => !r.employeeId && r.attendanceCode)
+            .filter(r => r.attendanceCode && !findEmpForAttCode(String(r.attendanceCode)))
             .map(r => String(r.attendanceCode))
         )
       );
 
+      const nextAutoEmpId = createSimpleIdGenerator(finalPersonnelList, getPrefixForCollection('personnel'));
       unmatchedCodes.forEach(rawCode => {
         const cleanDisplay = toEnglishDigits(String(rawCode)).trim();
         const normC = normAttCode(cleanDisplay);
@@ -11202,19 +11183,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         if (existing && !isDummyUnknownEmp(existing)) return;
 
         const alreadyHas = finalPersonnelList.some(p => {
-          if (p.periodId && p.periodId !== activePeriodId) return false;
+          if (p.periodId !== activePeriodId) return false;
           const attTokens = splitAttTokens(p.attendanceCode);
-          if (attTokens.length > 0) {
-            return attTokens.some(tok => tok === normC || (normCleanNoZ && stripZeros(tok) === normCleanNoZ));
-          }
-          const empNorm = stripZeros(normAttCode(p.employeeCode));
-          return Boolean(normCleanNoZ && empNorm === normCleanNoZ);
+          if (attTokens.length === 0) return false;
+          return attTokens.some(tok => tok === normC || (normCleanNoZ && stripZeros(tok) === normCleanNoZ));
         });
 
         if (!alreadyHas && cleanDisplay) {
           const firstAttDate = findFirstAttendanceDateForCode(allAttendanceRecs, cleanDisplay, activePeriodId);
           const newEmp: Personnel = {
-            id: `emp-auto-${Date.now()}-${cleanDisplay}`,
+            id: nextAutoEmpId(),
             periodId: activePeriodId,
             employeeCode: `EMP-U-${cleanDisplay}`,
             firstName: 'نامشخص',
@@ -11239,16 +11217,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       if (!emp && rec.employeeId) {
         const candidate = finalPersonnelList.find(p => p.id === rec.employeeId);
         if (candidate) {
-          const cleanCandAtt = stripZeros(normAttCode(candidate.attendanceCode));
           const cleanRec = stripZeros(normAttCode(rec.attendanceCode));
-          if (!cleanCandAtt || cleanCandAtt === cleanRec) {
+          const candAttTokens = splitAttTokens(candidate.attendanceCode).map(stripZeros);
+          if (!cleanRec || (candAttTokens.length > 0 && candAttTokens.includes(cleanRec))) {
             emp = candidate;
           }
         }
       }
       return {
         ...rec,
-        employeeId: emp?.id ?? rec.employeeId
+        employeeId: emp?.id
       };
     });
 
@@ -12163,72 +12141,342 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   }, [activeTab, payrollSubTab, departmentAllocationReport]);
 
 
+  const activePayrollCopySection: CopySectionKey =
+    activeTab === 'employees'
+      ? (employeesSubTab === 'departments' ? 'departments' : employeesSubTab === 'personnel_categories' ? 'personnelCategories' : 'personnel')
+      : activeTab === 'payroll'
+        ? (payrollSubTab === 'shifts' ? 'shifts' : payrollSubTab === 'attendance_records' ? 'attendanceRecords' : 'payrollPeriods')
+        : activeTab === 'payrollConstants'
+          ? 'salaryBaseRates'
+          : activeTab === 'contracts'
+            ? 'personnelContracts'
+            : activeTab === 'settlement'
+              ? 'personnelSettlements'
+              : 'payrollCalculationRules';
+
+  const payrollCopySections: CopySectionKey[] = [
+    'personnel',
+    'departments',
+    'personnelCategories',
+    'personnelAllocations',
+    'personnelContracts',
+    'salaryBaseRates',
+    'seniorityRateRules',
+    'insuredSalaryItems',
+    'leaveBuyoutSalaryItems',
+    'taxableSalaryItems',
+    'shifts',
+    'productionSections',
+    'shiftAssignments',
+    'attendanceRecords',
+    'payrollPeriods',
+    'personnelSettlements',
+    'monthlyWorkdaySettings',
+    'officialHolidays',
+    'taxExemptions',
+    'taxBrackets',
+    'payrollCalculationRules'
+  ];
+
   return (
     <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right payroll-management-root-wrapper" dir="rtl">
       
-      {/* Upper sub navigation */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
-        <div>
-          <h2 className="text-base sm:text-xl font-bold text-white block">نظام حقوق دستمزد و کنترل هزینه‌ها</h2>
-          <p className="hidden sm:block text-xs text-slate-400 mt-1">مدیریت پرسنل تولید، مدیریت حساب‌های بانکی متعدد پرسنل، محاسبه هوشمند حقوق و گزارش مراکز هزینه کارگاه</p>
-        </div>
+      <ModuleHeader
+        title="نظام حقوق و دستمزد و کنترل هزینه‌ها"
+        subtitle="مدیریت پرسنل، شیفت‌ها، تردد، قراردادها، محاسبه هوشمند حقوق و تسویه حساب (ایزوله در دوره مالی)"
+        icon={<Users className="h-5 w-5" />}
+        actions={
+          <ErpButton
+            variant="neutral"
+            icon={<Copy className="h-4 w-4" />}
+            onClick={() => setShowCopyModal(true)}
+          >
+            {ERP_BUTTON_LABELS.copyFromPeriod}
+          </ErpButton>
+        }
+      />
 
-        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar w-full sm:w-auto bg-slate-950 p-1 rounded-xl border border-slate-850 gap-1 sm:gap-0.5">
-          <button
-            onClick={() => setActiveTab('employees')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'employees' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <Users className="h-4 w-4 shrink-0" /> پرونده پرسنل و دسته‌بندی‌ها
-          </button>
-          <button
-            onClick={() => setActiveTab('payroll')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'payroll' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <FileSpreadsheet className="h-4 w-4 shrink-0" /> محاسبه حقوق و دستمزد و تسهیم حقوق
-          </button>
-          <button
-            onClick={() => setActiveTab('payrollConstants')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'payrollConstants' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <DollarSign className="h-4 w-4 shrink-0" /> قوانین و ثوابت دستمزد
-          </button>
-          <button
-            onClick={() => setActiveTab('contracts')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'contracts' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <FileCheck className="h-4 w-4 text-emerald-400 shrink-0" /> قراردادهای پرسنلی
-          </button>
-          <button
-            onClick={() => setActiveTab('settlement')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'settlement' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <Receipt className="h-4 w-4 text-rose-300 shrink-0" /> تسویه حساب پرسنل
-          </button>
-          <button
-            onClick={() => setActiveTab('attendanceSettings')}
-            className={`px-3 sm:px-4 py-2 text-[11px] sm:text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'attendanceSettings' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-transparent text-slate-400 hover:text-white'
-            }`}
-          >
-            <Settings className="h-4 w-4 text-amber-400 shrink-0" /> تنظیمات حقوق و دستمزد
-          </button>
-        </div>
-      </div>
+      <ModulePrimaryTabs
+        tabs={[
+          { id: 'employees', label: 'پرونده پرسنل و دسته‌بندی‌ها', icon: <Users className="h-4 w-4" /> },
+          { id: 'payroll', label: 'محاسبه حقوق و تسهیم دستمزد', icon: <FileSpreadsheet className="h-4 w-4" /> },
+          { id: 'payrollConstants', label: 'قوانین و ثوابت دستمزد', icon: <DollarSign className="h-4 w-4" /> },
+          { id: 'contracts', label: 'قراردادهای پرسنلی', icon: <FileCheck className="h-4 w-4" /> },
+          { id: 'settlement', label: 'تسویه حساب پرسنل', icon: <Receipt className="h-4 w-4" /> },
+          { id: 'attendanceSettings', label: 'تنظیمات حقوق و دستمزد', icon: <Settings className="h-4 w-4" /> }
+        ]}
+        activeId={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+        className="mb-5"
+      />
 
 
       {/* ================= TAB 1: EMPLOYEES ROSTER & DEPT ALLOCATION ================= */}
       {activeTab === 'employees' && (
-        <div className="space-y-6">
+        <div className="space-y-6" ref={personnelFormTopRef}>
+          {/* Sub-tabs at top of Personnel Files & Categories */}
+          <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+            <button
+              type="button"
+              onClick={() => setEmployeesSubTab('roster')}
+              className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                employeesSubTab === 'roster'
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
+                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              <Users className="h-3.5 w-3.5 shrink-0" />
+              <span>پرونده و لیست پرسنل</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEmployeesSubTab('departments')}
+              className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                employeesSubTab === 'departments'
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
+                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              <Briefcase className="h-3.5 w-3.5 shrink-0" />
+              <span>مدیریت دپارتمان‌های تولید (دسته‌بندی‌ها)</span>
+              <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black transition-colors ${
+                employeesSubTab === 'departments'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-300 group-hover:text-slate-900'
+              }`}>
+                {toPersianDigits(categories.length)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEmployeesSubTab('personnel_categories')}
+              className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                employeesSubTab === 'personnel_categories'
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
+                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              <Tag className="h-3.5 w-3.5 shrink-0" />
+              <span>مدیریت دسته‌بندی‌های پرسنل</span>
+              <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black transition-colors ${
+                employeesSubTab === 'personnel_categories'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-300 group-hover:text-slate-900'
+              }`}>
+                {toPersianDigits(listPersonnelCategories.length)}
+              </span>
+            </button>
+          </div>
+
+          {/* Sub-tab 2: Production Department Categories (CRUD) */}
+          {employeesSubTab === 'departments' && (
+            <div className="bg-slate-900/60 p-5 sm:p-6 rounded-2xl border border-slate-800 space-y-4 shadow-xl text-right">
+              <h3 className="text-sm font-extrabold text-slate-100 border-b border-slate-800 pb-3 flex items-center gap-2">
+                <Briefcase className="h-4.5 w-4.5 text-rose-500" />
+                مدیریت دپارتمان‌های تولید (دسته‌بندی‌ها)
+              </h3>
+
+              {/* Add Category inline form */}
+              <form onSubmit={handleAddDeptCategory} className="space-y-2 max-w-xl">
+                <label htmlFor="pcat-name-payroll" className="block text-[11px] font-bold text-slate-350 font-sans">نام دپارتمان تولید جدید</label>
+                <div className="flex gap-2">
+                  <input
+                    id="pcat-name-payroll"
+                    type="text"
+                    className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
+                    placeholder="مانند: خط پیراشکی"
+                    value={newDeptCatName}
+                    onChange={(e) => setNewDeptCatName(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="submit"
+                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
+                  >
+                    افزودن
+                  </button>
+                </div>
+              </form>
+
+              {/* List of categories with edit and delete */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+                {categories.map(cat => {
+                  const isEditing = editingDeptCatId === cat.id;
+                  return (
+                    <div key={cat.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
+                      {isEditing ? (
+                        <div className="flex gap-1.5 w-full">
+                          <input
+                            type="text"
+                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-white rounded-lg text-xs focus:outline-none"
+                            value={editingDeptCatName}
+                            onChange={(e) => setEditingDeptCatName(e.target.value)}
+                            required
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditDeptCategory(cat.id)}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                          >
+                            ذخیره
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingDeptCatId(null)}
+                            className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                          >
+                            لغو
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <span className="text-slate-200 font-bold">{cat.name}</span>
+                          <div className="flex gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDeptCatId(cat.id);
+                                setEditingDeptCatName(cat.name);
+                              }}
+                              className="text-[11px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
+                            >
+                              ویرایش
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDeptCategory(cat.id, cat.name)}
+                              className="text-[11px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
+                            >
+                              حذف
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {categories.length === 0 && (
+                  <div className="md:col-span-2 text-center py-6 text-slate-400 text-xs font-sans">
+                    هیچ دپارتمان تولیدی در این دوره مالی یافت نشد.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Sub-tab 3: Personnel Categories (CRUD) */}
+          {employeesSubTab === 'personnel_categories' && (
+            <div className="bg-slate-900/60 p-5 sm:p-6 rounded-2xl border border-slate-800 space-y-4 shadow-xl text-right">
+              <h3 className="text-sm font-extrabold text-slate-100 border-b border-slate-800 pb-3 flex items-center gap-2">
+                <Tag className="h-4.5 w-4.5 text-rose-500" />
+                مدیریت دسته‌بندی‌های پرسنل
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Search */}
+                <div className="space-y-1.5">
+                  <label htmlFor="search-pers-cat" className="block text-[11px] font-bold text-slate-350 font-sans">جستجوی دسته‌بندی</label>
+                  <input
+                    id="search-pers-cat"
+                    type="text"
+                    className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-rose-500 font-sans"
+                    placeholder="جستجو کنید..."
+                    value={searchPersonnelCatQuery}
+                    onChange={(e) => setSearchPersonnelCatQuery(e.target.value)}
+                  />
+                </div>
+
+                {/* Add Inline Form */}
+                <form onSubmit={handleAddPersonnelCategory} className="space-y-1.5">
+                  <label htmlFor="new-pers-cat" className="block text-[11px] font-bold text-slate-350 font-sans">نام دسته‌بندی جدید</label>
+                  <div className="flex gap-2">
+                    <input
+                      id="new-pers-cat"
+                      type="text"
+                      className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
+                      placeholder="مانند: پرسنل شیفت الف"
+                      value={newPersonnelCatName}
+                      onChange={(e) => setNewPersonnelCatName(e.target.value)}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
+                    >
+                      افزودن
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Categories List */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+                {listPersonnelCategories.map(cat => {
+                  const isEditing = editingPersonnelCatId === cat.id;
+                  return (
+                    <div key={cat.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
+                      {isEditing ? (
+                        <div className="flex gap-1.5 w-full">
+                          <input
+                            type="text"
+                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-white rounded-lg text-xs focus:outline-none"
+                            value={editingPersonnelCatName}
+                            onChange={(e) => setEditingPersonnelCatName(e.target.value)}
+                            required
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditPersonnelCategory(cat.id, editingPersonnelCatName)}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                          >
+                            ذخیره
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPersonnelCatId(null)}
+                            className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                          >
+                            لغو
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <span className="text-slate-200 font-bold">{cat.name}</span>
+                          <div className="flex gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingPersonnelCatId(cat.id);
+                                setEditingPersonnelCatName(cat.name);
+                              }}
+                              className="text-[11px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
+                            >
+                              ویرایش
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePersonnelCategory(cat.id, cat.name)}
+                              className="text-[11px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
+                            >
+                              حذف
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {listPersonnelCategories.length === 0 && (
+                  <div className="md:col-span-2 text-center py-6 text-slate-400 text-xs">
+                    هیچ دسته‌بندی پرسنلی یافت نشد.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {employeesSubTab === 'roster' && (
+          <>
           <div className="space-y-6">
             
             <div className="space-y-6">
@@ -13487,210 +13735,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
             </div> {/* End registration form parent */}
 
-            {/* Management Categories sub-grid below registration form */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              {/* Card 2: Production Department Categories (CRUD) */}
-              <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner text-right">
-                <h3 className="text-xs font-extrabold text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-1.5">
-                  <Briefcase className="h-4.5 w-4.5 text-rose-500" />
-                  مدیریت دپارتمان‌های تولید (دسته‌بندی‌ها)
-                </h3>
-                
-                {/* Add Category inline form */}
-                <form onSubmit={handleAddDeptCategory} className="space-y-2">
-                  <label htmlFor="pcat-name-payroll" className="block text-[10px] font-bold text-slate-350 font-sans">نام دپارتمان تولید جدید</label>
-                  <div className="flex gap-2">
-                    <input
-                      id="pcat-name-payroll"
-                      type="text"
-                      className="flex-grow px-3 py-1.5 border border-slate-800 rounded-lg text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
-                      placeholder="مانند: خط پیراشکی"
-                      value={newDeptCatName}
-                      onChange={(e) => setNewDeptCatName(e.target.value)}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      className="bg-slate-800 hover:bg-slate-750 border border-slate-755 text-white text-xs px-3 py-1.5 rounded-lg font-bold cursor-pointer transition-colors"
-                    >
-                      افزودن
-                    </button>
-                  </div>
-                </form>
-
-                {/* List of categories with edit and delete */}
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                  {categories.map(cat => {
-                    const isEditing = editingDeptCatId === cat.id;
-                    return (
-                      <div key={cat.id} className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
-                        {isEditing ? (
-                          <div className="flex gap-1.5 w-full">
-                            <input
-                              type="text"
-                              className="flex-grow px-2 py-1 border border-slate-700 bg-slate-900 text-white rounded text-xs focus:outline-none"
-                              value={editingDeptCatName}
-                              onChange={(e) => setEditingDeptCatName(e.target.value)}
-                              required
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleSaveEditDeptCategory(cat.id)}
-                              className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-                            >
-                              ذخیره
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingDeptCatId(null)}
-                              className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-                            >
-                              لغو
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="text-slate-200 font-bold">{cat.name}</span>
-                            <div className="flex gap-2.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                    setEditingDeptCatId(cat.id);
-                                    setEditingDeptCatName(cat.name);
-                                }}
-                                className="text-[10.5px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
-                              >
-                                ویرایش
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteDeptCategory(cat.id, cat.name)}
-                                className="text-[10.5px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
-                              >
-                                حذف
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {categories.length === 0 && (
-                    <div className="text-center py-4 text-slate-400 text-xs text-right font-sans">
-                      هیچ دپارتمان تولیدی در این دوره مالی یافت نشد.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Card 3: Personnel Categories (CRUD) */}
-              <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner text-right">
-                <h3 className="text-xs font-extrabold text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-1.5">
-                  <Tag className="h-4.5 w-4.5 text-rose-500" />
-                  مدیریت دسته‌بندی‌های پرسنل
-                </h3>
-
-                {/* Search */}
-                <div className="space-y-1">
-                  <label htmlFor="search-pers-cat" className="block text-[10px] font-bold text-slate-350 font-sans">جستجوی دسته‌بندی</label>
-                  <input
-                    id="search-pers-cat"
-                    type="text"
-                    className="w-full px-3 py-1.5 border border-slate-800 rounded-lg text-xs bg-slate-950 text-white font-bold placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-rose-500 font-sans"
-                    placeholder="جستجو کنید..."
-                    value={searchPersonnelCatQuery}
-                    onChange={(e) => setSearchPersonnelCatQuery(e.target.value)}
-                  />
-                </div>
-
-                {/* Add Inline Form */}
-                <form onSubmit={handleAddPersonnelCategory} className="space-y-2">
-                  <label htmlFor="new-pers-cat" className="block text-[10px] font-bold text-slate-350 font-sans">نام دسته‌بندی جدید</label>
-                  <div className="flex gap-2">
-                    <input
-                      id="new-pers-cat"
-                      type="text"
-                      className="flex-grow px-3 py-1.5 border border-slate-800 rounded-lg text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
-                      placeholder="مانند: پرسنل شیفت الف"
-                      value={newPersonnelCatName}
-                      onChange={(e) => setNewPersonnelCatName(e.target.value)}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      className="bg-slate-800 hover:bg-slate-750 border border-slate-755 text-white text-xs px-3 py-1.5 rounded-lg font-bold cursor-pointer transition-colors"
-                    >
-                      افزودن
-                    </button>
-                  </div>
-                </form>
-
-                {/* Categories List */}
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                  {listPersonnelCategories.map(cat => {
-                    const isEditing = editingPersonnelCatId === cat.id;
-                    return (
-                      <div key={cat.id} className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
-                        {isEditing ? (
-                          <div className="flex gap-1.5 w-full">
-                            <input
-                              type="text"
-                              className="flex-grow px-2 py-1 border border-slate-700 bg-slate-900 text-white rounded text-xs focus:outline-none"
-                              value={editingPersonnelCatName}
-                              onChange={(e) => setEditingPersonnelCatName(e.target.value)}
-                              required
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleSaveEditPersonnelCategory(cat.id, editingPersonnelCatName)}
-                              className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-                            >
-                              ذخیره
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingPersonnelCatId(null)}
-                              className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-                            >
-                              لغو
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="text-slate-200 font-bold">{cat.name}</span>
-                            <div className="flex gap-2.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingPersonnelCatId(cat.id);
-                                  setEditingPersonnelCatName(cat.name);
-                                }}
-                                className="text-[10.5px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
-                              >
-                                ویرایش
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePersonnelCategory(cat.id, cat.name)}
-                                className="text-[10.5px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
-                              >
-                                حذف
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {listPersonnelCategories.length === 0 && (
-                    <div className="text-center py-4 text-slate-400 text-xs text-right">
-                      هیچ دسته‌بندی پرسنلی یافت نشد.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
           </div> {/* End Tab 1 Employees Wrapper */}
 
           {/* List block (Full width at bottom of page) */}
@@ -13885,6 +13929,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </table>
               </div>
             </div>
+          </>
+          )}
 
         </div>
       )}
@@ -16861,11 +16907,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allInsuredItems = db.insuredSalaryItems || [];
+                    const allInsuredItems = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
 
                     const getAmountForInsuredItem = (key: string, itemYear: string) => {
-                      const yr = itemYear || '1403';
-                      const activeRates = (db.salaryBaseRates || []).find((r: any) => r.year === yr || r.periodId?.startsWith(yr)) || (db.salaryBaseRates || [])[0];
+                      const yr = itemYear || activeFiscalYearStr;
+                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17046,11 +17093,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allLeaveBuyoutItems = db.leaveBuyoutSalaryItems || [];
+                    const allLeaveBuyoutItems = (db.leaveBuyoutSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
 
                     const getAmountForLeaveBuyoutItem = (key: string, itemYear: string) => {
-                      const yr = itemYear || '1403';
-                      const activeRates = (db.salaryBaseRates || []).find((r: any) => r.year === yr || r.periodId?.startsWith(yr)) || (db.salaryBaseRates || [])[0];
+                      const yr = itemYear || activeFiscalYearStr;
+                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17231,11 +17279,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allTaxableItems = db.taxableSalaryItems || [];
+                    const allTaxableItems = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
 
                     const getAmountForTaxableItem = (key: string, itemYear: string) => {
-                      const yr = itemYear || '1403';
-                      const activeRates = (db.salaryBaseRates || []).find((r: any) => r.year === yr || r.periodId?.startsWith(yr)) || (db.salaryBaseRates || [])[0];
+                      const yr = itemYear || activeFiscalYearStr;
+                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17653,30 +17702,24 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const activeEmployees = db.personnel.filter(p => p.periodId === activePeriodId);
         const selectedEmployee = activeEmployees.find(p => p.employeeCode === selContractEmpCode);
         
+        const periodContractsAll = (db.personnelContracts || []).filter(c => c.periodId === activePeriodId);
         const contractYears = Array.from(new Set([
-          ...(db.salaryBaseRates || []).map((r: any) => toEnglishDigits(String(r.year || ''))),
-          ...(db.personnelContracts || []).map((c: any) => {
-            return toEnglishDigits(String(c.contractStartDate || '')).split('/')[0];
-          }),
-          ...(db.personnelContracts || []).map((c: any) => {
-            return toEnglishDigits(String(c.contractEndDate || '')).split('/')[0];
-          }),
-          ...(db.personnelContracts || []).map((c: any) => {
-            return toEnglishDigits(String(c.periodId || '')).split('-')[0];
-          }),
-          toEnglishDigits(activePeriodId.split('-')[0]),
+          ...(db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId).map((r: any) => toEnglishDigits(String(r.year || ''))),
+          ...periodContractsAll.map((c: any) => toEnglishDigits(String(c.contractStartDate || '')).split('/')[0]),
+          ...periodContractsAll.map((c: any) => toEnglishDigits(String(c.contractEndDate || '')).split('/')[0]),
+          toEnglishDigits(activeFiscalYearStr),
           '1402',
           '1403',
           '1404',
           '1405'
         ].map(y => y?.trim()).filter(y => y && y.length === 4))).sort();
 
-        const registeredContracts = (db.personnelContracts || []).filter(c => {
+        const registeredContracts = periodContractsAll.filter(c => {
           if (selectedContractYear && selectedContractYear !== 'all') {
             const cleanTargetYear = toEnglishDigits(selectedContractYear).trim();
             const startYear = toEnglishDigits(String(c.contractStartDate || '')).split('/')[0]?.trim();
             const endYear = toEnglishDigits(String(c.contractEndDate || '')).split('/')[0]?.trim();
-            const periodYear = toEnglishDigits(String(c.periodId || '')).split('-')[0]?.trim();
+            const periodYear = toEnglishDigits(activeFiscalYearStr).trim();
 
             if (startYear === cleanTargetYear || endYear === cleanTargetYear || periodYear === cleanTargetYear) {
               return true;
@@ -17686,12 +17729,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             }
             return false;
           }
-          return true; // Show all registered contracts when 'all' is selected
+          return true;
         });
 
         const filteredContracts = registeredContracts.filter(c => {
           if (onlyActiveContractsFilter) {
-            const active = isContractActive(c, db.personnelContracts || []);
+            const active = isContractActive(c, periodContractsAll);
             if (!active) return false;
           }
           const emp = db.personnel.find(e => e.employeeCode === c.employeeCode && e.periodId === c.periodId) || db.personnel.find(e => e.employeeCode === c.employeeCode);
@@ -18192,9 +18235,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               seniorityYears = diff.years;
                             }
                           }
-                          const startYearForPrint = getJalaliYear(conStartDate) || activePeriodId.split('-')[0] || '';
+                          const startYearForPrint = getJalaliYear(conStartDate) || activeFiscalYearStr || '';
                           const foundSeniorityRule = (db.seniorityRateRules || []).find(
-                            (r: any) => r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
+                            (r: any) => r.periodId === activePeriodId && r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
                           );
                           const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
 
@@ -18217,17 +18260,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             return empTaxableItems.some((item: any) => item.itemKey === key);
                           };
 
-                          const calcYear = getJalaliYear(conStartDate) || (activeRates ? String(activeRates.year) : '') || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
+                          const calcYear = getJalaliYear(conStartDate) || (activeRates ? String(activeRates.year) : '') || activeFiscalYearStr;
                           const currentFiscalYear = Number(calcYear) || 1403;
                           const monthlyExemption = (activeRates && activeRates.taxableAmount !== undefined && activeRates.taxableAmount !== null && Number(activeRates.taxableAmount) > 0)
                             ? Number(activeRates.taxableAmount)
                             : 120000000;
 
                           const yearBrackets = (db.taxBrackets || [])
-                            .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+                            .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
                             .sort((a, b) => a.fromAmount - b.fromAmount);
 
-                          const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+                          const isTaxCalculationEnabled = periodPayrollRules?.calculatePayrollTax || false;
 
                           const getNetForCandidateJ = (candidateJ: number) => {
                             const refWorkDays = 26;
@@ -18518,9 +18561,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       tempSeniorityYears = tDiff.years;
                     }
                   }
-                  const startYear = getJalaliYear(tStartDate) || activePeriodId.split('-')[0] || '';
+                  const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
                   const foundSeniorityRule = (db.seniorityRateRules || []).find(
-                    r => r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
+                    r => r.periodId === activePeriodId && r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
                   );
                   // Seniority base for viewing is dailyRate * viewBasisDays
                   const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * viewBasisDays) : 0;
@@ -18599,10 +18642,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     : 120000000;
 
                   const yearBrackets = (db.taxBrackets || [])
-                    .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+                    .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
                     .sort((a, b) => a.fromAmount - b.fromAmount);
 
-                  const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+                  const isTaxCalculationEnabled = periodPayrollRules?.calculatePayrollTax || false;
                   let calculatedTax = 0;
 
                   if (isTaxCalculationEnabled && computedTaxBase > monthlyExemption) {
@@ -19354,9 +19397,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           }
         }
         
-        const startYearForPrint = getJalaliYear(displayStartDate) || activePeriodId.split('-')[0] || '';
+        const startYearForPrint = getJalaliYear(displayStartDate) || activeFiscalYearStr || '';
         const foundSeniorityRule = (db.seniorityRateRules || []).find(
-          r => r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
+          r => r.periodId === activePeriodId && r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
         );
         const calSeniorityBase = contractModalContractData?.calculatedSeniorityBase !== undefined
           ? contractModalContractData.calculatedSeniorityBase
@@ -19445,17 +19488,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               if (isKeyTaxable('monthlyEidi')) computedTaxBase30 += calMonthlyEidi;
               if (isKeyTaxable('monthlyYearsBenefit')) computedTaxBase30 += calMonthlyYears;
 
-              const calcYear = getJalaliYear(displayStartDate) || (activeRates ? String(activeRates.year) : '') || (activePeriodId ? activePeriodId.split('-')[0] : '1403');
+              const calcYear = getJalaliYear(displayStartDate) || (activeRates ? String(activeRates.year) : '') || activeFiscalYearStr;
               const currentFiscalYear = Number(calcYear) || 1403;
               const monthlyExemption = (activeRates && activeRates.taxableAmount !== undefined && activeRates.taxableAmount !== null && Number(activeRates.taxableAmount) > 0)
                 ? Number(activeRates.taxableAmount)
                 : 120000000;
 
               const yearBrackets = (db.taxBrackets || [])
-                .filter(b => Number(b.fiscalYear) === currentFiscalYear)
+                .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
                 .sort((a, b) => a.fromAmount - b.fromAmount);
 
-              const isTaxCalculationEnabled = db.payrollCalculationRules?.calculatePayrollTax || false;
+              const isTaxCalculationEnabled = periodPayrollRules?.calculatePayrollTax || false;
               if (!isTaxCalculationEnabled || computedTaxBase30 <= monthlyExemption) return 0;
 
               if (yearBrackets.length > 0) {
@@ -20064,6 +20107,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         <AttendanceSettingsForm
           db={db}
           onUpdateDb={onUpdateDb}
+          activePeriodId={activePeriodId}
         />
       )}
 
@@ -20256,6 +20300,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         year={calcYear}
         month={calcMonth}
         activePeriodId={activePeriodId}
+      />
+
+      <CopyFromPeriodModal
+        open={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        targetPeriodId={activePeriodId}
+        section={activePayrollCopySection}
+        sections={payrollCopySections}
+        onUpdateDb={onUpdateDbOriginal}
       />
 
     </div>

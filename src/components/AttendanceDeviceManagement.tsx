@@ -6,6 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import { AppDatabase, AttendanceDeviceConfig, AttendanceRecord, Personnel } from '../types';
 import { toPersianDigits, toEnglishDigits } from '../utils/persianUtils';
+import { createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
 import { 
   Wifi, WifiOff, RefreshCw, Cpu, Server, Activity, ShieldCheck, Zap, Download, 
   Clock, Check, X, AlertTriangle, Terminal, Play, Info, FileSpreadsheet, 
@@ -222,29 +223,24 @@ export default function AttendanceDeviceManagement({
   const [pasteInputText, setPasteInputText] = useState<string>('');
   const [pasteParseError, setPasteParseError] = useState<string | null>(null);
 
-  // Helper to find employee by attendanceCode (or employeeCode only if attendanceCode is not defined)
+  // Helper to find employee strictly by attendanceCode ONLY (never employeeCode)
   const findPersonnel = (deviceCode: string): Personnel | undefined => {
-    const clean = (c: string) => toEnglishDigits(String(c || '')).trim().toLowerCase().replace(/^0+/, '');
+    const clean = (c: string) => {
+      const s = toEnglishDigits(String(c || '')).trim().toLowerCase();
+      const noZeros = s.replace(/^0+/, '');
+      return noZeros === '' && s !== '' ? '0' : noZeros;
+    };
     const cleanTarget = clean(deviceCode);
     if (!cleanTarget) return undefined;
 
-    // 1. Strict match by attendanceCode
-    const byAtt = (db.personnel || []).find(p => {
-      const matchPeriod = p.periodId ? p.periodId === activePeriodId : true;
-      if (!matchPeriod) return false;
-      const cleanAttCode = p.attendanceCode ? clean(p.attendanceCode) : '';
-      return cleanTarget === cleanAttCode;
-    });
-    if (byAtt) return byAtt;
-
-    // 2. Fallback to employeeCode ONLY if personnel has NO attendanceCode set
+    // Strict match ONLY by attendanceCode (کد پرسنل حضور و غیاب)
     return (db.personnel || []).find(p => {
       const matchPeriod = p.periodId ? p.periodId === activePeriodId : true;
       if (!matchPeriod) return false;
-      const cleanAttCode = p.attendanceCode ? clean(p.attendanceCode) : '';
-      if (cleanAttCode !== '') return false;
-      const cleanEmpCode = clean(p.employeeCode);
-      return cleanTarget === cleanEmpCode;
+      const rawAtt = toEnglishDigits(String(p.attendanceCode || '')).trim();
+      if (!rawAtt) return false;
+      const tokens = rawAtt.split(/[\s,،;|/\\]+/).map(t => clean(t)).filter(Boolean);
+      return tokens.includes(cleanTarget);
     });
   };
 
@@ -657,6 +653,7 @@ export default function AttendanceDeviceManagement({
 
     const newAttendanceRecords: AttendanceRecord[] = [];
     const uniqueUnknownCodes = new Set<string>();
+    const genAttId = createSimpleIdGenerator(db.attendanceRecords || [], getPrefixForCollection('attendanceRecords'));
 
     groupedMap.forEach(group => {
       group.logs.sort((a, b) => a.time.localeCompare(b.time));
@@ -669,7 +666,7 @@ export default function AttendanceDeviceManagement({
       }
 
       newAttendanceRecords.push({
-        id: `att-zk-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: genAttId(),
         periodId: activePeriodId,
         year: selectedYear,
         month: selectedMonth,

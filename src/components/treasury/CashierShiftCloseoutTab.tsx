@@ -16,6 +16,7 @@ import {
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface CashierShiftCloseoutTabProps {
   db: AppDatabase;
@@ -59,14 +60,14 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
   const [autoCalculatedApplied, setAutoCalculatedApplied] = useState(false);
 
   const closeouts = useMemo(() => {
-    return db.cashierShiftCloseouts || [];
-  }, [db.cashierShiftCloseouts]);
+    return (db.cashierShiftCloseouts || []).filter(c => c.periodId === activePeriodId);
+  }, [db.cashierShiftCloseouts, activePeriodId]);
 
-  const cashiers = useMemo(() => db.cashiers || [], [db.cashiers]);
-  const cashDrawers = useMemo(() => db.cashDrawers || [], [db.cashDrawers]);
-  const bankAccounts = useMemo(() => db.bankAccounts || [], [db.bankAccounts]);
-  const treasuryReceipts = useMemo(() => db.treasuryReceipts || [], [db.treasuryReceipts]);
-  const treasuryPayments = useMemo(() => db.treasuryPayments || [], [db.treasuryPayments]);
+  const cashiers = useMemo(() => (db.cashiers || []).filter(c => c.periodId === activePeriodId), [db.cashiers, activePeriodId]);
+  const cashDrawers = useMemo(() => (db.cashDrawers || []).filter(d => d.periodId === activePeriodId), [db.cashDrawers, activePeriodId]);
+  const bankAccounts = useMemo(() => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId), [db.bankAccounts, activePeriodId]);
+  const treasuryReceipts = useMemo(() => (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId), [db.treasuryReceipts, activePeriodId]);
+  const treasuryPayments = useMemo(() => (db.treasuryPayments || []).filter(p => p.periodId === activePeriodId), [db.treasuryPayments, activePeriodId]);
 
   // System Calculation Engine (Extracts real transactions from database to prevent manual entry errors)
   const systemCalculations = useMemo(() => {
@@ -308,7 +309,7 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
     }
 
     const closeoutObj: CashierShiftCloseout = {
-      id: editingCloseout ? editingCloseout.id : `cls-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: editingCloseout ? editingCloseout.id : nextSimpleId(currentList, getPrefixForCollection('cashierShiftCloseouts')),
       periodId: activePeriodId,
       closeoutNo: closeoutNo.trim(),
       date,

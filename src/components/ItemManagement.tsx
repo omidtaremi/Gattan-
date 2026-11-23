@@ -24,6 +24,11 @@ import {
 import SearchableSelect from './SearchableSelect';
 import ShamsiDatePicker from './ShamsiDatePicker';
 import { generateCode128SvgString, generateNextSystemBarcode } from '../utils/barcodeSvg';
+import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import { useErpFeedback } from './ui/ToastContext';
 
 // Utility to round numbers to at most 2 decimal places
 export function roundTo2Decimals(val: number | undefined | null): number {
@@ -271,8 +276,10 @@ interface ItemManagementProps {
 }
 
 export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemManagementProps) {
+  const { toast } = useErpFeedback();
   // Navigation tabs under Item Management
   const [activeTab, setActiveTab] = useState<'items' | 'categories' | 'units' | 'purchases' | 'inventory' | 'warehouses'>('items');
+  const [copySection, setCopySection] = useState<CopySectionKey | null>(null);
 
   // Custom confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -382,7 +389,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     return list.map((c, idx) => {
       const id = String(c.id || '');
       if (!id || seen.has(id)) {
-        const uniqueId = `sc-${c.itemId || 'rec'}-${idx}-${Date.now().toString(36)}`;
+        const uniqueId = `sc-dup-${idx + 1}`;
         seen.add(uniqueId);
         return { ...c, id: uniqueId };
       }
@@ -398,10 +405,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     return map;
   }, [categories]);
 
-  // Map item details
+  // Map item details (strictly isolated to active period)
   const itemMap = useMemo(() => {
     const map: Record<string, Item> = {};
-    db.items.forEach(i => {
+    items.forEach(i => {
       map[i.id] = i;
       if (i.accountId) {
         map[i.accountId.trim()] = i;
@@ -413,7 +420,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       }
     });
     return map;
-  }, [db.items]);
+  }, [items]);
 
   // Active items mapping for selectors (only active items displayed in purchases/counts)
   const activeItemsList = useMemo(() => items.filter(i => i.isActive), [items]);
@@ -628,21 +635,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     setCatalogPage(1);
   }, [itemSearch, itemCategoryFilter, itemWarehouseFilter]);
 
-  // Units of Measurement list state
+  // Units of Measurement list state (strictly isolated by activePeriodId)
   const unitsOfMeasurementList = useMemo(() => {
-    return db.unitsOfMeasurement && db.unitsOfMeasurement.length > 0
-      ? db.unitsOfMeasurement
-      : [
-          { id: 'unit-1', name: 'کیلوگرم', symbol: 'kg', description: 'واحد سنجش وزنی اصلی انبار', isActive: true },
-          { id: 'unit-2', name: 'عدد', symbol: 'pcs', description: 'واحد شمارش عددی محصولات و کالاها', isActive: true },
-          { id: 'unit-3', name: 'لیتر', symbol: 'L', description: 'واحد سنجش حجم مایعات روغن و اسانس', isActive: true },
-          { id: 'unit-4', name: 'بسته', symbol: 'pack', description: 'بسته‌بندی‌های چندتایی و پک', isActive: true },
-          { id: 'unit-5', name: 'گرم', symbol: 'g', description: 'واحد مصرفی جزئی فرمولاسیون تولید', isActive: true },
-          { id: 'unit-6', name: 'متر', symbol: 'm', description: 'طول نایلون و لفاف', isActive: true },
-          { id: 'unit-7', name: 'کارتن', symbol: 'box', description: 'کارتن‌های مادر تحویلی', isActive: true },
-          { id: 'unit-8', name: 'گونی', symbol: 'sack', description: 'گونی و کیسه مواد اولیه خام', isActive: true }
-        ];
-  }, [db.unitsOfMeasurement]);
+    return (db.unitsOfMeasurement || []).filter(u => u.periodId === activePeriodId);
+  }, [db.unitsOfMeasurement, activePeriodId]);
 
   const [unitSearch, setUnitSearch] = useState('');
   const [editingUnit, setEditingUnit] = useState<UnitOfMeasurement | null>(null);
@@ -664,17 +660,19 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const handleAddOrUpdateUnit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUnit.name.trim() && !editingUnit?.name.trim()) {
-      alert('لطفاً عنوان واحد سنجش اصلی را وارد کنید.');
+      toast('لطفاً عنوان واحد سنجش اصلی را وارد کنید.', 'error');
       return;
     }
 
-    let updatedUnits = [...unitsOfMeasurementList];
+    const allUnits = db.unitsOfMeasurement || [];
+    let updatedUnits = [...allUnits];
     if (editingUnit) {
-      updatedUnits = updatedUnits.map(u => u.id === editingUnit.id ? { ...editingUnit, name: editingUnit.name.trim() } : u);
+      updatedUnits = updatedUnits.map(u => u.id === editingUnit.id ? { ...editingUnit, periodId: activePeriodId, name: editingUnit.name.trim() } : u);
       setEditingUnit(null);
     } else {
       const newObj: UnitOfMeasurement = {
-        id: `unit-${Date.now()}`,
+        id: nextSimpleId(allUnits, 'unit'),
+        periodId: activePeriodId,
         name: newUnit.name.trim(),
         symbol: newUnit.symbol.trim() || 'واحد',
         description: newUnit.description.trim() || 'واحد سنجش انبار',
@@ -685,7 +683,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
 
     onUpdateDb({ ...db, unitsOfMeasurement: updatedUnits });
-    alert('اطلاعات واحد سنجش با موفقیت ذخیره گردید.');
+    toast('اطلاعات واحد سنجش با موفقیت ذخیره شد.', 'success');
   };
 
   const handleDeleteUnit = (unitId: string) => {
@@ -695,30 +693,32 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       'حذف واحد سنجش اصلی',
       `آیا از حذف واحد سنجش "${targetUnit.name}" اطمینان دارید؟`,
       () => {
-        const updated = unitsOfMeasurementList.filter(u => u.id !== unitId);
+        const updated = (db.unitsOfMeasurement || []).filter(u => u.id !== unitId);
         onUpdateDb({ ...db, unitsOfMeasurement: updated });
-        alert('واحد سنجش با موفقیت حذف گردید.');
+        toast('واحد سنجش با موفقیت حذف شد.', 'info');
       }
     );
   };
 
   const handleResetDefaultUnits = () => {
     askConfirm(
-      'بازنشانی واحدهای سنجش پیش‌فرض',
-      'آیا مایل به بازنشانی واحدهای سنجش به حالت اولیه استاندارد انبار هستید؟',
+      'ایجاد واحدهای سنجش استاندارد در این دوره',
+      'آیا مایل به بازنشانی واحدهای سنجش این دوره به حالت اولیه استاندارد انبار هستید؟',
       () => {
-        const defaultUnits = [
-          { id: 'unit-1', name: 'کیلوگرم', symbol: 'kg', description: 'واحد سنجش وزنی اصلی انبار', isActive: true },
-          { id: 'unit-2', name: 'عدد', symbol: 'pcs', description: 'واحد شمارش عددی محصولات و کالاها', isActive: true },
-          { id: 'unit-3', name: 'لیتر', symbol: 'L', description: 'واحد سنجش حجم مایعات روغن و اسانس', isActive: true },
-          { id: 'unit-4', name: 'بسته', symbol: 'pack', description: 'بسته‌بندی‌های چندتایی و پک', isActive: true },
-          { id: 'unit-5', name: 'گرم', symbol: 'g', description: 'واحد مصرفی جزئی فرمولاسیون تولید', isActive: true },
-          { id: 'unit-6', name: 'متر', symbol: 'm', description: 'طول نایلون و لفاف', isActive: true },
-          { id: 'unit-7', name: 'کارتن', symbol: 'box', description: 'کارتن‌های مادر تحویلی', isActive: true },
-          { id: 'unit-8', name: 'گونی', symbol: 'sack', description: 'گونی و کیسه مواد اولیه خام', isActive: true }
+        const otherPeriodUnits = (db.unitsOfMeasurement || []).filter(u => u.periodId !== activePeriodId);
+        const genUnitId = createSimpleIdGenerator(otherPeriodUnits, 'unit');
+        const defaultUnits: UnitOfMeasurement[] = [
+          { id: genUnitId(), periodId: activePeriodId, name: 'کیلوگرم', symbol: 'kg', description: 'واحد سنجش وزنی اصلی انبار', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'عدد', symbol: 'pcs', description: 'واحد شمارش عددی محصولات و کالاها', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'لیتر', symbol: 'L', description: 'واحد سنجش حجم مایعات روغن و اسانس', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'بسته', symbol: 'pack', description: 'بسته‌بندی‌های چندتایی و پک', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'گرم', symbol: 'g', description: 'واحد مصرفی جزئی فرمولاسیون تولید', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'متر', symbol: 'm', description: 'طول نایلون و لفاف', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'کارتن', symbol: 'box', description: 'کارتن‌های مادر تحویلی', isActive: true },
+          { id: genUnitId(), periodId: activePeriodId, name: 'گونی', symbol: 'sack', description: 'گونی و کیسه مواد اولیه خام', isActive: true }
         ];
-        onUpdateDb({ ...db, unitsOfMeasurement: defaultUnits });
-        alert('واحدهای سنجش با موفقیت بازنشانی شدند.');
+        onUpdateDb({ ...db, unitsOfMeasurement: [...otherPeriodUnits, ...defaultUnits] });
+        toast('واحدهای سنجش استاندارد در این دوره ثبت شدند.', 'success');
       }
     );
   };
@@ -859,7 +859,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     const isEdit = !!editingItem;
     const stableId = isEdit 
       ? editingItem.id 
-      : (newItem.accountId?.trim() || newItem.code?.trim() || `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+      : nextSimpleId(db.items, 'item');
     const rawCatId = isEdit ? editingItem!.categoryId : newItem.categoryId;
     const hasValidCat = Boolean(rawCatId) && categories.some(c => c.id === rawCatId);
     if (isEdit && categories.length > 0 && !hasValidCat) {
@@ -1013,6 +1013,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       const text = decodeFileBuffer(buffer);
       const rows = parseCSVText(text);
       const updatedItems = [...db.items];
+      const genItemId = createSimpleIdGenerator(updatedItems, 'item');
       let importCount = 0;
       let updatedCount = 0;
 
@@ -1056,8 +1057,8 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           }
           updatedCount++;
         } else {
-          // Otherwise, insert as new item
-          const tempId = accountIdVal || codeVal || `item-${Date.now()}-${index}`;
+          // Otherwise, insert as new item with simple sequential ID
+          const tempId = genItemId();
           const item: Item = {
             id: tempId,
             periodId: activePeriodId,
@@ -1193,7 +1194,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           } else {
             // Unmatched item: "در غیر اینصورت اطلاعات کالای جدید را به کاربر نشان بده"
             unmatchedList.push({
-              id: `catalog-new-${Date.now()}-${i}`,
+              id: `pending-item-${i}`,
               accountId: rawAccountId,
               code: `R-${rawAccountId}`,
               name: rawName || 'کالای جدید اکسل',
@@ -1249,8 +1250,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       return;
     }
 
+    const genItemId = createSimpleIdGenerator(db.items, 'item');
     const newCatalogList: Item[] = unmatchedCatalogPriceItems.map(item => ({
-      id: item.id,
+      id: genItemId(),
       periodId: activePeriodId,
       code: item.code.trim(),
       accountId: item.accountId.trim(),
@@ -1304,7 +1306,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
 
     const newCatObj: ItemCategory = {
-      id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextSimpleId(db.itemCategories, 'icat'),
       periodId: activePeriodId,
       name: trimmed
     };
@@ -1373,6 +1375,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       const text = decodeFileBuffer(buffer);
       const rows = parseCSVText(text);
       const updatedCats = [...db.itemCategories];
+      const genCatId = createSimpleIdGenerator(updatedCats, 'icat');
       let importCount = 0;
 
       rows.forEach((row, index) => {
@@ -1384,7 +1387,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
         // Ensure no duplicate name in current period
         if (!updatedCats.some(c => c.periodId === activePeriodId && normCat(c.name) === normName)) {
           updatedCats.push({
-            id: `cat-imported-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+            id: genCatId(),
             periodId: activePeriodId,
             name: nameVal
           });
@@ -1569,7 +1572,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           } else {
             // Unmatched item: "کالای جدید را به کاربر نشان بده و اطلاعات مورد نیاز تعریف کالا را از کاربر بگیر"
             unmatchedList.push({
-              id: `unmatched-${Date.now()}-${i}`,
+              id: `pending-pur-${i}`,
               accountId: rawAccountId,
               code: rawCode || `K-${rawAccountId}`,
               name: rawName || 'کالای وارداتی تدارک',
@@ -1630,40 +1633,44 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       return;
     }
 
-    const newCatalogItems: Item[] = unmatchedPurchasedItems.map(item => ({
-      id: item.id,
-      periodId: activePeriodId,
-      code: item.code.trim(),
-      accountId: item.accountId.trim(),
-      name: item.name.trim(),
-      categoryId: item.categoryId,
-      unit: item.unit,
-      barcode: '',
-      packageType: item.packageType,
-      qtyPerPackage: item.qtyPerPackage,
-      weightPerPackage: item.weightPerPackage,
-      reorderThreshold: item.reorderThreshold,
-      price: item.price,
-      isActive: true,
-      warehouse: ''
-    }));
+    const genItemId = createSimpleIdGenerator(db.items, 'item');
+    const newPairs = unmatchedPurchasedItems.map(item => {
+      const assignedId = genItemId();
+      const catalogItem: Item = {
+        id: assignedId,
+        periodId: activePeriodId,
+        code: item.code.trim(),
+        accountId: item.accountId.trim(),
+        name: item.name.trim(),
+        categoryId: item.categoryId,
+        unit: item.unit,
+        barcode: '',
+        packageType: item.packageType,
+        qtyPerPackage: item.qtyPerPackage,
+        weightPerPackage: item.weightPerPackage,
+        reorderThreshold: item.reorderThreshold,
+        price: item.price,
+        isActive: true,
+        warehouse: ''
+      };
+      const invoiceRow: PurchaseInvoiceItem = {
+        itemId: assignedId,
+        qty: item.qty,
+        price: item.price,
+        packageCount: Math.ceil(item.qty / (item.qtyPerPackage || 1))
+      };
+      return { catalogItem, invoiceRow };
+    });
 
-    const updatedItems = [...db.items, ...newCatalogItems];
+    const updatedItems = [...db.items, ...newPairs.map(p => p.catalogItem)];
     onUpdateDb({
       ...db,
       items: updatedItems
     });
 
-    const newInvoiceRows: PurchaseInvoiceItem[] = unmatchedPurchasedItems.map(item => ({
-      itemId: item.id,
-      qty: item.qty,
-      price: item.price,
-      packageCount: Math.ceil(item.qty / (item.qtyPerPackage || 1))
-    }));
-
-    setInvoiceItems(prev => [...prev, ...newInvoiceRows]);
+    setInvoiceItems(prev => [...prev, ...newPairs.map(p => p.invoiceRow)]);
     setUnmatchedPurchasedItems([]);
-    alert('کالاهای جدید با موفقیت به بخش تعریف کالاها افزوده شدند و در فاکتور خرید در حال ویرایش ثبت گردیدند.');
+    toast('کالاهای جدید به کاتالوگ افزوده و در فاکتور ثبت شدند.', 'success');
   };
 
   const selectedItemData = useMemo(() => {
@@ -1728,11 +1735,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
 
     const newInvoice: PurchaseInvoice = {
-      id: `inv-${Date.now()}`,
+      id: nextSimpleId(db.purchaseInvoices, 'pinv'),
       periodId: activePeriodId,
       supplierId: selectedSupplierId,
       date: invoiceDate,
-      invoiceNumber: invoiceNo || `F-${Date.now().toString().slice(-4)}`,
+      invoiceNumber: invoiceNo || `F-${purchases.length + 1}`,
       items: invoiceItems
     };
 
@@ -1834,14 +1841,14 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       } : w);
       setEditingWhId(null);
     } else {
-      const codeToUse = newWhCode.trim() || `WH-${Date.now().toString().slice(-4)}`;
+      const codeToUse = newWhCode.trim() || `WH-${warehouses.length + 1}`;
       if (currentWhs.some(w => w.periodId === activePeriodId && w.code?.trim().toLowerCase() === codeToUse.toLowerCase())) {
-        alert('کد انبار وارد شده تکراری است.');
+        toast('کد انبار وارد شده تکراری است.', 'error');
         return;
       }
 
       const newWh = {
-        id: `wh-${Date.now()}`,
+        id: nextSimpleId(currentWhs, 'wh'),
         periodId: activePeriodId,
         name: newWhName.trim(),
         code: codeToUse,
@@ -2171,7 +2178,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }
 
     const newAuditObj: StockCountAudit = {
-      id: `aud-${Date.now()}`,
+      id: nextSimpleId(db.stockCountAudits, 'aud'),
       periodId: activePeriodId,
       title: newAuditTitle.trim(),
       date: newAuditDate
@@ -2347,7 +2354,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     } else {
       // Add a distinct record for this count (allows recording same item in different warehouses or locations without overwriting)
       updatedCounts.push({
-        id: `sc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        id: nextSimpleId(db.stockCounts, 'sc'),
         auditId: selectedAuditId,
         periodId: activePeriodId,
         itemId: countItemId,
@@ -2560,7 +2567,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const exportStockCountTemplateXLSX = () => {
     const wb = XLSX.utils.book_new();
     const periodItems = db.items.filter(i => i.periodId === activePeriodId && i.isActive !== false);
-    const data = (periodItems.length > 0 ? periodItems : db.items).map((item, idx) => ({
+    const data = periodItems.map((item, idx) => ({
       'ردیف': idx + 1,
       'کد کالا': item.code || '',
       'کد حسابداری': item.accountId || '',
@@ -2615,8 +2622,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           return;
         }
 
-        const items = db.items.filter(i => i.periodId === activePeriodId || !i.periodId);
+        const items = db.items.filter(i => i.periodId === activePeriodId);
         const existingCounts = [...(db.stockCounts || [])];
+        const genScId = createSimpleIdGenerator(existingCounts, 'sc');
         let importCount = 0;
         let updateCount = 0;
 
@@ -2684,7 +2692,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             updateCount++;
           } else {
             const newCount: StockCount = {
-              id: `sc-imp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}-${idx}`,
+              id: genScId(),
               auditId: selectedAuditId,
               periodId: activePeriodId,
               itemId: matchedItem.id,
@@ -3325,87 +3333,62 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       onFocusCapture={handleContainerFocusCapture}
       onMouseUpCapture={handleContainerMouseUpCapture}
     >
-      {/* Tab Controls */}
-      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between border-b border-slate-800 pb-2.5 sm:pb-4 mb-4 sm:mb-6 gap-2 sm:gap-4">
-        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar gap-1.5 sm:gap-2 pb-0.5 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
-          <button
-            id="tab-btn-items"
-            type="button"
-            onClick={() => setActiveTab('items')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'items' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
+      {/* Unified Module Header + Primary Tabs */}
+      <ModuleHeader
+        icon={<Package className="h-5 w-5" />}
+        title="مدیریت کالاها، خرید و انبارداری"
+        subtitle="تعریف شناسنامه مواد اولیه، دسته‌بندی‌ها، واحدهای سنجش، ثبت فاکتور خرید، انبارگردانی و مدیریت انبارها"
+        periodName={db.periods.find(p => p.id === activePeriodId)?.name}
+        recordCount={
+          activeTab === 'items' ? items.length
+            : activeTab === 'categories' ? categories.length
+            : activeTab === 'units' ? unitsOfMeasurementList.length
+            : activeTab === 'purchases' ? purchases.length
+            : activeTab === 'inventory' ? audits.length
+            : warehouses.length
+        }
+        recordLabel={
+          activeTab === 'items' ? 'کالا'
+            : activeTab === 'categories' ? 'دسته‌بندی'
+            : activeTab === 'units' ? 'واحد'
+            : activeTab === 'purchases' ? 'فاکتور'
+            : activeTab === 'inventory' ? 'دوره انبارگردانی'
+            : 'انبار'
+        }
+        actions={
+          <ErpButton
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              const map: Record<typeof activeTab, CopySectionKey> = {
+                items: 'items',
+                categories: 'itemCategories',
+                units: 'unitsOfMeasurement',
+                purchases: 'purchaseInvoices',
+                inventory: 'stockCountAudits',
+                warehouses: 'warehouses',
+              };
+              setCopySection(map[activeTab]);
+            }}
           >
-            تعریف و شناسنامه کالا
-          </button>
-          <button
-            id="tab-btn-categories"
-            type="button"
-            onClick={() => setActiveTab('categories')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'categories' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
-          >
-            دسته‌بندی مواد اولیه
-          </button>
-          <button
-            id="tab-btn-units"
-            type="button"
-            onClick={() => setActiveTab('units')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'units' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
-          >
-            تعریف واحدهای سنجش اصلی
-          </button>
-          <button
-            id="tab-btn-purchases"
-            type="button"
-            onClick={() => setActiveTab('purchases')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'purchases' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
-          >
-            ثبت فاکتور خرید کالا
-          </button>
-          <button
-            id="tab-btn-inventory"
-            type="button"
-            onClick={() => setActiveTab('inventory')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'inventory' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
-          >
-            شمارش کالا و انبارگردانی
-          </button>
-          <button
-            id="tab-btn-warehouses"
-            type="button"
-            onClick={() => setActiveTab('warehouses')}
-            className={`px-3 sm:px-5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-              activeTab === 'warehouses' 
-                ? 'bg-rose-600 text-white border-rose-500 shadow-md' 
-                : 'bg-slate-950 text-zinc-400 border-slate-800 hover:text-zinc-200 hover:bg-slate-900'
-            }`}
-          >
-            تنظیم و مدیریت انبارها
-          </button>
-        </div>
+            {ERP_BUTTON_LABELS.copyFromPeriod}
+          </ErpButton>
+        }
+      />
 
-        <div className="hidden sm:block text-xs bg-rose-950/20 text-rose-400 px-3.5 py-2 rounded-xl border border-rose-500/20 font-bold">
-          دوره فعال: <strong className="font-semibold text-rose-300">{db.periods.find(p => p.id === activePeriodId)?.name}</strong>
-        </div>
-      </div>
+      <ModulePrimaryTabs
+        className="mb-5"
+        activeId={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+        tabs={[
+          { id: 'items', label: 'تعریف و شناسنامه کالا', count: items.length },
+          { id: 'categories', label: 'دسته‌بندی مواد اولیه', count: categories.length },
+          { id: 'units', label: 'واحدهای سنجش', count: unitsOfMeasurementList.length },
+          { id: 'purchases', label: 'فاکتور خرید کالا', count: purchases.length },
+          { id: 'inventory', label: 'انبارگردانی و شمارش', count: audits.length },
+          { id: 'warehouses', label: 'مدیریت انبارها', count: warehouses.length },
+        ]}
+      />
 
       {/* ==================== TAB 1: DEFINE ITEMS ==================== */}
       {activeTab === 'items' && (
@@ -6649,6 +6632,16 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             </div>
           </div>
         </div>
+      )}
+      {copySection && (
+        <CopyFromPeriodModal
+          open={true}
+          onClose={() => setCopySection(null)}
+          db={db}
+          targetPeriodId={activePeriodId}
+          section={copySection}
+          onUpdateDb={onUpdateDb}
+        />
       )}
     </div>
   );

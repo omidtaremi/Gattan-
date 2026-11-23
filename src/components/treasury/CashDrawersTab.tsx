@@ -13,6 +13,7 @@ import {
 import { 
   toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
 } from '../../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface CashDrawersTabProps {
   db: AppDatabase;
@@ -39,12 +40,12 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
   const [notes, setNotes] = useState('');
 
   const drawers = useMemo(() => {
-    return db.cashDrawers || [];
-  }, [db.cashDrawers]);
+    return (db.cashDrawers || []).filter(d => d.periodId === activePeriodId);
+  }, [db.cashDrawers, activePeriodId]);
 
   const cashiers = useMemo(() => {
-    return db.cashiers || [];
-  }, [db.cashiers]);
+    return (db.cashiers || []).filter(c => c.periodId === activePeriodId);
+  }, [db.cashiers, activePeriodId]);
 
   const cashierMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -52,19 +53,19 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
     return map;
   }, [cashiers]);
 
-  // Drawer Balance calculation (initial balance + cash receipts - cash payments)
+  // Drawer Balance calculation (initial balance + cash receipts - cash payments, active period only)
   const drawerBalances = useMemo(() => {
     const map: Record<string, number> = {};
+    const periodReceipts = (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId);
+    const periodPayments = (db.treasuryPayments || []).filter(p => p.periodId === activePeriodId);
     drawers.forEach(d => {
       let balance = d.initialBalance || 0;
-      // Inflows from cash receipts
-      (db.treasuryReceipts || []).forEach(r => {
+      periodReceipts.forEach(r => {
         if (r.cashDrawerId === d.id && r.status === 'confirmed' && r.paymentMethod === 'cash') {
           balance += (r.amount || 0);
         }
       });
-      // Outflows from cash payments
-      (db.treasuryPayments || []).forEach(p => {
+      periodPayments.forEach(p => {
         if (p.cashDrawerId === d.id && p.status === 'confirmed' && p.paymentMethod === 'cash') {
           balance -= (p.amount || 0);
         }
@@ -72,7 +73,7 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
       map[d.id] = balance;
     });
     return map;
-  }, [drawers, db.treasuryReceipts, db.treasuryPayments]);
+  }, [drawers, db.treasuryReceipts, db.treasuryPayments, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = drawers.length;
@@ -152,7 +153,7 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
       } : d);
     } else {
       const newDrawer: CashDrawer = {
-        id: `csh-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: nextSimpleId(currentList, getPrefixForCollection('cashDrawers')),
         periodId: activePeriodId,
         code: code.trim(),
         name: name.trim(),

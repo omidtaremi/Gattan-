@@ -4,31 +4,30 @@ import {
   Plus, Trash2, Edit, Save, ArrowUp, ArrowDown, Settings, Clock, 
   Layers, Info, AlertTriangle, CheckCircle, RefreshCcw, HelpCircle, 
   Play, Calendar, HelpCircle as HelpIcon, Flame, Thermometer, Wind,
-  Sliders, Shuffle, Sparkles, Printer, FileSpreadsheet, ChevronDown, Check, X, Search, ChefHat
+  Sliders, Shuffle, Sparkles, Printer, FileSpreadsheet, ChevronDown, Check, X, Search
 } from 'lucide-react';
 import { AppDatabase, Product, ProductionOven, ProductionTray, ProductTrayAssignment, ProductionPlanningSettings, ProductionPlanningOrder, ProductionRackDefinition } from '../types';
-import { toPersianDigits, formatWithCommas, getTodayJalali, printElement } from '../utils/persianUtils';
+import { toPersianDigits, formatWithCommas, getTodayJalali, printElement, getDefaultYearMonthFromPeriod } from '../utils/persianUtils';
 import * as XLSX from 'xlsx';
-import CustomerProductionOrders from './CustomerProductionOrders';
+import { getPeriodProductionSettings, setPeriodProductionSettings } from '../utils/periodIsolation';
+import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
+import { CopySectionKey } from '../utils/periodCopyEngine';
 
 interface ProductionPlanningProps {
   db: AppDatabase;
   onUpdateDb: (updated: AppDatabase) => void;
   activePeriodId: string;
-  currentUserName?: string;
 }
 
-export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, currentUserName }: ProductionPlanningProps) {
-  const [activeTab, setActiveTab] = useState<'customer_orders' | 'planning' | 'settings' | 'optimization'>('planning');
-  const activeCustomerOrdersCount = useMemo(() => {
-    const list = db.customerProductionOrders || [];
-    return list.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length;
-  }, [db.customerProductionOrders]);
+export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: ProductionPlanningProps) {
+  const [activeTab, setActiveTab] = useState<'planning' | 'settings' | 'optimization'>('planning');
+  const [copySection, setCopySection] = useState<CopySectionKey | null>(null);
+  const activePeriodObj = useMemo(() => db.periods.find(p => p.id === activePeriodId), [db.periods, activePeriodId]);
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Default to a representative date in the active period
-    const yearPart = activePeriodId.split('-')[0] || '1405';
-    const monthPart = activePeriodId.split('-')[1] || '01';
-    return `${yearPart}/${monthPart}/15`;
+    const { year, month } = getDefaultYearMonthFromPeriod(db.periods.find(p => p.id === activePeriodId), activePeriodId);
+    return `${year}/${String(month).padStart(2, '0')}/15`;
   });
   const [showComparisonTable, setShowComparisonTable] = useState<boolean>(true);
   const [visibleStages, setVisibleStages] = useState<{
@@ -47,47 +46,41 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
     packaging: true,
   });
 
-  // --- 1. LOCAL OR DB PERSISTED STATE LOADER ---
-  // We load from db if keys exist, otherwise initialize defaults
+  // --- 1. PERIOD-ISOLATED SETTINGS LOADER ---
   const settings: ProductionPlanningSettings = useMemo(() => {
-    const dbSettings = db.productionPlanningSettings;
-    if (dbSettings && dbSettings.periodId === activePeriodId) {
+    const dbSettings = getPeriodProductionSettings(db, activePeriodId);
+    if (dbSettings) {
       return dbSettings;
     }
     
-    // Default Settings for this period
+    // Blank period defaults (isolated to activePeriodId)
     return {
       periodId: activePeriodId,
       startHour: '06:00',
       endHour: '24:00',
       prepTimeMinutes: 15,
       kneadingTimeMinutes: 20,
-      totalRacks: 6,
+      totalRacks: 0,
       tiersPerRack: 10,
       proofingMaxRacks: 3,
-      ovens: [
-        { id: 'oven-1', name: 'فر گردان شماره ۱', type: 'گردان', trayCapacity: 16 },
-        { id: 'oven-2', name: 'فر طبقه‌ای شماره ۲', type: 'طبقه ای', trayCapacity: 8 },
-      ],
-      trays: [
-        { id: 'tray-1', name: 'سینی توری چرخ‌دار', totalCount: 60, traysPerRackTier: 2 },
-        { id: 'tray-2', name: 'سینی نسوز صاف دوجداره', totalCount: 40, traysPerRackTier: 1 },
-      ],
+      ovens: [],
+      trays: [],
+      racks: [],
       productAssignments: []
     };
-  }, [db.productionPlanningSettings, activePeriodId]);
+  }, [db, activePeriodId]);
 
   const orders: ProductionPlanningOrder[] = useMemo(() => {
     const dbOrders = db.productionPlanningOrders || [];
     return dbOrders.filter(o => o.periodId === activePeriodId && o.dateStr === selectedDate);
   }, [db.productionPlanningOrders, activePeriodId, selectedDate]);
 
-  // Update Settings helper
+  // Update Settings helper (period-isolated)
   const saveSettings = (updatedSettings: ProductionPlanningSettings) => {
-    onUpdateDb({
-      ...db,
-      productionPlanningSettings: updatedSettings
-    });
+    onUpdateDb(setPeriodProductionSettings(db, activePeriodId, {
+      ...updatedSettings,
+      periodId: activePeriodId,
+    }));
   };
 
   // Update Orders helper
@@ -310,7 +303,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
 
           if (!ordersMap[orderKey]) {
             ordersMap[orderKey] = {
-              id: Math.random().toString(36).substr(2, 9),
+              id: nextSimpleId([...(db.productionPlanningOrders || []), ...Object.values(ordersMap)], 'ppo'),
               periodId: activePeriodId,
               rackNumber: rackNum,
               bakingTechnique,
@@ -427,8 +420,9 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
         if (ovensWS) {
           const rawOvens = XLSX.utils.sheet_to_json<any>(ovensWS);
           if (rawOvens.length > 0) {
+            const genOvenId = createSimpleIdGenerator(settings.ovens, 'oven');
             importedOvens = rawOvens.map(row => ({
-              id: String(row['شناسه فر'] || Math.random().toString(36).substr(2, 9)),
+              id: String(row['شناسه فر'] || genOvenId()),
               name: String(row['نام فر'] || 'فر جدید'),
               type: row['نوع فر'] === 'طبقه ای' ? 'طبقه ای' : 'گردان',
               trayCapacity: Number(row['ظرفیت سینی']) || 16
@@ -442,8 +436,9 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
         if (traysWS) {
           const rawTrays = XLSX.utils.sheet_to_json<any>(traysWS);
           if (rawTrays.length > 0) {
+            const genTrayId = createSimpleIdGenerator(settings.trays, 'tray');
             importedTrays = rawTrays.map(row => ({
-              id: String(row['شناسه سینی'] || Math.random().toString(36).substr(2, 9)),
+              id: String(row['شناسه سینی'] || genTrayId()),
               name: String(row['نام سینی'] || 'سینی جدید'),
               totalCount: Number(row['تعداد کل موجود']) || 100,
               traysPerRackTier: Number(row['ظرفیت سینی در هر طبقه راک']) || 2
@@ -1195,7 +1190,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
       updatedOvens = updatedOvens.map(o => o.id === editingOven.id ? (editingOven as ProductionOven) : o);
     } else {
       updatedOvens.push({
-        id: `oven-${Date.now()}`,
+        id: nextSimpleId(updatedOvens, 'oven'),
         name: editingOven.name,
         type: editingOven.type || 'گردان',
         trayCapacity: Number(editingOven.trayCapacity) || 12
@@ -1215,7 +1210,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
       updatedTrays = updatedTrays.map(t => t.id === editingTray.id ? (editingTray as ProductionTray) : t);
     } else {
       updatedTrays.push({
-        id: `tray-${Date.now()}`,
+        id: nextSimpleId(updatedTrays, 'tray'),
         name: editingTray.name,
         totalCount: Number(editingTray.totalCount) || 50,
         traysPerRackTier: Number(editingTray.traysPerRackTier) || 2
@@ -1302,7 +1297,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
       updatedRacks = updatedRacks.map(r => r.id === editingRack.id ? (editingRack as ProductionRackDefinition) : r);
     } else {
       updatedRacks.push({
-        id: `rack-${Date.now()}`,
+        id: nextSimpleId(updatedRacks, 'rack'),
         rackNumber: editingRack.rackNumber,
         name: editingRack.name,
         tiersCount: Number(editingRack.tiersCount) || 10
@@ -1358,7 +1353,7 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
   };
 
   const handleAddRackOrder = () => {
-    const newId = `rack-order-${Date.now()}`;
+    const newId = nextSimpleId(db.productionPlanningOrders || [], 'ppo');
     const nextNum = settings.racks && settings.racks.length > 0
       ? (settings.racks[orders.length % settings.racks.length]?.rackNumber || String(orders.length + 1))
       : String(orders.length + 1);
@@ -2274,92 +2269,40 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
   return (
     <div className="space-y-6 font-sans text-right" dir="rtl">
       
-      {/* ================= HEADER CONTROL PANEL ================= */}
-      <div className="bg-[#0d0d0f] p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-zinc-800/80 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
-        <div>
-          <h1 className="text-base sm:text-xl font-black text-white flex items-center gap-2">
-            <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-400 shrink-0" />
-            برنامه‌ریزی تولید و سفارشات کارگاه
-          </h1>
-          <p className="hidden sm:block text-xs text-zinc-400 mt-1">
-            سیستم پیشرفته چیدمان راک‌های تولیدی، زمان‌بندی زنجیره پخت، مدیریت گرمخانه تخمیر و آنالیز تداخل فرها
-          </p>
-        </div>
+      {/* ================= UNIFIED MODULE HEADER & PRIMARY TABS ================= */}
+      <div className="bg-white dark:bg-[#0d0d0f] p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-zinc-800/80 shadow-sm">
+        <ModuleHeader
+          icon={<Sliders className="h-5 w-5" />}
+          title="برنامه‌ریزی تولید و سفارشات کارگاه"
+          subtitle="چیدمان راک‌های تولیدی، زمان‌بندی زنجیره پخت، مدیریت گرمخانه تخمیر و آنالیز تداخل فرها"
+          periodName={activePeriodObj?.name}
+          recordCount={orders.length}
+          recordLabel="راک برنامه‌ریزی‌شده"
+          actions={
+            <ErpButton
+              variant="secondary"
+              size="sm"
+              onClick={() => setCopySection(activeTab === 'settings' ? 'productionPlanningSettings' : 'productionPlanningOrders')}
+            >
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+          }
+        />
 
-        {/* Action Controls */}
-        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar w-full md:w-auto items-center gap-1.5 sm:gap-2">
-          <button
-            onClick={() => setActiveTab('customer_orders')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'customer_orders'
-                ? 'bg-emerald-600 text-white shadow-lg'
-                : 'bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white'
-            }`}
-          >
-            <ChefHat className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            کارتابل دپارتمان‌ها
-            {activeCustomerOrdersCount > 0 && (
-              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
-                activeTab === 'customer_orders'
-                  ? 'bg-white/20 text-white'
-                  : 'bg-emerald-500/20 text-emerald-300'
-              }`}>
-                {toPersianDigits(activeCustomerOrdersCount)}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('planning')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'planning' 
-                ? 'bg-emerald-600 text-white shadow-lg' 
-                : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
-            }`}
-          >
-            صفحه برنامه‌ریزی و تایم‌لاین
-          </button>
-          <button
-            onClick={() => setActiveTab('optimization')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'optimization' 
-                ? 'bg-emerald-600 text-white shadow-lg' 
-                : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
-            }`}
-          >
-            <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            بهینه‌سازی تولید
-          </button>
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTab === 'settings' 
-                ? 'bg-emerald-600 text-white shadow-lg' 
-                : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white'
-            }`}
-          >
-            تنظیمات ظرفیت فر، راک و سینی‌ها
-          </button>
-        </div>
+        <ModulePrimaryTabs
+          activeId={activeTab}
+          onChange={(id) => setActiveTab(id as typeof activeTab)}
+          tabs={[
+            { id: 'planning', label: 'برنامه‌ریزی و تایم‌لاین', count: orders.length },
+            { id: 'optimization', label: 'بهینه‌سازی تولید', icon: <Sparkles className="h-4 w-4" /> },
+            { id: 'settings', label: 'تنظیمات ظرفیت فر، راک و سینی‌ها', icon: <Settings className="h-4 w-4" /> },
+          ]}
+        />
       </div>
 
       {/* ================= MAIN CONTENT VIEWPORT ================= */}
       <AnimatePresence mode="wait">
-        {activeTab === 'customer_orders' ? (
-          <motion.div
-            key="customer-orders-tab"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-          >
-            <CustomerProductionOrders
-              db={db}
-              onUpdateDb={onUpdateDb}
-              activePeriodId={activePeriodId}
-              currentUserName={currentUserName}
-              mode="workshop_only"
-            />
-          </motion.div>
-        ) : activeTab === 'planning' ? (
+        {activeTab === 'planning' ? (
           <motion.div
             key="planning-tab"
             initial={{ opacity: 0, y: 10 }}
@@ -5192,6 +5135,16 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId, cur
         </div>
       )}
 
+      {copySection && (
+        <CopyFromPeriodModal
+          open={true}
+          onClose={() => setCopySection(null)}
+          db={db}
+          targetPeriodId={activePeriodId}
+          section={copySection}
+          onUpdateDb={onUpdateDb}
+        />
+      )}
     </div>
   );
 }

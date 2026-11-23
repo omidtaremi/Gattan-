@@ -6,12 +6,18 @@
 import React, { useState, useMemo } from 'react';
 import { AppDatabase, PeriodOverhead } from '../types';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, getFiscalYearFromPeriod 
+  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, getDefaultYearMonthFromPeriod 
 } from '../utils/persianUtils';
-import { 
-  DollarSign, TrendingDown, RefreshCcw, Save, Printer, FileSpreadsheet, 
-  HelpCircle, Settings, HelpCircle as HelpIcon, ArrowUpRight, TrendingUp, Calendar 
-} from 'lucide-react';
+import { nextSimpleId } from '../utils/simpleId';
+import { DollarSign, Save, Calendar } from 'lucide-react';
+import {
+  ERP_BUTTON_LABELS,
+  ErpButton,
+  ModuleHeader,
+  UnifiedToolbar,
+} from './ui/UnifiedErpUi';
+import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
+import { useErpFeedback } from './ui/ToastContext';
 
 interface ExpenseManagementProps {
   db: AppDatabase;
@@ -25,26 +31,20 @@ const PERSIAN_MONTHS = [
 ];
 
 export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: ExpenseManagementProps) {
+  const feedback = useErpFeedback();
+  const [showCopyModal, setShowCopyModal] = useState(false);
   
   const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
     e.target.select();
   };
 
   const activePeriodObj = db.periods.find(p => p.id === activePeriodId);
-  const selectedExpenseYear = useMemo(() => {
-    return getFiscalYearFromPeriod(activePeriodObj, activePeriodId);
-  }, [activePeriodObj, activePeriodId]);
-
-  const defaultPeriodMonth = useMemo(() => {
-    if (activePeriodId) {
-      const parts = activePeriodId.split('-');
-      if (parts.length >= 2) {
-        const m = parseInt(parts[1], 10);
-        if (!isNaN(m) && m >= 1 && m <= 12) return m;
-      }
-    }
-    return 1;
-  }, [activePeriodId]);
+  const defaultYM = useMemo(
+    () => getDefaultYearMonthFromPeriod(activePeriodObj, activePeriodId),
+    [activePeriodObj, activePeriodId]
+  );
+  const selectedExpenseYear = defaultYM.year;
+  const defaultPeriodMonth = defaultYM.month;
 
   const [selectedExpenseMonth, setSelectedExpenseMonth] = useState<number>(defaultPeriodMonth);
 
@@ -83,10 +83,9 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
       );
       if (legacyMatch) return legacyMatch;
     }
-    
-    // Default fallback blank
+
     return {
-      id: `ovh-${activePeriodId}-${selectedExpenseYear}-${String(selectedExpenseMonth).padStart(2, '0')}`,
+      id: '',
       periodId: activePeriodId,
       month: selectedExpenseMonth,
       year: selectedExpenseYear,
@@ -127,8 +126,11 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
   const handleSaveOverheads = (e: React.FormEvent) => {
     e.preventDefault();
 
+    const exists = Boolean(activeOverhead.id) && db.periodOverheads.some(o => o.id === activeOverhead.id);
+    const recordId = exists ? activeOverhead.id : nextSimpleId(db.periodOverheads || [], 'oh');
+
     const targetRow: PeriodOverhead = {
-      id: activeOverhead.id,
+      id: recordId,
       periodId: activePeriodId,
       month: selectedExpenseMonth,
       year: selectedExpenseYear,
@@ -141,10 +143,8 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
     };
 
     let updatedList = [...db.periodOverheads];
-    const exists = db.periodOverheads.some(o => o.id === activeOverhead.id);
-
     if (exists) {
-      updatedList = updatedList.map(o => o.id === activeOverhead.id ? targetRow : o);
+      updatedList = updatedList.map(o => o.id === recordId ? targetRow : o);
     } else {
       updatedList.push(targetRow);
     }
@@ -154,7 +154,9 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
       periodOverheads: updatedList
     });
 
-    alert(`مکاتب بهای سربار و هزینه‌های عملیاتی ماه ${PERSIAN_MONTHS[selectedExpenseMonth - 1]} ${toPersianDigits(selectedExpenseYear)} با موفقیت بروزرسانی شد.`);
+    feedback.success(
+      `هزینه‌ها و سربار ماه ${PERSIAN_MONTHS[selectedExpenseMonth - 1]} ${toPersianDigits(selectedExpenseYear)} ذخیره شد.`
+    );
   };
 
   const exportExpensesCSV = () => {
@@ -180,33 +182,24 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
   };
 
 
-  return (
-    <div className="bg-[#0d0d0f] border border-zinc-850 text-zinc-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right" dir="rtl">
-      
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-800/80 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
-        <div>
-          <h2 className="text-base sm:text-xl font-black text-white flex items-center gap-2">
-            <DollarSign className="h-5 w-5 sm:h-5.5 sm:w-5.5 text-rose-500 shrink-0" />
-            کنترل هزینه‌ها، مخارج و سربارهای کارگاه
-          </h2>
-          <p className="hidden sm:block text-xs text-zinc-400 mt-1">حق بهره‌وری اداری، هزینه‌های بازاریابی/فروش، کارمزد شبکه شتاب بانکی و فاکتورهای پرداختی متفرقه</p>
-        </div>
+  const recordedMonthsCount = (Object.values(monthlyExpenseStats) as Array<{ hasRecord: boolean }>).filter(s => s.hasRecord).length;
 
-        <div className="flex gap-2">
-          <button
-            onClick={printExpensesTable}
-            className="flex items-center gap-1.5 px-4 py-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
-          >
-            <Printer className="h-4 w-4 text-zinc-400" /> چاپ خلاصه مخارج
-          </button>
-          <button
-            onClick={exportExpensesCSV}
-            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-950/40 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-bold hover:bg-emerald-900/30 hover:text-emerald-300 transition-all cursor-pointer"
-          >
-            <FileSpreadsheet className="h-4 w-4 text-emerald-500" /> خروجی اکسل
-          </button>
-        </div>
-      </div>
+  return (
+    <div className="bg-[#0d0d0f] border border-zinc-850 text-zinc-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right space-y-5" dir="rtl">
+      <ModuleHeader
+        icon={<DollarSign className="w-5 h-5" />}
+        title="هزینه‌ها و مخارج سربار"
+        subtitle="ثبت و کنترل هزینه‌های تولید، توزیع و فروش، اداری، مالی و سربار قابل تسهیم هر دوره"
+        periodName={activePeriodObj?.name || activePeriodId}
+        recordCount={recordedMonthsCount}
+        recordLabel="ماه ثبت‌شده"
+      />
+
+      <UnifiedToolbar
+        onCopyFromPeriod={() => setShowCopyModal(true)}
+        onExportExcel={exportExpensesCSV}
+        onPrint={printExpensesTable}
+      />
 
       {/* 12-Month Expense Selector Header */}
       <div className="bg-zinc-950 border border-zinc-850 rounded-3xl p-5 shadow-xl space-y-4 mb-6" dir="rtl">
@@ -371,12 +364,14 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
               />
             </div>
 
-            <button
+            <ErpButton
               type="submit"
-              className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl shadow-lg cursor-pointer transition-colors"
+              variant="primary"
+              className="w-full"
+              icon={<Save className="w-4 h-4" />}
             >
-              ذخیره و همگام‌سازی هزینه‌های دوره
-            </button>
+              {ERP_BUTTON_LABELS.save}
+            </ErpButton>
           </form>
         </div>
 
@@ -443,8 +438,16 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
           </div>
 
         </div>
-
       </div>
+
+      <CopyFromPeriodModal
+        open={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        targetPeriodId={activePeriodId}
+        section="periodOverheads"
+        onUpdateDb={onUpdateDb}
+      />
     </div>
   );
 }

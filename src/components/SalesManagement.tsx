@@ -8,20 +8,25 @@ import {
   AppDatabase, Product, ProductCategory, Department, SalesPeriod, ProductSale, SalesTransaction, PackagingType
 } from '../types';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString, normalizePersianString, toEnglishDigits, getFiscalYearFromPeriod,
+  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString, normalizePersianString, toEnglishDigits, getFiscalYearFromPeriod, getDefaultYearMonthFromPeriod,
   getProductFormulaKey, getMaterialFormulaKey, doesFormulaMatchProduct, doesIngredientMatchMaterial, normalizeAccountingCode
 } from '../utils/persianUtils';
 import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
 import { 
   Plus, Search, Edit2, Trash2, CheckCircle, AlertTriangle, FileSpreadsheet, 
   Printer, Save, TrendingUp, TrendingDown, Layers, BarChart3, PieChart, Info, DollarSign, Download,
-  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, X, Package, Box, Barcode as BarcodeIcon, Scale
+  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import SearchableSelect from './SearchableSelect';
 import SalesAnalysisDashboard from './SalesAnalysisDashboard';
 import { BarcodeManagement } from './BarcodeManagement';
 import { parseScannedBarcode } from '../utils/barcodeParser';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
+import { getPeriodBarcodeSettings } from '../utils/periodIsolation';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
 
 interface SalesManagementProps {
   db: AppDatabase;
@@ -31,17 +36,23 @@ interface SalesManagementProps {
 
 export default function SalesManagement({ db, onUpdateDb, activePeriodId }: SalesManagementProps) {
   const [activeTab, setActiveTab] = useState<'products' | 'categories' | 'packaging' | 'barcodes' | 'records' | 'analysis'>('products');
+  const [showCopyModal, setShowCopyModal] = useState(false);
 
-  // Packaging Types Management State & Handlers
+  const activeCopySection: CopySectionKey = useMemo(() => {
+    switch (activeTab) {
+      case 'categories': return 'productCategories';
+      case 'packaging': return 'packagingTypes';
+      case 'barcodes': return 'barcodeSettings';
+      case 'records': return 'salesPeriods';
+      case 'analysis': return 'salesTransactions';
+      default: return 'products';
+    }
+  }, [activeTab]);
+
+  // Packaging Types Management State & Handlers (strictly isolated per period)
   const packagingTypesList = useMemo(() => {
-    return db.packagingTypes && db.packagingTypes.length > 0 ? db.packagingTypes : [
-      { id: 'pkg-1', name: 'سلفون', description: 'پوشش شفاف سلفونی با مقاومت رطوبتی بالا' },
-      { id: 'pkg-2', name: 'شیرینک', description: 'بسته‌بندی حرارتی شیرینک فیلم' },
-      { id: 'pkg-3', name: 'لانچ باکس', description: 'جعبه پذیرایی ویژه تشریفاتی' },
-      { id: 'pkg-4', name: 'جعبه مقوایی', description: 'جعبه مقوایی کادویی و عمومی' },
-      { id: 'pkg-5', name: 'کارتن', description: 'کارتن پنج‌لایه توزیع صادراتی' }
-    ];
-  }, [db.packagingTypes]);
+    return (db.packagingTypes || []).filter(pt => pt.periodId === activePeriodId);
+  }, [db.packagingTypes, activePeriodId]);
 
   const [pkgSearch, setPkgSearch] = useState('');
   const [newPkgType, setNewPkgType] = useState({ name: '', description: '' });
@@ -58,6 +69,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const handleAddOrUpdatePkgType = (e: React.FormEvent) => {
     e.preventDefault();
     const normPkg = (s?: string) => String(s || '').trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ');
+    const otherPeriodsPkg = (db.packagingTypes || []).filter(pt => pt.periodId !== activePeriodId);
     if (editingPkgType) {
       const trimmed = editingPkgType.name.trim().replace(/\s+/g, ' ');
       if (!trimmed) return;
@@ -65,8 +77,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         alert('نوع بسته‌بندی با این نام قبلاً ثبت شده است.');
         return;
       }
-      const updatedList = packagingTypesList.map(pt => pt.id === editingPkgType.id ? { ...editingPkgType, name: trimmed } : pt);
-      onUpdateDb({ ...db, packagingTypes: updatedList });
+      const updatedPeriodList = packagingTypesList.map(pt => pt.id === editingPkgType.id ? { ...editingPkgType, periodId: activePeriodId, name: trimmed } : pt);
+      onUpdateDb({ ...db, packagingTypes: [...otherPeriodsPkg, ...updatedPeriodList] });
       setEditingPkgType(null);
     } else {
       const trimmed = newPkgType.name.trim().replace(/\s+/g, ' ');
@@ -76,12 +88,12 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         return;
       }
       const created: PackagingType = {
-        id: `pkg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        id: nextSimpleId(db.packagingTypes || [], 'pkg'),
+        periodId: activePeriodId,
         name: trimmed,
         description: newPkgType.description.trim()
       };
-      const updatedList = [...packagingTypesList, created];
-      onUpdateDb({ ...db, packagingTypes: updatedList });
+      onUpdateDb({ ...db, packagingTypes: [...otherPeriodsPkg, ...packagingTypesList, created] });
       setNewPkgType({ name: '', description: '' });
     }
   };
@@ -91,21 +103,23 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       'حذف نوع بسته‌بندی',
       'آیا از حذف این نوع بسته‌بندی اطمینان دارید؟',
       () => {
-        const updatedList = packagingTypesList.filter(pt => pt.id !== id);
+        const updatedList = (db.packagingTypes || []).filter(pt => pt.id !== id);
         onUpdateDb({ ...db, packagingTypes: updatedList });
       }
     );
   };
 
   const handleResetDefaultPkgTypes = () => {
+    const otherPeriodsPkg = (db.packagingTypes || []).filter(pt => pt.periodId !== activePeriodId);
+    const nextPkgId = createSimpleIdGenerator(otherPeriodsPkg, 'pkg');
     const defaults: PackagingType[] = [
-      { id: 'pkg-1', name: 'سلفون', description: 'پوشش شفاف سلفونی با مقاومت رطوبتی بالا' },
-      { id: 'pkg-2', name: 'شیرینک', description: 'بسته‌بندی حرارتی شیرینک فیلم' },
-      { id: 'pkg-3', name: 'لانچ باکس', description: 'جعبه پذیرایی ویژه تشریفاتی' },
-      { id: 'pkg-4', name: 'جعبه مقوایی', description: 'جعبه مقوایی کادویی و عمومی' },
-      { id: 'pkg-5', name: 'کارتن', description: 'کارتن پنج‌لایه توزیع صادراتی' }
+      { id: nextPkgId(), periodId: activePeriodId, name: 'سلفون', description: 'پوشش شفاف سلفونی با مقاومت رطوبتی بالا' },
+      { id: nextPkgId(), periodId: activePeriodId, name: 'شیرینک', description: 'بسته‌بندی حرارتی شیرینک فیلم' },
+      { id: nextPkgId(), periodId: activePeriodId, name: 'لانچ باکس', description: 'جعبه پذیرایی ویژه تشریفاتی' },
+      { id: nextPkgId(), periodId: activePeriodId, name: 'جعبه مقوایی', description: 'جعبه مقوایی کادویی و عمومی' },
+      { id: nextPkgId(), periodId: activePeriodId, name: 'کارتن', description: 'کارتن پنج‌لایه توزیع صادراتی' }
     ];
-    onUpdateDb({ ...db, packagingTypes: defaults });
+    onUpdateDb({ ...db, packagingTypes: [...otherPeriodsPkg, ...defaults] });
   };
 
   // Custom confirmation modal state for sandboxed iframe compatibility
@@ -467,6 +481,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     const periodCats = () => updatedCategories.filter(c => c.periodId === activePeriodId);
     const createdCategoryNames: string[] = [];
 
+    const nextCatId = createSimpleIdGenerator(updatedCategories, 'pcat');
     transactions.forEach(tx => {
       const rawCat = normCatName(tx.categoryName);
       if (!rawCat || rawCat === 'نامشخص' || rawCat === 'عمومی نامشخص' || rawCat === '-') return;
@@ -476,7 +491,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       if (!existing) {
         const cleanDisplayName = String(tx.categoryName || '').trim().replace(/\s+/g, ' ');
         const createdCat: ProductCategory = {
-          id: `pcat-xls-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextCatId(),
           periodId: activePeriodId,
           name: cleanDisplayName,
           departmentId: undefined
@@ -514,6 +529,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     // 2. Auto-create any missing categories from Excel transactions & __CREATE__:<name>
     const syncedExcel = syncExcelCategoriesFromTransactions(db.productCategories, reconciliationResult.detailedTransactions);
     const updatedCategories = [...syncedExcel.updatedCategories];
+    const nextFinalCatId = createSimpleIdGenerator(updatedCategories, 'pcat');
     const resolveSelectedCatId = (rawSelection: string): ProductCategory => {
       if (rawSelection.startsWith('__CREATE__:')) {
         const newName = rawSelection.slice('__CREATE__:'.length).trim().replace(/\s+/g, ' ');
@@ -522,7 +538,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           periodCats.find(c => normCatName(c.name) === normCatName(newName));
         if (existing) return existing;
         const createdCat: ProductCategory = {
-          id: `pcat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextFinalCatId(),
           periodId: activePeriodId,
           name: newName,
           departmentId: undefined
@@ -535,7 +551,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const periodCats = updatedCategories.filter(c => c.periodId === activePeriodId);
       if (periodCats.length > 0) return periodCats[0];
       const genCat: ProductCategory = {
-        id: `cat-gen-${Date.now()}`,
+        id: nextFinalCatId(),
         periodId: activePeriodId,
         name: 'عمومی',
         departmentId: undefined
@@ -545,10 +561,11 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     };
 
     // 3. Create product objects
+    const nextFinalProdId = createSimpleIdGenerator(db.products, 'prod');
     const newProductsToPush: Product[] = unregisteredProductsToDefine.map(item => {
       const resolvedCat = resolveSelectedCatId(item.categoryId);
       return {
-        id: `prod-auto-${item.code}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+        id: nextFinalProdId(),
         periodId: activePeriodId,
         code: item.code,
         accountId: item.code, // کد کالا به عنوان کد حسابداری استفاده شود
@@ -702,14 +719,15 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
     const existingOthersSales = db.productSales.filter(s => {
       if (s.periodId !== activePeriodId) return true;
-      const sMonth = s.month !== undefined ? Number(s.month) : (activePeriodId.split('-').length >= 2 ? parseInt(activePeriodId.split('-')[1], 10) : 1);
-      const sYear = s.year !== undefined ? Number(s.year) : (parseInt(activePeriodId.split('-')[0], 10) || 1403);
+      const sMonth = s.month !== undefined ? Number(s.month) : defaultPeriodYM.month;
+      const sYear = s.year !== undefined ? Number(s.year) : defaultPeriodYM.year;
       return !incomingYearMonths.has(`${sYear}_${sMonth}`);
     });
     
-    const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item, idx) => {
+    const nextAggSaleId = createSimpleIdGenerator(existingOthersSales, 'psale');
+    const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item) => {
       return {
-        id: `sale-agg-${activePeriodId}-${item.year}-${item.month}-${idx}-${Date.now().toString(36).substr(2, 4)}`,
+        id: nextAggSaleId(),
         salesPeriodId: activePeriodId,
         periodId: activePeriodId,
         productId: item.productId,
@@ -781,7 +799,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           const prev = uniqueNewProductsMap.get(key);
           if (!prev) {
             uniqueNewProductsMap.set(key, {
-              code: code || `NEW-${Date.now()}`,
+              code: code || `NEW-${idx + 1}`,
               name: name && name !== 'کالای ناشناس' ? name : `کالای جدید با کد ${code || 'ناشناس'}`,
               categoryName: tx.categoryName,
               salePrice: unitP,
@@ -960,14 +978,15 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
         const existingOthersSales = db.productSales.filter(s => {
           if (s.periodId !== activePeriodId) return true;
-          const sMonth = s.month !== undefined ? Number(s.month) : (activePeriodId.split('-').length >= 2 ? parseInt(activePeriodId.split('-')[1], 10) : 1);
-          const sYear = s.year !== undefined ? Number(s.year) : (parseInt(activePeriodId.split('-')[0], 10) || 1403);
+          const sMonth = s.month !== undefined ? Number(s.month) : defaultPeriodYM.month;
+          const sYear = s.year !== undefined ? Number(s.year) : defaultPeriodYM.year;
           return !incomingYearMonths.has(`${sYear}_${sMonth}`);
         });
         
-        const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item, idx) => {
+        const nextAggSaleId2 = createSimpleIdGenerator(existingOthersSales, 'psale');
+        const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item) => {
           return {
-            id: `sale-agg-${activePeriodId}-${item.year}-${item.month}-${idx}-${Date.now().toString(36).substr(2, 4)}`,
+            id: nextAggSaleId2(),
             salesPeriodId: activePeriodId,
             periodId: activePeriodId,
             productId: item.productId,
@@ -1081,11 +1100,12 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             });
 
             const parsedTransactions: SalesTransaction[] = [];
+            const nextStxId = createSimpleIdGenerator(db.salesTransactions || [], 'stx');
             let totalTxsAmount = 0;
             let matchedCount = 0;
             const unmatchedInvoicesSet = new Set<string>();
 
-            json1.forEach((row: any, rIdx: number) => {
+            json1.forEach((row: any) => {
               let rawInvoiceNumber = '';
               let rawCustomer = '';
               let rawCode = '';
@@ -1206,7 +1226,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
               totalTxsAmount += totalNet;
 
               parsedTransactions.push({
-                id: `imported-detailed-${rIdx}-${Math.random().toString(36).substr(2, 4)}`,
+                id: nextStxId(),
                 periodId: activePeriodId,
                 month: rowMonth,
                 year: rowYear,
@@ -1261,7 +1281,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   const prev = uniqueNewProductsMap.get(key);
                   if (!prev) {
                     uniqueNewProductsMap.set(key, {
-                      code: code || `NEW-${Date.now()}`,
+                      code: code || `NEW-${idx + 1}`,
                       name: name && name !== 'کالای ناشناس' ? name : `کالای جدید با کد ${code || 'ناشناس'}`,
                       categoryName: tx.categoryName,
                       salePrice: unitP,
@@ -1335,32 +1355,19 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
   // Monthly Sales Selection: Year is determined automatically from Time and Fiscal Periods Management
   const activePeriodObj = db.periods.find(p => p.id === activePeriodId);
+  const defaultPeriodYM = useMemo(
+    () => getDefaultYearMonthFromPeriod(activePeriodObj, activePeriodId),
+    [activePeriodObj, activePeriodId]
+  );
   const selectedSalesYear = useMemo(() => {
     return getFiscalYearFromPeriod(activePeriodObj, activePeriodId);
   }, [activePeriodObj, activePeriodId]);
 
-  const [selectedSalesMonth, setSelectedSalesMonth] = useState<number>(() => {
-    if (activePeriodId) {
-      const parts = activePeriodId.split('-');
-      if (parts.length >= 2) {
-        const m = parseInt(parts[1], 10);
-        if (!isNaN(m) && m >= 1 && m <= 12) return m;
-      }
-    }
-    return 1;
-  });
+  const [selectedSalesMonth, setSelectedSalesMonth] = useState<number>(() => defaultPeriodYM.month);
 
   React.useEffect(() => {
-    if (activePeriodId) {
-      const parts = activePeriodId.split('-');
-      if (parts.length >= 2) {
-        const m = parseInt(parts[1], 10);
-        if (!isNaN(m) && m >= 1 && m <= 12) {
-          setSelectedSalesMonth(m);
-        }
-      }
-    }
-  }, [activePeriodId]);
+    setSelectedSalesMonth(defaultPeriodYM.month);
+  }, [activePeriodId, defaultPeriodYM.month]);
 
   const PERSIAN_MONTHS = [
     'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
@@ -1398,12 +1405,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       if (s.month !== undefined && s.year !== undefined) {
         return Number(s.month) === Number(selectedSalesMonth) && Number(s.year) === Number(selectedSalesYear);
       }
-      const parts = (activePeriodId || '').split('-');
-      const defaultMonth = parts.length >= 2 ? parseInt(parts[1], 10) : 1;
-      const defaultYear = parts.length >= 1 ? parseInt(parts[0], 10) : 1403;
-      return selectedSalesMonth === defaultMonth && selectedSalesYear === defaultYear;
+      return selectedSalesMonth === defaultPeriodYM.month && selectedSalesYear === defaultPeriodYM.year;
     });
-  }, [db.productSales, activePeriodId, selectedSalesMonth, selectedSalesYear]);
+  }, [db.productSales, activePeriodId, selectedSalesMonth, selectedSalesYear, defaultPeriodYM]);
 
   // Statistics per month for the 12-month selector grid
   const monthlySalesStats = useMemo(() => {
@@ -1416,9 +1420,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       let m = s.month !== undefined ? Number(s.month) : undefined;
       let y = s.year !== undefined ? Number(s.year) : undefined;
       if (m === undefined) {
-        const parts = (activePeriodId || '').split('-');
-        m = parts.length >= 2 ? parseInt(parts[1], 10) : 1;
-        y = parts.length >= 1 ? parseInt(parts[0], 10) : 1403;
+        m = defaultPeriodYM.month;
+        y = defaultPeriodYM.year;
       }
       if (y === selectedSalesYear && m >= 1 && m <= 12) {
         stats[m].count += 1;
@@ -1427,7 +1430,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       }
     });
     return stats;
-  }, [db.productSales, activePeriodId, selectedSalesYear]);
+  }, [db.productSales, activePeriodId, selectedSalesYear, defaultPeriodYM]);
 
   const departments = useMemo(() => {
     const list = (db.departments || []).filter(d => d.periodId === activePeriodId);
@@ -1522,6 +1525,14 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
     const catIdMap: Record<string, string> = {};
 
+    const nextDeptId = createSimpleIdGenerator(db.departments || [], getPrefixForCollection('departments'));
+    const nextProdCatId = createSimpleIdGenerator(db.productCategories || [], getPrefixForCollection('productCategories'));
+    const nextItemCatId = createSimpleIdGenerator(db.itemCategories || [], getPrefixForCollection('itemCategories'));
+    const nextItemId = createSimpleIdGenerator(db.items || [], getPrefixForCollection('items'));
+    const nextProdId = createSimpleIdGenerator(db.products || [], getPrefixForCollection('products'));
+    const nextConvId = createSimpleIdGenerator(db.unitConversions || [], getPrefixForCollection('unitConversions'));
+    const nextFormId = createSimpleIdGenerator(db.productFormulas || [], getPrefixForCollection('productFormulas'));
+
     const existingDepts = (db.departments || []).filter(d => d.periodId === activePeriodId);
     const otherDepts = (db.departments || []).filter(d => d.periodId !== activePeriodId);
     const sourceDepts = (db.departments || []).filter(d => d.periodId === sourcePeriodId);
@@ -1531,7 +1542,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       let matchedD = newDepts.find(d => normCatName(d.name) === normCatName(sd.name));
       if (!matchedD) {
         matchedD = {
-          id: `dept-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: nextDeptId(),
           periodId: activePeriodId,
           name: sd.name,
           targetMargin: sd.targetMargin
@@ -1545,7 +1556,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     sourceCats.forEach(sc => {
       let matched = newCats.find(c => c.name.trim() === sc.name.trim());
       if (!matched) {
-        const newCatId = `pcat-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const newCatId = nextProdCatId();
         matched = {
           id: newCatId,
           periodId: activePeriodId,
@@ -1565,7 +1576,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     sourceItemCats.forEach(sic => {
       let matched = newItemCats.find(c => c.name.trim() === sic.name.trim());
       if (!matched) {
-        const newItemCatId = `icat-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const newItemCatId = nextItemCatId();
         matched = {
           id: newItemCatId,
           periodId: activePeriodId,
@@ -1583,7 +1594,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     sourceItems.forEach(si => {
       let matched = newItems.find(i => i.code === si.code || i.name.trim() === si.name.trim());
       if (!matched) {
-        const newItemId = `item-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const newItemId = nextItemId();
         const originalCatId = si.categoryId;
         const targetCatId = itemCatIdMap[originalCatId] || originalCatId;
         matched = {
@@ -1604,7 +1615,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     sourceProds.forEach(sp => {
       let matched = newProds.find(p => p.code === sp.code || p.name.trim() === sp.name.trim());
       if (!matched) {
-        const newProdId = `prod-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const newProdId = nextProdId();
         const originalCatId = sp.categoryId;
         const targetCatId = catIdMap[originalCatId] || originalCatId;
         
@@ -1628,7 +1639,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       if (!matched) {
         newConversions.push({
           ...sc,
-          id: `conv-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: nextConvId(),
           periodId: activePeriodId,
           rawMaterialId: targetMatId
         });
@@ -1667,7 +1678,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             };
           });
           newFormulas.push({
-            id: `form-clone-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            id: nextFormId(),
             periodId: activePeriodId,
             productId: targetProdKey,
             name: sf.name,
@@ -1739,7 +1750,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     const isEdit = !!editingProduct;
     const stableId = isEdit 
       ? editingProduct.id 
-      : (newProduct.accountId?.trim() || newProduct.code?.trim() || `prod-${Date.now()}`);
+      : nextSimpleId(db.products, 'prod');
     const rawTarget = isEdit 
       ? editingProduct! 
       : { ...newProduct, id: stableId, periodId: activePeriodId } as Product;
@@ -1873,6 +1884,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const text = decodeFileBuffer(buffer);
       const rows = parseCSVText(text);
       const updated = [...db.products];
+      const nextCsvProdId = createSimpleIdGenerator(updated, 'prod');
       let importedCount = 0;
       let updatedCount = 0;
 
@@ -1908,9 +1920,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           };
           updatedCount++;
         } else {
-          const tempId = accountIdVal || codeVal || `product-${Date.now()}-${index}`;
           const productRow: Product = {
-            id: tempId,
+            id: nextCsvProdId(),
             periodId: activePeriodId,
             code: codeVal,
             accountId: accountIdVal,
@@ -1966,7 +1977,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       return;
     }
     const created: Department = {
-      id: `dept-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: nextSimpleId(db.departments || [], 'dept'),
       periodId: activePeriodId,
       name: cleanedName
     };
@@ -2064,7 +2075,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     onUpdateDb({
       ...db,
       productCategories: [...db.productCategories, {
-        id: `pcat-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        id: nextSimpleId(db.productCategories, 'pcat'),
         periodId: activePeriodId,
         name: cleanedName,
         departmentId: newPcatDeptId || undefined
@@ -2136,6 +2147,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const text = decodeFileBuffer(buffer);
       const rows = parseCSVText(text);
       const updated = [...db.productCategories];
+      const nextImpPcatId = createSimpleIdGenerator(updated, 'pcat');
       let count = 0;
 
       rows.forEach((row, idx) => {
@@ -2150,7 +2162,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         const normVal = normCatName(rawVal);
         if (!updated.some(c => c.periodId === activePeriodId && normCatName(c.name) === normVal)) {
           updated.push({
-            id: `pcat-imp-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+            id: nextImpPcatId(),
             periodId: activePeriodId,
             name: rawVal,
             departmentId: matchedDept?.id
@@ -2190,7 +2202,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     const cleanInput = barcodeScanInput.trim();
     if (!cleanInput) return;
 
-    const result = parseScannedBarcode(cleanInput, db.products, db.barcodeSettings);
+    const result = parseScannedBarcode(cleanInput, products, getPeriodBarcodeSettings(db, activePeriodId));
 
     if (result.matchedProduct) {
       setManualSaleProdId(result.matchedProduct.id);
@@ -2293,7 +2305,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         } : s);
       } else {
         updatedSales.push({
-          id: `sale-${Date.now()}`,
+          id: nextSimpleId(updatedSales, 'psale'),
           salesPeriodId: activePeriodId,
           periodId: activePeriodId,
           productId: manualSaleProdId,
@@ -2341,6 +2353,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const rows = parseCSVText(text);
       const updatedProducts = [...db.products];
       const updatedSales = [...db.productSales];
+      const nextAutoProdId = createSimpleIdGenerator(updatedProducts, 'prod');
+      const nextAutoSaleId = createSimpleIdGenerator(updatedSales, 'psale');
       let importCount = 0;
 
       rows.forEach((row, idx) => {
@@ -2364,11 +2378,11 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
         // If product doesn't exist, we dynamically register it instantly!
         if (!prodObj) {
-          const freshProdId = `prod-auto-${Date.now()}-${idx}`;
+          const freshProdId = nextAutoProdId();
           prodObj = {
             id: freshProdId,
             periodId: activePeriodId,
-            code: `P-A-${idx}-${Date.now().toString().slice(-4)}`,
+            code: `P-${idx}`,
             accountId: ledgerCode || `LEDGER-${idx}`,
             name: productName || 'محصول ایجاد شده هوشمند',
             categoryId: defaultProductCategoryId,
@@ -2404,7 +2418,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           (Number(s.year !== undefined ? s.year : selectedSalesYear) === Number(selectedSalesYear))
         );
         const saleObj: ProductSale = {
-          id: `sale-parsed-${Date.now()}-${idx}`,
+          id: saleExistsIndex >= 0 ? updatedSales[saleExistsIndex].id : nextAutoSaleId(),
           salesPeriodId: activePeriodId,
           periodId: activePeriodId,
           productId: prodObj.id,
@@ -2471,10 +2485,11 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       'حذف رکوردهای فروش ماه انتخابی',
       `آیا مایلید تمامی رکوردهای فروش ثبت شده در ماه «${curMonthName} ${toPersianDigits(selectedSalesYear)}» به صورت کامل حذف شوند؟ رکوردهای سایر ماه‌ها دست‌نخورده باقی خواهند ماند.`,
       () => {
+        const defaultYm = getDefaultYearMonthFromPeriod(db.periods.find(p => p.id === activePeriodId), activePeriodId);
         const remainingSales = db.productSales.filter(s => {
           if (s.periodId !== activePeriodId) return true;
-          const sMonth = s.month !== undefined ? Number(s.month) : (activePeriodId.split('-').length >= 2 ? parseInt(activePeriodId.split('-')[1], 10) : 1);
-          const sYear = s.year !== undefined ? Number(s.year) : (parseInt(activePeriodId.split('-')[0], 10) || 1403);
+          const sMonth = s.month !== undefined ? Number(s.month) : defaultYm.month;
+          const sYear = s.year !== undefined ? Number(s.year) : defaultYm.year;
           return !(sMonth === selectedSalesMonth && sYear === selectedSalesYear);
         });
         onUpdateDb({ ...db, productSales: remainingSales });
@@ -2578,10 +2593,41 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right" dir="rtl">
-      
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-5" dir="rtl">
+      <ModuleHeader
+        icon={<ShoppingBag className="w-5 h-5" />}
+        title="مدیریت فروش و محصولات نهایی"
+        subtitle="تعریف کاتالوگ محصولات، دسته‌بندی‌ها، بسته‌بندی، بارکد، ثبت فروش ماهانه و تحلیل عملکرد فروش (ایزوله در دوره فعال)"
+        periodName={activePeriodObj?.name}
+        recordCount={products.length}
+        recordLabel="محصول"
+        actions={
+          <ErpButton variant="neutral" icon={<Copy className="w-4 h-4" />} onClick={() => setShowCopyModal(true)}>
+            {ERP_BUTTON_LABELS.copyFromPeriod}
+          </ErpButton>
+        }
+      />
+
+      <ModulePrimaryTabs
+        activeTab={activeTab}
+        onChange={(id) => setActiveTab(id as typeof activeTab)}
+        tabs={[
+          { id: 'products', label: 'تعریف محصولات نهایی', count: products.length },
+          {
+            id: 'categories',
+            label: 'دسته‌بندی و دپارتمان‌ها',
+            count: categories.length,
+            badge: unassignedCategories.length > 0 ? `${toPersianDigits(unassignedCategories.length)} بدون دپارتمان` : undefined
+          },
+          { id: 'packaging', label: 'نوع بسته‌بندی', count: packagingTypesList.length },
+          { id: 'barcodes', label: 'تنظیمات بارکد', icon: <BarcodeIcon className="h-4 w-4" /> },
+          { id: 'records', label: 'ثبت فروش ماهانه', count: salesRecords.length },
+          { id: 'analysis', label: 'تحلیل فروش ماهانه' }
+        ]}
+      />
+
       {/* Global Sales Module Header & 12-Month Selector */}
-      <div className="bg-slate-950 border border-slate-850 rounded-2xl sm:rounded-3xl p-3.5 sm:p-5 shadow-xl space-y-3 sm:space-y-4 mb-4 sm:mb-6" dir="rtl">
+      <div className="bg-slate-950 border border-slate-850 rounded-2xl sm:rounded-3xl p-3.5 sm:p-5 shadow-xl space-y-3 sm:space-y-4" dir="rtl">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-850/80 pb-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-rose-500/10 text-rose-500 rounded-2xl shrink-0">
@@ -2713,63 +2759,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         </div>
       </div>
 
-      {/* Sub Tabs */}
-      <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar gap-1.5 sm:gap-2 border-b border-slate-800 pb-3 sm:pb-4 mb-4 sm:mb-6 -mx-1 px-1 sm:mx-0 sm:px-0">
-        <button
-          onClick={() => setActiveTab('products')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'products' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-          }`}
-        >
-          تعریف محصولات نهایی
-        </button>
-        <button
-          onClick={() => setActiveTab('categories')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-            activeTab === 'categories' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-          }`}
-        >
-          <span>دسته‌بندی محصولات و دپارتمان‌ها</span>
-          {unassignedCategories.length > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40">
-              {toPersianDigits(unassignedCategories.length)}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('packaging')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'packaging' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-          }`}
-        >
-          تعریف نوع بسته‌بندی
-        </button>
-        <button
-          onClick={() => setActiveTab('barcodes')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-            activeTab === 'barcodes' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25 ring-2 ring-indigo-400/30' : 'bg-slate-950 text-slate-300 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <BarcodeIcon className="h-4 w-4 text-indigo-400" />
-          تعریف و پیکربندی بارکد
-        </button>
-        <button
-          onClick={() => setActiveTab('records')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'records' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-          }`}
-        >
-          ثبت و مدیریت فروش ماهانه
-        </button>
-        <button
-          onClick={() => setActiveTab('analysis')}
-          className={`px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-            activeTab === 'analysis' ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-          }`}
-        >
-          تحلیل فروش ماهانه و زمان رفتاری
-        </button>
-      </div>
+      {/* Active Tab Content */}
 
       {/* ================= TAB 1: DEFINE PRODUCTS ================= */}
       {activeTab === 'products' && (
@@ -3813,7 +3803,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
       {/* ================= TAB 4: BARCODE MANAGEMENT ================= */}
       {activeTab === 'barcodes' && (
-        <BarcodeManagement db={db} onUpdateDb={onUpdateDb} />
+        <BarcodeManagement db={db} onUpdateDb={onUpdateDb} activePeriodId={activePeriodId} />
       )}
 
       {/* ================= TAB 5: MONTHLY REGISTRATION ================= */}
@@ -4555,6 +4545,15 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           </div>
         </div>
       )}
+
+      <CopyFromPeriodModal
+        isOpen={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        activePeriodId={activePeriodId}
+        sectionKey={activeCopySection}
+        onUpdateDb={onUpdateDb}
+      />
 
     </div>
   );

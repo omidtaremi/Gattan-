@@ -16,6 +16,11 @@ import {
 } from '../utils/persianUtils';
 import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
 import CustomerProductionOrders from './CustomerProductionOrders';
+import { nextSimpleId } from '../utils/simpleId';
+import { ModuleHeader, ModulePrimaryTabs, UnifiedToolbar, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import { useErpFeedback } from './ui/ToastContext';
 
 interface CustomerManagementProps {
   db: AppDatabase;
@@ -25,8 +30,10 @@ interface CustomerManagementProps {
 }
 
 export default function CustomerManagement({ db, onUpdateDb, activePeriodId, currentUserName = '' }: CustomerManagementProps) {
+  const { toast } = useErpFeedback();
   // Navigation Sub-tab — defaults directly to Customer Production Orders ('orders')
   const [activeSubTab, setActiveSubTab] = useState<'orders' | 'list' | 'form' | 'categories'>('orders');
+  const [copySection, setCopySection] = useState<CopySectionKey | null>(null);
 
   const activeCustomerOrdersCount = useMemo(() => {
     return (db.customerProductionOrders || []).filter(
@@ -73,7 +80,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
     String(s || '').trim().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/\s+/g, ' ');
 
   const categories = useMemo(() => {
-    const list = db.customerCategories || [];
+    const list = (db.customerCategories || []).filter(c => c.periodId === activePeriodId);
     const seen = new Set<string>();
     return list.filter(c => {
       const n = normCat(c.name);
@@ -82,7 +89,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
       if (n) seen.add(`name:${n}`);
       return !dup;
     });
-  }, [db.customerCategories]);
+  }, [db.customerCategories, activePeriodId]);
 
   const activeProducts = useMemo(() => {
     return (db.products || []).filter(p => p.periodId === activePeriodId);
@@ -335,7 +342,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
 
     const isEdit = !!editingCustomer;
     const finalCustomer: Customer = {
-      id: isEdit ? editingCustomer.id : `cust-${Date.now()}`,
+      id: isEdit ? editingCustomer.id : nextSimpleId(db.customers || [], 'cust'),
       periodId: activePeriodId,
       code: formData.code?.trim() || nextCustomerCode,
       accountingCode: formData.accountingCode?.trim() || '',
@@ -378,7 +385,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
       customers: updatedCustomers
     });
 
-    alert(`مشتری "${finalCustomer.name}" با کد ${finalCustomer.code} با موفقیت ${isEdit ? 'ویرایش' : 'ثبت'} گردید.`);
+    toast(`مشتری «${finalCustomer.name}» با کد ${finalCustomer.code} با موفقیت ${isEdit ? 'ویرایش' : 'ثبت'} شد.`, 'success');
     setEditingCustomer(null);
     setActiveSubTab('list');
   };
@@ -417,9 +424,9 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
     }
     const normNewName = normCat(trimmedName);
     const allCats = db.customerCategories || [];
-    const duplicate = allCats.some(c => (!editingCategory || c.id !== editingCategory.id) && normCat(c.name) === normNewName);
+    const duplicate = allCats.some(c => c.periodId === activePeriodId && (!editingCategory || c.id !== editingCategory.id) && normCat(c.name) === normNewName);
     if (duplicate) {
-      alert(`گروه مشتری «${trimmedName}» قبلاً ثبت شده است.`);
+      toast(`گروه مشتری «${trimmedName}» قبلاً در این دوره ثبت شده است.`, 'error');
       return;
     }
 
@@ -428,6 +435,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
         c.id === editingCategory.id 
           ? { 
               ...c, 
+              periodId: activePeriodId,
               name: trimmedName, 
               code: newCatCode.trim() || undefined,
               defaultDiscountPercent: Number(newCatDiscount) || 0,
@@ -440,9 +448,10 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
       setEditingCategory(null);
     } else {
       const newCat: CustomerCategory = {
-        id: `ccat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextSimpleId(allCats, 'ccat'),
+        periodId: activePeriodId,
         name: trimmedName,
-        code: newCatCode.trim() || `GRP-0${allCats.length + 1}`,
+        code: newCatCode.trim() || `GRP-${String(categories.length + 1).padStart(2, '0')}`,
         defaultDiscountPercent: Number(newCatDiscount) || 0,
         defaultPaymentTerm: newCatPayment,
         description: newCatDesc.trim() || undefined
@@ -455,12 +464,13 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
     setNewCatDiscount(0);
     setNewCatPayment('چک ۳۰ روزه');
     setNewCatDesc('');
+    toast('گروه مشتریان با موفقیت ذخیره شد.', 'success');
   };
 
   const handleDeleteCategory = (cat: CustomerCategory) => {
     const linkedCount = customers.filter(c => c.categoryId === cat.id).length;
     if (linkedCount > 0) {
-      alert(`امکان حذف این گروه وجود ندارد زیرا ${linkedCount} مشتری در این گروه عضو هستند.`);
+      toast(`امکان حذف این گروه وجود ندارد زیرا ${toPersianDigits(linkedCount)} مشتری در این گروه عضو هستند.`, 'error');
       return;
     }
 
@@ -468,8 +478,9 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
       'حذف گروه مشتریان',
       `آیا از حذف گروه "${cat.name}" اطمینان دارید؟`,
       () => {
-        const updated = categories.filter(c => c.id !== cat.id);
+        const updated = (db.customerCategories || []).filter(c => c.id !== cat.id);
         onUpdateDb({ ...db, customerCategories: updated });
+        toast(`گروه «${cat.name}» حذف شد.`, 'info');
       }
     );
   };
@@ -572,94 +583,57 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
         </div>
       )}
 
-      {/* HEADER WITH SUMMARY KPI & TITLE */}
-      <div className="bg-white dark:bg-slate-900 p-3.5 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl relative overflow-hidden">
-        <div className="hidden dark:block absolute top-0 left-0 w-96 h-96 bg-rose-500/5 rounded-full blur-3xl pointer-events-none -z-0" />
-        
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 relative z-10">
-          <div className="flex items-center gap-2.5 sm:gap-3.5">
-            <div className="p-2.5 sm:p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl sm:rounded-2xl shadow-inner shrink-0">
-              <Users className="h-5 w-5 sm:h-7 sm:w-7" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-base sm:text-xl font-black text-slate-100 tracking-tight">مدیریت مشتریان و طرف‌های تجاری</h1>
-                <span className="text-[10px] font-mono px-2 py-0.5 bg-rose-950/60 border border-rose-500/30 text-rose-400 rounded-full font-bold">
-                  {toPersianDigits(customers.length)} مشتری
-                </span>
-              </div>
-              <p className="hidden sm:block text-xs text-slate-400 mt-1">
-                تعریف پرونده کامل مشتریان حقیقی و حقوقی، گروه‌بندی، سقف اعتبارات مالی، حساب‌های بانکی و شرایط تسویه
-              </p>
-            </div>
-          </div>
-
-          {/* Quick Actions Navigation */}
-          <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 sm:gap-2 pb-0.5 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
-            <button
-              type="button"
-              onClick={() => setActiveSubTab('orders')}
-              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-                activeSubTab === 'orders'
-                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg shadow-emerald-600/20'
-                  : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <ChefHat className="h-4 w-4 shrink-0" />
-              ثبت سفارش تولید
-              {activeCustomerOrdersCount > 0 && (
-                <span
-                  className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
+      {/* UNIFIED MODULE HEADER & PRIMARY TABS */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+        <ModuleHeader
+          icon={<Users className="h-5 w-5" />}
+          title="مدیریت مشتریان و سفارش‌های تولید"
+          subtitle="ثبت سفارش تولید مشتریان، پرونده مشتریان حقیقی و حقوقی، گروه‌بندی، سقف اعتبار و شرایط تسویه"
+          periodName={db.periods.find(p => p.id === activePeriodId)?.name}
+          recordCount={activeSubTab === 'orders' ? activeCustomerOrdersCount : activeSubTab === 'categories' ? categories.length : customers.length}
+          recordLabel={activeSubTab === 'orders' ? 'سفارش فعال' : activeSubTab === 'categories' ? 'گروه' : 'مشتری'}
+          actions={
+            <div className="flex items-center gap-2">
+              <ErpButton
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const sec: CopySectionKey =
                     activeSubTab === 'orders'
-                      ? 'bg-white/20 text-white'
-                      : 'bg-emerald-500/20 text-emerald-300'
-                  }`}
-                >
-                  {toPersianDigits(activeCustomerOrdersCount)}
-                </span>
+                      ? 'customerProductionOrders'
+                      : activeSubTab === 'categories'
+                        ? 'customerCategories'
+                        : 'customers';
+                  setCopySection(sec);
+                }}
+              >
+                {ERP_BUTTON_LABELS.copyFromPeriod}
+              </ErpButton>
+              {activeSubTab !== 'orders' && (
+                <ErpButton variant="primary" size="sm" icon={<Plus className="h-4 w-4" />} onClick={handleStartNew}>
+                  {ERP_BUTTON_LABELS.add}
+                </ErpButton>
               )}
-            </button>
+            </div>
+          }
+        />
 
-            <button
-              type="button"
-              onClick={() => setActiveSubTab('list')}
-              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-                activeSubTab === 'list'
-                  ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
-                  : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-            >
-              <Users className="h-4 w-4 shrink-0" />
-              فهرست مشتریان
-            </button>
-
-            <button
-              type="button"
-              onClick={handleStartNew}
-              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-                activeSubTab === 'form'
-                  ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
-                  : 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
-              }`}
-            >
-              <Plus className="h-4 w-4 shrink-0" />
-              تعریف مشتری جدید
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveSubTab('categories')}
-              className={`px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border whitespace-nowrap shrink-0 ${
-                activeSubTab === 'categories'
-                  ? 'bg-rose-600 text-white border-rose-500 shadow-lg shadow-rose-600/20'
-                  : 'bg-slate-900/80 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-            >
-              <Layers className="h-4 w-4 shrink-0" />
-              گروه‌های مشتریان
-            </button>
-          </div>
-        </div>
+        <ModulePrimaryTabs
+          activeId={activeSubTab}
+          onChange={(id) => {
+            if (id === 'form') {
+              handleStartNew();
+            } else {
+              setActiveSubTab(id as typeof activeSubTab);
+            }
+          }}
+          tabs={[
+            { id: 'orders', label: 'ثبت سفارش تولید', icon: <ChefHat className="h-4 w-4" />, count: activeCustomerOrdersCount },
+            { id: 'list', label: 'فهرست مشتریان', icon: <Users className="h-4 w-4" />, count: customers.length },
+            { id: 'form', label: editingCustomer ? 'ویرایش مشتری' : 'تعریف مشتری جدید', icon: <Plus className="h-4 w-4" /> },
+            { id: 'categories', label: 'گروه‌های مشتریان', icon: <Layers className="h-4 w-4" />, count: categories.length },
+          ]}
+        />
 
         {/* 4 SUMMARY STATS CARDS (Shown on Customer Directory / Form / Categories tabs) */}
         {activeSubTab !== 'orders' && (
@@ -708,7 +682,6 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
           onUpdateDb={onUpdateDb}
           activePeriodId={activePeriodId}
           currentUserName={currentUserName}
-          mode="full"
         />
       )}
 
@@ -718,52 +691,25 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
       {activeSubTab === 'list' && (
         <div className="space-y-4">
           {/* SEARCH, FILTERS & EXPORT TOOLBAR */}
-          <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800 space-y-3 shadow-md">
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-              {/* Search Bar */}
-              <div className="relative flex-grow">
-                <Search className="h-4 w-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder="جستجو در نام مشتری، کد، شماره موبایل، کد ملی، شهر یا نشانی..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-3 pr-10 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500/20"
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleExportCustomersCSV}
-                  className="p-2 px-3 bg-slate-950 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="خروجی فایل اکسل / CSV"
-                >
-                  <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
-                  خروجی اکسل
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handlePrintList}
-                  className="p-2 px-3 bg-slate-950 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="چاپ فهرست مشتریان"
-                >
-                  <Printer className="h-4 w-4 text-slate-400" />
-                  چاپ فهرست
-                </button>
-              </div>
-            </div>
+          <div className="space-y-3">
+            <UnifiedToolbar
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              searchPlaceholder="جستجو در نام مشتری، کد، موبایل، کد ملی یا شهر..."
+              hasActiveFilters={Boolean(searchQuery || categoryFilter !== 'all' || typeFilter !== 'all' || statusFilter !== 'all')}
+              onResetFilters={() => {
+                setSearchQuery('');
+                setCategoryFilter('all');
+                setTypeFilter('all');
+                setStatusFilter('all');
+              }}
+              onCopyFromPeriod={() => setCopySection('customers')}
+              onExportExcel={handleExportCustomersCSV}
+              onPrint={handlePrintList}
+              onAdd={handleStartNew}
+              addLabel={ERP_BUTTON_LABELS.add}
+            />
+            <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800">
 
             {/* FILTERS ROW */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-slate-800/60">
@@ -840,6 +786,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
                 </div>
               </div>
             </div>
+          </div>
           </div>
 
           {/* TABLE OF CUSTOMERS */}
@@ -1945,6 +1892,16 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
             </div>
           </div>
         </div>
+      )}
+      {copySection && (
+        <CopyFromPeriodModal
+          open={true}
+          onClose={() => setCopySection(null)}
+          db={db}
+          targetPeriodId={activePeriodId}
+          section={copySection}
+          onUpdateDb={onUpdateDb}
+        />
       )}
     </div>
   );

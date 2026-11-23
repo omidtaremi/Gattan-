@@ -15,6 +15,7 @@ import {
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface BarterTabProps {
   db: AppDatabase;
@@ -53,11 +54,11 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
   const [status, setStatus] = useState<'completed' | 'in_progress' | 'cancelled'>('completed');
 
   const barters = useMemo(() => {
-    return db.barterTransactions || [];
-  }, [db.barterTransactions]);
+    return (db.barterTransactions || []).filter(b => b.periodId === activePeriodId);
+  }, [db.barterTransactions, activePeriodId]);
 
-  const customers = useMemo(() => db.customers || [], [db.customers]);
-  const suppliers = useMemo(() => db.suppliers || [], [db.suppliers]);
+  const customers = useMemo(() => (db.customers || []).filter(c => c.periodId === activePeriodId), [db.customers, activePeriodId]);
+  const suppliers = useMemo(() => (db.suppliers || []).filter(s => s.periodId === activePeriodId), [db.suppliers, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = barters.length;
@@ -176,7 +177,7 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
     let updatedList: BarterTransaction[];
 
     const barterObj: BarterTransaction = {
-      id: editingBarter ? editingBarter.id : `btr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: editingBarter ? editingBarter.id : nextSimpleId(currentList, getPrefixForCollection('barterTransactions')),
       periodId: activePeriodId,
       barterNo: barterNo.trim(),
       date,

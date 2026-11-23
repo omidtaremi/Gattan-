@@ -11,6 +11,7 @@ import {
   doesFormulaMatchProduct,
   doesIngredientMatchMaterial,
 } from './persianUtils';
+import { createSimpleIdGenerator, getPrefixForCollection } from './simpleId';
 
 const MAX_EXCEL_LEN = 30000;
 const MAX_ROWS_PER_SHEET = 200000;
@@ -1004,13 +1005,22 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     let resolvedShiftName = r.shiftName || '';
 
     if (!resolvedShiftId || !resolvedShiftName) {
-      const emp = (db.personnel || []).find(p =>
-        (r.employeeId && p.id === r.employeeId) ||
-        (p.periodId === r.periodId && (
-          toEnglishDigits(p.attendanceCode || '').trim() === toEnglishDigits(r.attendanceCode || '').trim() ||
-          toEnglishDigits(p.employeeCode || '').trim() === toEnglishDigits(r.attendanceCode || '').trim()
-        ))
-      );
+      const cleanCode = (v: any) => {
+        const s = toEnglishDigits(String(v || '')).trim().toLowerCase();
+        const noZeros = s.replace(/^0+/, '');
+        return noZeros === '' && s !== '' ? '0' : noZeros;
+      };
+      const recAtt = cleanCode(r.attendanceCode);
+      const emp = (db.personnel || []).find(p => {
+        if (recAtt) {
+          if (p.periodId && r.periodId && p.periodId !== r.periodId) return false;
+          const rawAtt = toEnglishDigits(String(p.attendanceCode || '')).trim();
+          if (!rawAtt) return false;
+          const tokens = rawAtt.split(/[\s,،;|/\\]+/).map(cleanCode).filter(Boolean);
+          return tokens.includes(recAtt);
+        }
+        return Boolean(r.employeeId && p.id === r.employeeId);
+      });
 
       if (emp) {
         const cleanRecDate = normDate(r.date);
@@ -1020,7 +1030,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
           (a.employeeCode && emp.employeeCode && a.employeeCode === emp.employeeCode) ||
           (a.substitutedEmployeeCode && emp.employeeCode && a.substitutedEmployeeCode === emp.employeeCode);
 
-        const dateAssign = (db.shiftAssignments || []).find(a => a.date && normDate(a.date) === cleanRecDate && matchEmp(a));
+        const dateAssign = (db.shiftAssignments || []).find(a => a.periodId === r.periodId && a.date && normDate(a.date) === cleanRecDate && matchEmp(a));
         let targetId = '';
         if (dateAssign) {
           targetId = (dateAssign.isOnLeave || dateAssign.deptId === 'none' || dateAssign.shiftId === 'none')
@@ -1031,9 +1041,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
         } else {
           const weeklyAssign = (db.shiftAssignments || []).find(a =>
             !a.date && normDay(a.dayName) === normDay(weekday) &&
-            (!a.periodId || a.periodId === r.periodId) && matchEmp(a)
-          ) || (db.shiftAssignments || []).find(a =>
-            !a.date && normDay(a.dayName) === normDay(weekday) && matchEmp(a)
+            a.periodId === r.periodId && matchEmp(a)
           );
           if (weeklyAssign) {
             targetId = (weeklyAssign.isOnLeave || weeklyAssign.deptId === 'none' || weeklyAssign.shiftId === 'none')
@@ -3045,6 +3053,11 @@ export function importShiftsFromExcel(
           .map(p => String(p.employeeCode || '').trim())
       );
 
+      const nextShiftAssignId = createSimpleIdGenerator(
+        currentDb.shiftAssignments || [],
+        getPrefixForCollection('shiftAssignments')
+      );
+
       const scopedImported = importedRows
         .filter(a => eligibleEmpCodes.size === 0 || eligibleEmpCodes.has(String(a.employeeCode).trim()))
         .map(a => {
@@ -3053,7 +3066,7 @@ export function importShiftsFromExcel(
             : undefined;
           return {
             ...a,
-            id: `imp-${options.year}-${options.month}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextShiftAssignId(),
             periodId: options.periodId,
             year: options.year,
             month: options.month,
@@ -3063,7 +3076,7 @@ export function importShiftsFromExcel(
         });
 
       const otherMonthAssigns = (currentDb.shiftAssignments || []).filter(
-        a => !isShiftAssignmentInMonth(a, options.periodId!, options.year!, options.month!, options.fallbackYearMonth)
+        a => a.periodId !== options.periodId || !isShiftAssignmentInMonth(a, options.periodId!, options.year!, options.month!, options.fallbackYearMonth)
       );
       result.shiftAssignments = [...otherMonthAssigns, ...scopedImported];
     } else {
@@ -3611,18 +3624,15 @@ export function exportSalaryBaseRatesToExcel(rates: any[]) {
 
 export function exportCogsFormulasToExcel(db: AppDatabase, activePeriodId: string) {
   const wb = XLSX.utils.book_new();
-  const formulas = (db.productFormulas || []).filter(f => !f.periodId || f.periodId === activePeriodId);
-  const products = db.products || [];
-  const items = db.items || [];
-  const periodProducts = products.filter(p => !p.periodId || p.periodId === activePeriodId);
-  const periodItems = items.filter(i => !i.periodId || i.periodId === activePeriodId);
+  const formulas = (db.productFormulas || []).filter(f => f.periodId === activePeriodId);
+  const periodProducts = (db.products || []).filter(p => p.periodId === activePeriodId);
+  const periodItems = (db.items || []).filter(i => i.periodId === activePeriodId);
 
   const rows: any[] = [];
   let rowIdx = 1;
 
   formulas.forEach(f => {
-    const prod = periodProducts.find(p => doesFormulaMatchProduct(f.productId, p))
-      || products.find(p => doesFormulaMatchProduct(f.productId, p));
+    const prod = periodProducts.find(p => doesFormulaMatchProduct(f.productId, p));
     const prodAccountCode = prod?.accountId || f.productId || '';
     const prodCode = prod?.code || '';
     const prodName = prod?.name || 'محصول نامشخص';
@@ -3646,11 +3656,9 @@ export function exportCogsFormulasToExcel(db: AppDatabase, activePeriodId: strin
       });
     } else {
       f.ingredients.forEach(ing => {
-        const itemObj = periodItems.find(i => doesIngredientMatchMaterial(ing.rawMaterialId, i))
-          || items.find(i => doesIngredientMatchMaterial(ing.rawMaterialId, i));
+        const itemObj = periodItems.find(i => doesIngredientMatchMaterial(ing.rawMaterialId, i));
         const wipObj = !itemObj
-          ? (periodProducts.find(p => p.isWip && doesIngredientMatchMaterial(ing.rawMaterialId, p))
-            || products.find(p => p.isWip && doesIngredientMatchMaterial(ing.rawMaterialId, p)))
+          ? periodProducts.find(p => p.isWip && doesIngredientMatchMaterial(ing.rawMaterialId, p))
           : undefined;
         const matObj = itemObj || wipObj;
         rows.push({
@@ -3709,15 +3717,12 @@ export function importCogsFormulasFromExcel(fileBuffer: ArrayBuffer, currentDb: 
   const rawRows: any[] = XLSX.utils.sheet_to_json(sheet);
   if (!rawRows || rawRows.length === 0) return currentDb;
 
-  const products = currentDb.products || [];
-  const items = currentDb.items || [];
-  const periodProducts = products.filter(p => !p.periodId || p.periodId === activePeriodId);
-  const periodItems = items.filter(i => !i.periodId || i.periodId === activePeriodId);
-  const searchProducts = periodProducts.length > 0 ? [...periodProducts, ...products] : products;
-  const searchItems = periodItems.length > 0 ? [...periodItems, ...items] : items;
+  const searchProducts = (currentDb.products || []).filter(p => p.periodId === activePeriodId);
+  const searchItems = (currentDb.items || []).filter(i => i.periodId === activePeriodId);
   const searchWips = searchProducts.filter(p => p.isWip);
 
   const existingFormulas = [...(currentDb.productFormulas || [])];
+  const nextFormulaId = createSimpleIdGenerator(existingFormulas, getPrefixForCollection('productFormulas'));
 
   const formulaGroupMap = new Map<string, {
     id: string;
@@ -3788,7 +3793,7 @@ export function importCogsFormulasFromExcel(fileBuffer: ArrayBuffer, currentDb: 
     let formulaObj = formulaGroupMap.get(groupKey);
     if (!formulaObj) {
       formulaObj = {
-        id: rawFormulaId || `pf-${Date.now()}-${Math.random().toString(36).substr(2, 4)}-${idx}`,
+        id: rawFormulaId || nextFormulaId(),
         periodId: activePeriodId,
         productId: formulaProductKey,
         name: rawFormulaName,

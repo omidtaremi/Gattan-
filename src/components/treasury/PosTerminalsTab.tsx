@@ -14,6 +14,7 @@ import {
 import { 
   toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
 } from '../../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 
 interface PosTerminalsTabProps {
   db: AppDatabase;
@@ -74,16 +75,16 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const terminals = useMemo(() => {
-    return db.posTerminals || [];
-  }, [db.posTerminals]);
+    return (db.posTerminals || []).filter(t => t.periodId === activePeriodId);
+  }, [db.posTerminals, activePeriodId]);
 
   const bankAccounts = useMemo(() => {
-    return db.bankAccounts || [];
-  }, [db.bankAccounts]);
+    return (db.bankAccounts || []).filter(b => b.periodId === activePeriodId);
+  }, [db.bankAccounts, activePeriodId]);
 
   const cashDrawers = useMemo(() => {
-    return db.cashDrawers || [];
-  }, [db.cashDrawers]);
+    return (db.cashDrawers || []).filter(d => d.periodId === activePeriodId);
+  }, [db.cashDrawers, activePeriodId]);
 
   const bankAccountMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -97,13 +98,14 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
     return map;
   }, [cashDrawers]);
 
-  // Terminal transaction totals
+  // Terminal transaction totals (active period only)
   const terminalTotals = useMemo<Record<string, { count: number; total: number }>>(() => {
     const map: Record<string, { count: number; total: number }> = {};
+    const periodReceipts = (db.treasuryReceipts || []).filter(r => r.periodId === activePeriodId);
     terminals.forEach(t => {
       let count = 0;
       let total = 0;
-      (db.treasuryReceipts || []).forEach(r => {
+      periodReceipts.forEach(r => {
         if (r.posTerminalId === t.id && r.status === 'confirmed' && r.paymentMethod === 'pos') {
           count++;
           total += (r.amount || 0);
@@ -112,7 +114,7 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
       map[t.id] = { count, total };
     });
     return map;
-  }, [terminals, db.treasuryReceipts]);
+  }, [terminals, db.treasuryReceipts, activePeriodId]);
 
   const stats = useMemo(() => {
     const totalCount = terminals.length;
@@ -230,7 +232,7 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
       } : t);
     } else {
       const newPos: PosTerminal = {
-        id: `pos-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: nextSimpleId(currentList, getPrefixForCollection('posTerminals')),
         periodId: activePeriodId,
         terminalId: terminalId.trim(),
         merchantId: merchantId.trim(),

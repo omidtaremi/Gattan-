@@ -10,7 +10,7 @@ import {
 } from '../types';
 import SearchableSelect from './SearchableSelect';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString, getTodayJalali, getFiscalYearFromPeriod, toEnglishDigits,
+  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString, getTodayJalali, getFiscalYearFromPeriod, getDefaultYearMonthFromPeriod, toEnglishDigits,
   normalizeAccountingCode, getProductFormulaKey, getMaterialFormulaKey, doesFormulaMatchProduct, doesIngredientMatchMaterial
 } from '../utils/persianUtils';
 import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
@@ -23,6 +23,10 @@ import {
   Printer, PieChart, BarChart3, AlertTriangle, Scale, X, Save, CheckSquare,
   ArrowUpDown, ArrowUp, ArrowDown, Calendar
 } from 'lucide-react';
+import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
+import { CopySectionKey } from '../utils/periodCopyEngine';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
+import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
 
 interface CogsManagementProps {
   db: AppDatabase;
@@ -52,30 +56,24 @@ const getPayrollItemTotalCost = (pi: PayrollItem): number => {
 
 export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsManagementProps) {
   const [activeTab, setActiveTab] = useState<'formulas' | 'conversions' | 'timeline' | 'analytics' | 'comparison' | 'pricing' | 'wip'>('formulas');
+  const [showCopyModal, setShowCopyModal] = useState(false);
+
+  const activeCopySection: CopySectionKey = useMemo(() => {
+    switch (activeTab) {
+      case 'conversions': return 'unitConversions';
+      case 'timeline': return 'dailyProductionSegments';
+      case 'wip': return 'products';
+      default: return 'productFormulas';
+    }
+  }, [activeTab]);
 
   const activePeriodObj = useMemo(() => db.periods.find(p => p.id === activePeriodId), [db.periods, activePeriodId]);
   const selectedCogsYear = useMemo(() => getFiscalYearFromPeriod(activePeriodObj, activePeriodId), [activePeriodObj, activePeriodId]);
 
   const defaultPeriodMonthYear = useMemo(() => {
-    const parts = (activePeriodId || '').split('-');
-    let defYear = selectedCogsYear;
-    let defMonth = 1;
-    if (parts.length >= 1) {
-      const y = parseInt(toEnglishDigits(parts[0]), 10);
-      if (!isNaN(y) && y > 1300) defYear = y;
-    }
-    if (parts.length >= 2) {
-      const m = parseInt(toEnglishDigits(parts[1]), 10);
-      if (!isNaN(m) && m >= 1 && m <= 12) defMonth = m;
-    } else if (activePeriodObj?.startDate) {
-      const dParts = activePeriodObj.startDate.split('/');
-      if (dParts.length >= 2) {
-        const m = parseInt(toEnglishDigits(dParts[1]), 10);
-        if (!isNaN(m) && m >= 1 && m <= 12) defMonth = m;
-      }
-    }
-    return { defaultYear: defYear, defaultMonth: defMonth };
-  }, [activePeriodId, activePeriodObj, selectedCogsYear]);
+    const ym = getDefaultYearMonthFromPeriod(activePeriodObj, activePeriodId);
+    return { defaultYear: ym.year, defaultMonth: ym.month };
+  }, [activePeriodId, activePeriodObj]);
 
   const [selectedCogsMonth, setSelectedCogsMonth] = useState<number>(defaultPeriodMonthYear.defaultMonth);
 
@@ -234,14 +232,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
   const categoryByIdMap = useMemo(() => {
     const map: Record<string, ProductCategory> = {};
-    (db.productCategories || []).forEach(c => {
-      if (c.periodId !== activePeriodId) map[c.id] = c;
-    });
     productCategories.forEach(c => {
       map[c.id] = c;
     });
     return map;
-  }, [db.productCategories, productCategories, activePeriodId]);
+  }, [productCategories]);
 
   const resolveProductDepartmentId = React.useCallback((productCategoryId?: string): string => {
     if (!productCategoryId) return UNASSIGNED_DEPT_ID;
@@ -1096,39 +1091,31 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       putBest(activeStrippedMap, stripZeroEmpCode(c), a);
     });
 
-    (db.personnelAllocations || []).forEach(a => {
-      if (a.periodId === activePeriodId) return;
-      const c = normalizeEmpCode(a.employeeCode);
-      if (!c) return;
-      putBest(fallbackExactMap, c, a);
-      putBest(fallbackStrippedMap, stripZeroEmpCode(c), a);
-    });
-
-    // Index personnel records so payItem.employeeCode also resolves via attendanceCode / accountCode / id
+    // Strictly isolated to active period (no cross-period allocation or personnel fallback)
     const personByAnyCode = new Map<string, any>();
-    const allPersonnelSorted = [
-      ...(db.personnel || []).filter(p => p.periodId !== activePeriodId),
-      ...(db.personnel || []).filter(p => p.periodId === activePeriodId)
-    ];
-    allPersonnelSorted.forEach(p => {
-      [p.employeeCode, p.attendanceCode, p.accountCode, p.id].forEach(codeCandidate => {
-        const c = normalizeEmpCode(codeCandidate);
-        if (!c) return;
-        personByAnyCode.set(c, p);
-        personByAnyCode.set(stripZeroEmpCode(c), p);
+    (db.personnel || [])
+      .filter(p => p.periodId === activePeriodId)
+      .forEach(p => {
+        [p.employeeCode, p.attendanceCode, p.accountCode, p.id].forEach(codeCandidate => {
+          const c = normalizeEmpCode(codeCandidate);
+          if (!c) return;
+          personByAnyCode.set(c, p);
+          personByAnyCode.set(stripZeroEmpCode(c), p);
+        });
       });
-    });
 
-    // Shift assignment -> production section -> departmentCategoryId fallback
+    // Shift assignment -> production section -> departmentCategoryId fallback (active period only)
     const sectionDeptById = new Map<string, string>();
-    (db.productionSections || []).forEach(sec => {
-      if (sec?.id && sec.departmentCategoryId && !isSharedDeptId(sec.departmentCategoryId)) {
-        sectionDeptById.set(sec.id, sec.departmentCategoryId);
-      }
-    });
+    (db.productionSections || [])
+      .filter(sec => sec.periodId === activePeriodId)
+      .forEach(sec => {
+        if (sec?.id && sec.departmentCategoryId && !isSharedDeptId(sec.departmentCategoryId)) {
+          sectionDeptById.set(sec.id, sec.departmentCategoryId);
+        }
+      });
     const sectionAllocByEmpCode = new Map<string, PersonnelAllocation>();
     (db.shiftAssignments || []).forEach(sa => {
-      if (sa.periodId && sa.periodId !== activePeriodId) return;
+      if (sa.periodId !== activePeriodId) return;
       if (sa.year !== undefined && sa.month !== undefined) {
         if (Number(sa.year) !== Number(selectedCogsYear) || Number(sa.month) !== Number(selectedCogsMonth)) return;
       }
@@ -1472,15 +1459,16 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     const defaultWipCatId = productCategories.find(c => !isSharedDeptId(c.id))?.id || productCategories[0]?.id || '';
     const resolvedWipCatId = (wipCategoryId && productCategories.some(c => c.id === wipCategoryId)) ? wipCategoryId : defaultWipCatId;
 
+    const wipId = wipEditingId || nextSimpleId(db.products, 'prod');
     const wipData: Product = {
-      id: wipEditingId || `wip-${Date.now()}`,
+      id: wipId,
       periodId: activePeriodId,
       code: wipCode.trim(),
       accountId: wipAccountId.trim(),
       name: wipName.trim(),
       categoryId: resolvedWipCatId,
       unit: wipUnit,
-      barcode: wipBarcode.trim() || `wip-${Date.now()}`,
+      barcode: wipBarcode.trim() || wipId,
       packageType: wipPackageType,
       qtyPerPackage: wipQtyPerPackage || 1,
       weightPerPackage: wipWeightPerPackage || 1,
@@ -1593,7 +1581,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
     const wipProducts = db.products.filter(p => p.isWip && p.periodId === activePeriodId);
     const rows = wipProducts.map(p => {
-      const categoryName = db.productCategories.find(c => c.id === p.categoryId)?.name || '';
+      const categoryName = productCategories.find(c => c.id === p.categoryId)?.name || '';
       return [
         p.code || '',
         p.name || '',
@@ -1671,12 +1659,10 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             pkgType = pkgRaw as any;
           }
 
-          const barcode = row[7] ? row[7].trim() : `wip-${Date.now()}-${i}`;
-
-          // Find department ID by name
-          let categoryId = db.productCategories[0]?.id || '';
+          // Find department ID by name (strictly active period)
+          let categoryId = productCategories[0]?.id || '';
           if (deptName) {
-            const matchedCat = db.productCategories.find(c => matchPersianString(c.name, deptName));
+            const matchedCat = productCategories.find(c => matchPersianString(c.name, deptName));
             if (matchedCat) {
               categoryId = matchedCat.id;
             }
@@ -1684,9 +1670,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
           // Check if product with this code already exists as a WIP in the active period
           const existingIdx = updatedProducts.findIndex(p => p.isWip && p.periodId === activePeriodId && p.code.toLowerCase() === code.toLowerCase());
+          const nextId = existingIdx !== -1 ? updatedProducts[existingIdx].id : nextSimpleId(updatedProducts, 'prod');
+          const barcode = row[7] ? row[7].trim() : nextId;
 
           const wipData: Product = {
-            id: existingIdx !== -1 ? updatedProducts[existingIdx].id : `wip-${Date.now()}-${i}`,
+            id: nextId,
             periodId: activePeriodId,
             code,
             accountId,
@@ -1850,7 +1838,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       updatedFormulas = updatedFormulas.map(f => f.id === matchedRecipeObj.id ? { ...f, productId: selectedProductFormulaKey, ingredients: finalIngredients } : f);
     } else {
       updatedFormulas.push({
-        id: `form-${Date.now()}`,
+        id: nextSimpleId(updatedFormulas, 'form'),
         periodId: activePeriodId,
         productId: selectedProductFormulaKey,
         ingredients: finalIngredients,
@@ -1872,7 +1860,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   const handleCreateNewFormula = (name: string, shouldCloneCurrent: boolean) => {
     if (!selectedProductId) return;
     const cleanName = name.trim() || `فرمول شماره ${toPersianDigits(productFormulas.length + 1)}`;
-    const newFormulaId = `form-${Date.now()}`;
+    const newFormulaId = nextSimpleId(db.productFormulas, 'form');
     const newFormula: ProductFormula = {
       id: newFormulaId,
       periodId: activePeriodId,
@@ -3091,7 +3079,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           });
 
           freshFormulas.push({
-            id: `form-copy-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextSimpleId(freshFormulas, 'form'),
             periodId: activePeriodId,
             productId: targetProdKey,
             name: oldF.name,
@@ -3152,7 +3140,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       updatedFormulas = updatedFormulas.map(f => f.id === matchedRecipeObj.id ? { ...f, productId: prodKey, ingredients } : f);
     } else {
       updatedFormulas.push({
-        id: `form-${Date.now()}`,
+        id: nextSimpleId(updatedFormulas, 'form'),
         periodId: activePeriodId,
         productId: prodKey,
         ingredients: [newIngredientItem]
@@ -3190,24 +3178,16 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
     const sourceProduct = products.find(p => p.id === sourceProductId);
 
-    // First search in the active period's formulas
+    // Strictly search in the active period's formulas
     const currentPeriodSourceFormulas = formulas.filter(f =>
       sourceProduct ? doesFormulaMatchProduct(f.productId, sourceProduct) : f.productId === sourceProductId
     );
-    let sourceFormulaObj = currentPeriodSourceFormulas.find(f => f.isActive) || currentPeriodSourceFormulas[0];
-
-    // Fallback to searching in all formulas across all periods if not found in active period
-    if (!sourceFormulaObj || sourceFormulaObj.ingredients.length === 0) {
-      const allSourceFormulas = db.productFormulas.filter(f =>
-        sourceProduct ? doesFormulaMatchProduct(f.productId, sourceProduct) : f.productId === sourceProductId
-      );
-      sourceFormulaObj = allSourceFormulas.find(f => f.isActive && f.ingredients.length > 0) || 
-                         allSourceFormulas.find(f => f.ingredients.length > 0) || 
-                         allSourceFormulas[0];
-    }
+    const sourceFormulaObj = currentPeriodSourceFormulas.find(f => f.isActive && f.ingredients.length > 0)
+      || currentPeriodSourceFormulas.find(f => f.ingredients.length > 0)
+      || currentPeriodSourceFormulas[0];
 
     if (!sourceFormulaObj || !sourceFormulaObj.ingredients || sourceFormulaObj.ingredients.length === 0) {
-      alert('کالای منبع انتخاب‌شده فاقد هرگونه فرمولاسیون یا ماده مصرفی می‌باشد.');
+      alert('کالای منبع انتخاب‌شده در دوره فعال فاقد فرمولاسیون یا ماده مصرفی می‌باشد.');
       return;
     }
 
@@ -3232,7 +3212,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         );
       } else {
         updatedFormulas.push({
-          id: `form-${Date.now()}`,
+          id: nextSimpleId(updatedFormulas, 'form'),
           periodId: activePeriodId,
           productId: selectedProductFormulaKey,
           ingredients: duplicatedIngredients,
@@ -3274,7 +3254,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       updated = [
         ...segments,
         {
-          id: `seg-${Date.now()}`,
+          id: nextSimpleId(segments, 'seg'),
           periodId: activePeriodId,
           productId: timelineProductId,
           startTime: startTimeStr,
@@ -3420,7 +3400,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       onUpdateDb({
         ...db,
         unitConversions: [...db.unitConversions, {
-          id: `conv-${Date.now()}`,
+          id: nextSimpleId(db.unitConversions, 'conv'),
           periodId: activePeriodId,
           rawMaterialId: newConvMatId,
           purchaseUnit: newConvPUnit,
@@ -3539,7 +3519,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
               newConversions.splice(idx, 1);
             }
             newConversions.push({
-              id: `conv-imp-${Date.now()}-${i}`,
+              id: nextSimpleId(newConversions, 'conv'),
               periodId: activePeriodId,
               rawMaterialId: matchedRaw.id,
               purchaseUnit: pUnit || 'کیلویی',
@@ -3668,7 +3648,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             const endTimeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 
             importedSegments.push({
-              id: `seg-imp-${Date.now()}-${i}`,
+              id: nextSimpleId([...otherSegments, ...importedSegments], 'seg'),
               periodId: activePeriodId,
               productId: matchedProduct.id,
               startTime: startTimeStr,
@@ -3867,8 +3847,9 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         }
 
         const otherPeriodFormulas = db.productFormulas.filter(f => f.periodId !== activePeriodId);
-        const importedPeriodFormulas: ProductFormula[] = Object.keys(prodFormMap).map((prodKey, idx) => ({
-          id: `form-imp-${Date.now()}-${idx}`,
+        const nextImpFormId = createSimpleIdGenerator(otherPeriodFormulas, 'form');
+        const importedPeriodFormulas: ProductFormula[] = Object.keys(prodFormMap).map((prodKey) => ({
+          id: nextImpFormId(),
           periodId: activePeriodId,
           productId: prodKey,
           ingredients: prodFormMap[prodKey]
@@ -3929,24 +3910,25 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right selection:bg-rose-500 selection:text-white" dir="rtl">
+    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-5 selection:bg-rose-500 selection:text-white" dir="rtl">
+      <ModuleHeader
+        icon={<Calculator className="w-5 h-5" />}
+        title={`کنترل و محاسبات بهای تمام شده کارگاهی (COGS) — ${PERSIAN_MONTHS[selectedCogsMonth - 1]} ${toPersianDigits(selectedCogsYear)}`}
+        subtitle="فرآوری آنلاین مواد مصرفی (BOM)، حقوق مستقیم دپارتمانی، سهم حقوق مشترک و سربار تولید بر مبنای دوره فعال"
+        periodName={activePeriodObj?.name}
+        recordCount={globalCOGSStats.formulatedCount}
+        recordLabel="فرمول فعال"
+        actions={
+          <ErpButton variant="neutral" icon={<Copy className="w-4 h-4" />} onClick={() => setShowCopyModal(true)}>
+            {ERP_BUTTON_LABELS.copyFromPeriod}
+          </ErpButton>
+        }
+      />
 
-      {/* 1. HEADER SECTION */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-5 mb-5 border-b border-slate-800">
-        <div className="space-y-2">
-          <div className="flex items-center gap-2.5">
-            <div className="bg-rose-500/10 text-rose-400 p-2 rounded-xl">
-              <Calculator className="h-6 w-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-white tracking-tight">کنترل و محاسبات بهای تمام شده کارگاهی (COGS) — {PERSIAN_MONTHS[selectedCogsMonth - 1]} {toPersianDigits(selectedCogsYear)}</h1>
-              <p className="text-xs text-slate-400 mt-1">فرآوری آنلاین همزمان مواد مصرفی (BOM)، حقوق مستقیم دپارتمانی، سهم حقوق مشترک تیم و هزینه‌های غیرمستقیم سربار بر مبنای ماه انتخابی</p>
-            </div>
-          </div>
-        </div>
-
+      {/* 1. GLOBAL STATS OVERVIEW */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-end gap-4">
         {/* Global Stats Overview Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
           <div className="bg-slate-850 p-2.5 rounded-2xl border border-slate-800/80 min-w-[130px] flex flex-col justify-center">
             <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
               <Building className="h-3 w-3 text-blue-400" /> سربار تولید ({PERSIAN_MONTHS[selectedCogsMonth - 1]})
@@ -4160,88 +4142,21 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       </div>
 
       {/* 2. NAVIGATION AND INTERACTIVE CONTROLS */}
-      <div className="flex flex-wrap items-center justify-between border-b border-slate-850 pb-3 sm:pb-4 mb-4 sm:mb-6 gap-2.5 sm:gap-3">
-        <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar max-w-full p-1 bg-slate-950 rounded-2xl border border-slate-850 gap-1">
-          <button
-            onClick={() => setActiveTab('formulas')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'formulas' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <Calculator className="h-4 w-4 shrink-0" />
-            فرمولاسیون و سنجش قیمت تمام‌شده کارگاهی
-          </button>
-          <button
-            onClick={() => setActiveTab('timeline')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'timeline' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <Clock className="h-4 w-4 shrink-0" />
-            برنامه‌ریزی تولید و تسهیم زمان‌محور
-          </button>
-          <button
-            onClick={() => setActiveTab('conversions')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'conversions' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <ArrowLeftRight className="h-4 w-4 shrink-0" />
-            جدول ضریب تبدیل واحد مواد خام
-          </button>
-          <button
-            onClick={() => setActiveTab('analytics')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'analytics' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <DollarSign className="h-4 w-4 shrink-0" />
-            گزارش و تحلیل سود و زیان
-          </button>
-          <button
-            onClick={() => setActiveTab('comparison')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'comparison' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <Activity className="h-4 w-4 shrink-0" />
-            مقایسه عملکرد دوره
-          </button>
-          <button
-            onClick={() => setActiveTab('pricing')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'pricing' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <TrendingUp className="h-4 w-4 shrink-0" />
-            شبیه‌ساز قیمت‌گذاری و سود فروش
-          </button>
-          <button
-            onClick={() => setActiveTab('wip')}
-            className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              activeTab === 'wip' 
-                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20' 
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-            }`}
-          >
-            <Layers className="h-4 w-4 shrink-0" />
-            کالای در جریان ساخت (WIP)
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-stretch sm:items-center gap-2 w-full sm:w-auto">
+      <div className="space-y-3">
+        <ModulePrimaryTabs
+          activeTab={activeTab}
+          onChange={(id) => setActiveTab(id as typeof activeTab)}
+          tabs={[
+            { id: 'formulas', label: 'فرمولاسیون و بهای تمام‌شده', icon: <Calculator className="h-4 w-4" />, count: formulas.length },
+            { id: 'timeline', label: 'تولید و تسهیم زمان‌محور', icon: <Clock className="h-4 w-4" />, count: periodSegments.length },
+            { id: 'conversions', label: 'ضریب تبدیل واحدها', icon: <ArrowLeftRight className="h-4 w-4" />, count: conversions.length },
+            { id: 'analytics', label: 'تحلیل سود و زیان', icon: <DollarSign className="h-4 w-4" /> },
+            { id: 'comparison', label: 'مقایسه عملکرد', icon: <Activity className="h-4 w-4" /> },
+            { id: 'pricing', label: 'شبیه‌ساز قیمت‌گذاری', icon: <TrendingUp className="h-4 w-4" /> },
+            { id: 'wip', label: 'کالای در جریان ساخت (WIP)', icon: <Layers className="h-4 w-4" />, count: products.filter(p => p.isWip).length }
+          ]}
+        />
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {activeTab === 'formulas' && (
             <>
               <button
@@ -9016,6 +8931,15 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           </motion.div>
         </div>
       )}
+
+      <CopyFromPeriodModal
+        isOpen={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        activePeriodId={activePeriodId}
+        sectionKey={activeCopySection}
+        onUpdateDb={onUpdateDb}
+      />
 
     </div>
   );

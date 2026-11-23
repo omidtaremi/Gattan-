@@ -4,7 +4,26 @@
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { AppDatabase, User, Period } from './types';
-import { loadDatabase, loadDatabaseAsync, saveDatabase, getInitialDatabase, syncWithGoogleSheets, loadDatabaseFromSqlServer, saveDatabaseToSqlServer, sanitizeAndMergeDatabase, sanitizeChangedCollections } from './db';
+import {
+  loadDatabase,
+  loadDatabaseAsync,
+  saveDatabase,
+  getInitialDatabase,
+  syncWithGoogleSheets,
+  loadDatabaseFromSqlServer,
+  saveDatabaseToSqlServer,
+  sanitizeAndMergeDatabase,
+  sanitizeAndMergeDatabaseWithMeta,
+  sanitizeChangedCollections,
+  getActiveBranchId,
+  setActiveBranchId,
+  getLocalBranches,
+  createBlankBranchDatabase,
+  flushBrowserDatabaseSaveNow,
+} from './db';
+import { createBlankPeriod, purgePeriodData, getPeriodRecordCounts } from './utils/periodIsolation';
+import { ToastProvider, useErpFeedback } from './components/ui/ToastContext';
+import CopyFromBranchModal from './components/ui/CopyFromBranchModal';
 import LoginScreen from './components/LoginScreen';
 import ItemManagement from './components/ItemManagement';
 import SupplierManagement from './components/SupplierManagement';
@@ -33,24 +52,34 @@ import {
   type SystemTabId,
 } from './shared/rbac';
 import {
+  DEFAULT_BRANCHES,
+  DEFAULT_BRANCH_ID,
+  canAccessBranch,
+  getAllowedBranches,
+} from './shared/branches';
+import {
   fetchPostgresStatus,
   fetchPublicUsers,
+  fetchPublicBranches,
+  fetchBranches,
   fetchCurrentUser,
   logoutFromPostgres,
   loadSharedDatabaseFromPostgres,
   fetchPostgresVersions,
   syncDeltaToPostgres,
   importDatabaseToPostgres,
+  setSyncBranchId,
   type ServerDbStatus,
   type PublicUserSummary,
   type RecordPatchPayload,
+  type BranchStatusItem,
 } from './services/postgresSyncService';
 
 import { 
   Database, RefreshCw, LogOut, ChevronDown, CheckCircle, AlertTriangle, 
   Settings, FolderKanban, ShieldAlert, Wifi, WifiOff, FileJson, Upload, LayoutDashboard,
   Boxes, Users2, LineChart, Banknote, FileCheck, Landmark, GraduationCap, Coins, Download, Cloud, Check,
-  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X, Sun, Moon, QrCode
+  Trash2, Calendar, Scale, Users, Server, HardDrive, Link, Copy, MoreVertical, X, Sun, Moon, QrCode, Building2
 } from 'lucide-react';
 import {
   toPersianDigits,
@@ -66,39 +95,81 @@ function isPublicMenuPath(pathname: string): boolean {
   return normalized === '/menu' || normalized.startsWith('/menu/');
 }
 
+function extractPublicMenuBranchParam(pathname: string, search = ''): string | undefined {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  if (normalized.startsWith('/menu/')) {
+    const seg = normalized.slice('/menu/'.length).split('/')[0];
+    if (seg) {
+      try {
+        return decodeURIComponent(seg).trim() || undefined;
+      } catch {
+        return seg.trim() || undefined;
+      }
+    }
+  }
+  try {
+    const params = new URLSearchParams(search);
+    const qBranch = (params.get('branch') || '').trim();
+    if (qBranch) return qBranch;
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
 export default function App() {
   const [pathname, setPathname] = useState<string>(() =>
     typeof window !== 'undefined' ? window.location.pathname : '/'
+  );
+  const [searchStr, setSearchStr] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.search : ''
   );
 
   useEffect(() => {
     const onPopState = () => {
       setPathname(window.location.pathname);
+      setSearchStr(window.location.search);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   if (isPublicMenuPath(pathname)) {
-    return <PublicDigitalMenu />;
+    return <PublicDigitalMenu branchParam={extractPublicMenuBranchParam(pathname, searchStr)} />;
   }
 
   return (
-    <ErpApplication
-      onOpenPublicMenu={() => {
-        if (typeof window !== 'undefined') {
-          window.history.pushState({}, '', '/menu');
-          setPathname('/menu');
-        }
-      }}
-    />
+    <ToastProvider>
+      <ErpApplication
+        onOpenPublicMenu={(branchSlug?: string) => {
+          if (typeof window !== 'undefined') {
+            const targetPath = branchSlug ? `/menu/${encodeURIComponent(branchSlug)}` : '/menu';
+            window.history.pushState({}, '', targetPath);
+            setPathname(targetPath);
+            setSearchStr('');
+          }
+        }}
+      />
+    </ToastProvider>
   );
 }
 
-function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) {
+function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: (branchSlug?: string) => void }) {
   const { isDark, toggleTheme } = useTheme();
+  const feedback = useErpFeedback();
   const [db, setDb] = useState<AppDatabase | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  // Multi-Branch States
+  const [branches, setBranches] = useState<BranchStatusItem[]>(() => getLocalBranches());
+  const [activeBranchId, setActiveBranchIdState] = useState<string>(() => {
+    const initial = getActiveBranchId();
+    setSyncBranchId(initial);
+    return initial;
+  });
+  const [isSwitchingBranch, setIsSwitchingBranch] = useState(false);
+  const [showCopyFromBranchModal, setShowCopyFromBranchModal] = useState(false);
+  const activeBranchIdRef = useRef<string>(activeBranchId);
 
   // PostgreSQL Shared Server States
   const [serverStatus, setServerStatus] = useState<ServerDbStatus | null>(null);
@@ -134,7 +205,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
   // App parameters
-  const [activePeriodId, setActivePeriodId] = useState('1405-01'); // Default to preloaded Period 1 (1405-01)
+  const [activePeriodId, setActivePeriodId] = useState('p-1');
   const [activeTab, setActiveTab] = useState<string>('items');
   const [isOnline, setIsOnline] = useState(true);
   const [googleSheetsSyncStatus, setGoogleSheetsSyncStatus] = useState<'synced' | 'pending' | 'failed'>('synced');
@@ -145,7 +216,6 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
   const [showBackupPanel, setShowBackupPanel] = useState(false);
   const [showPeriodManager, setShowPeriodManager] = useState(false);
   const [newPeriodName, setNewPeriodName] = useState('');
-  const [copySourcePeriodId, setCopySourcePeriodId] = useState<string>('');
   const [cleanupTargetPeriod, setCleanupTargetPeriod] = useState<Period | null>(null);
   const [cleanupConfirmInput, setCleanupConfirmInput] = useState<string>('');
 
@@ -405,7 +475,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
       periods: updatedPeriods
     });
     setEditingPeriod(null);
-    alert('تغییرات دوره با موفقیت ذخیره گردید.');
+    feedback.success('تغییرات دوره مالی با موفقیت ذخیره شد.');
   };
 
   // Sync SQL Server initial configuration from loaded database
@@ -523,7 +593,12 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     downloadSqlServerDDLScript();
   };
 
-  const hydrateFromPostgres = async (user: User, fallbackLocalDb?: AppDatabase | null) => {
+  const hydrateFromPostgres = async (
+    user: User,
+    fallbackLocalDb?: AppDatabase | null,
+    branchIdOverride?: string
+  ) => {
+    const targetBranchId = branchIdOverride || activeBranchIdRef.current || DEFAULT_BRANCH_ID;
     try {
       setPgSyncState('syncing');
       const res = await loadSharedDatabaseFromPostgres();
@@ -533,21 +608,47 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
       }
 
       if (res.isEmpty) {
-        const localSource = fallbackLocalDb || latestDbRef.current || db || getInitialDatabase();
-        const sanitizedLocal = sanitizeAndMergeDatabase(localSource);
-        latestDbRef.current = sanitizedLocal;
-        lastSyncedDbRef.current = null;
-        collectionVersionsRef.current = res.versions || {};
-        setDb(sanitizedLocal);
-        setPgSyncState('synced');
-        if (isAdminUser(user)) {
-          setShowLocalMigrationBanner(true);
+        if (targetBranchId === DEFAULT_BRANCH_ID) {
+          const localSource = fallbackLocalDb || latestDbRef.current || db || getInitialDatabase();
+          const sanitizedLocal = sanitizeAndMergeDatabase(localSource);
+          latestDbRef.current = sanitizedLocal;
+          lastSyncedDbRef.current = null;
+          collectionVersionsRef.current = res.versions || {};
+          setDb(sanitizedLocal);
+          setPgSyncState('synced');
+          if (isAdminUser(user)) {
+            setShowLocalMigrationBanner(true);
+          }
+        } else {
+          // Brand-new non-default branch starts completely clean and isolated
+          const blankBranchDb = createBlankBranchDatabase(
+            latestDbRef.current?.users || db?.users,
+            latestDbRef.current?.roles || db?.roles
+          );
+          latestDbRef.current = blankBranchDb;
+          lastSyncedDbRef.current = blankBranchDb;
+          collectionVersionsRef.current = res.versions || {};
+          setDb(blankBranchDb);
+          saveDatabase(blankBranchDb, { skipLocalStorage: true, branchId: targetBranchId });
+          setShowLocalMigrationBanner(false);
+          setPgSyncState('synced');
+          setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
+          if (blankBranchDb.periods[0]) {
+            setActivePeriodId(blankBranchDb.periods[0].id);
+          }
         }
         return;
       }
 
-      const merged = sanitizeAndMergeDatabase({
-        ...getInitialDatabase(),
+      const baseScaffold =
+        targetBranchId === DEFAULT_BRANCH_ID
+          ? getInitialDatabase()
+          : createBlankBranchDatabase(
+              latestDbRef.current?.users || db?.users,
+              latestDbRef.current?.roles || db?.roles
+            );
+      const { db: merged, migrated } = sanitizeAndMergeDatabaseWithMeta({
+        ...baseScaffold,
         ...res.collections,
       } as AppDatabase);
 
@@ -555,14 +656,31 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
       latestDbRef.current = merged;
       collectionVersionsRef.current = res.versions || {};
       setDb(merged);
-      saveDatabase(merged);
+      saveDatabase(merged, { skipLocalStorage: true, branchId: targetBranchId });
       setShowLocalMigrationBanner(false);
       setPgSyncState('synced');
       setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
 
       if (merged.periods && merged.periods.length > 0) {
-        const matched = merged.periods.find((p) => p.id === activePeriodId) || merged.periods[0];
+        const preferredId = merged.selectedPeriodId || activePeriodId;
+        const matched =
+          merged.periods.find((p) => p.id === preferredId) ||
+          merged.periods.find((p) => p.id === activePeriodId) ||
+          merged.periods[0];
         setActivePeriodId(matched.id);
+      }
+
+      // If legacy primary keys or period isolation were upgraded on load, persist back to PostgreSQL cleanly
+      if (migrated && isAdminUser(user)) {
+        importDatabaseToPostgres(merged, 'legacy_simple_id_migration')
+          .then((migRes) => {
+            if (migRes.ok) {
+              if (migRes.versions) collectionVersionsRef.current = migRes.versions;
+              lastSyncedDbRef.current = merged;
+              feedback.info('کلیدهای داده‌های قدیمی بدون از دست رفتن اطلاعات به ساختار جدید بازسازی و همگام‌سازی شدند.');
+            }
+          })
+          .catch(() => {});
       }
     } catch (err) {
       console.warn('Postgres hydration notice:', err);
@@ -732,7 +850,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
         lastSyncedDbRef.current = nextBaseline;
         latestDbRef.current = reconciled;
         setDb(reconciled);
-        saveDatabase(reconciled, { skipLocalStorage: true });
+        saveDatabase(reconciled, { skipLocalStorage: true, branchId: activeBranchIdRef.current });
         setPgSyncState('synced');
         setSyncNotice('تغییرات هم‌زمان کاربر دیگر از سرور بارگیری و جایگزین شد.');
       } else {
@@ -803,14 +921,82 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
   };
 
   const handleRefreshStatusAndPull = async () => {
-    const status = await fetchPostgresStatus();
+    const targetBranch = activeBranchIdRef.current || DEFAULT_BRANCH_ID;
+    const status = await fetchPostgresStatus(targetBranch);
     setServerStatus(status);
     if (status.mode === 'postgres' && status.connected && currentUserRef.current) {
-      await hydrateFromPostgres(currentUserRef.current);
+      const bRes = await fetchBranches();
+      if (bRes.ok && bRes.branches.length > 0) {
+        setBranches(bRes.branches);
+      }
+      await hydrateFromPostgres(currentUserRef.current, null, targetBranch);
     }
   };
 
-  const handleLoginSuccess = async (user: User) => {
+  const applyActiveBranchSelection = (branchId: string) => {
+    const clean = String(branchId || '').trim() || DEFAULT_BRANCH_ID;
+    activeBranchIdRef.current = clean;
+    setActiveBranchIdState(clean);
+    setActiveBranchId(clean);
+    setSyncBranchId(clean);
+  };
+
+  const handleSwitchBranch = async (nextBranchId: string) => {
+    const cleanTarget = String(nextBranchId || '').trim();
+    if (!cleanTarget || cleanTarget === activeBranchIdRef.current || isSwitchingBranch) return;
+    const user = currentUserRef.current;
+    if (!user) return;
+    if (!canAccessBranch(user, cleanTarget)) {
+      feedback.warning('شما مجوز دسترسی به این شعبه را ندارید.');
+      return;
+    }
+
+    setIsSwitchingBranch(true);
+    try {
+      // Flush pending writes for the outgoing branch before switching context
+      if (pgSyncTimeoutRef.current) {
+        clearTimeout(pgSyncTimeoutRef.current);
+        pgSyncTimeoutRef.current = null;
+        if (serverMode === 'postgres') {
+          await flushDeltaToPostgres();
+        }
+      }
+      await flushBrowserDatabaseSaveNow();
+
+      applyActiveBranchSelection(cleanTarget);
+      lastSyncedDbRef.current = null;
+      collectionVersionsRef.current = {};
+      setShowLocalMigrationBanner(false);
+      setSyncNotice(null);
+
+      if (serverMode === 'postgres') {
+        const status = await fetchPostgresStatus(cleanTarget);
+        setServerStatus(status);
+        await hydrateFromPostgres(user, null, cleanTarget);
+      } else {
+        const loadedBranchDb = await loadDatabaseAsync(cleanTarget);
+        latestDbRef.current = loadedBranchDb;
+        setDb(loadedBranchDb);
+        if (loadedBranchDb.periods && loadedBranchDb.periods.length > 0) {
+          const preferred = loadedBranchDb.selectedPeriodId || loadedBranchDb.periods[0].id;
+          const matched =
+            loadedBranchDb.periods.find((p) => p.id === preferred) || loadedBranchDb.periods[0];
+          setActivePeriodId(matched.id);
+        }
+      }
+
+      const branchTitle = branches.find((b) => b.id === cleanTarget)?.name || cleanTarget;
+      feedback.success(`شعبه فعال به «${branchTitle}» تغییر یافت.`);
+    } catch (err: any) {
+      feedback.error(`خطا در تغییر شعبه: ${err?.message || 'لطفاً مجدداً تلاش کنید.'}`);
+    } finally {
+      setIsSwitchingBranch(false);
+    }
+  };
+
+  const handleLoginSuccess = async (user: User, chosenBranchId: string) => {
+    const targetBranch = chosenBranchId || DEFAULT_BRANCH_ID;
+    applyActiveBranchSelection(targetBranch);
     setCurrentUser(user);
     setMobileHasSelectedForm(false);
     setIsMobileMenuOpen(false);
@@ -818,7 +1004,25 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
       setActiveTab(getFirstAllowedTab(user));
     }
     if (serverStatus?.mode === 'postgres' && serverStatus?.connected) {
-      await hydrateFromPostgres(user);
+      const [status, bRes] = await Promise.all([
+        fetchPostgresStatus(targetBranch),
+        fetchBranches(),
+      ]);
+      setServerStatus(status);
+      if (bRes.ok && bRes.branches.length > 0) {
+        setBranches(bRes.branches);
+      }
+      await hydrateFromPostgres(user, null, targetBranch);
+    } else {
+      const loadedBranchDb = await loadDatabaseAsync(targetBranch);
+      latestDbRef.current = loadedBranchDb;
+      setDb(loadedBranchDb);
+      if (loadedBranchDb.periods && loadedBranchDb.periods.length > 0) {
+        const preferred = loadedBranchDb.selectedPeriodId || loadedBranchDb.periods[0].id;
+        const matched =
+          loadedBranchDb.periods.find((p) => p.id === preferred) || loadedBranchDb.periods[0];
+        setActivePeriodId(matched.id);
+      }
     }
   };
 
@@ -843,12 +1047,17 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     let isMounted = true;
 
     const boot = async () => {
+      const initialBranch = getActiveBranchId();
+      activeBranchIdRef.current = initialBranch;
+      setActiveBranchIdState(initialBranch);
+      setSyncBranchId(initialBranch);
+
       let loadedLocal: AppDatabase;
       try {
-        loadedLocal = await loadDatabaseAsync();
+        loadedLocal = await loadDatabaseAsync(initialBranch);
       } catch (err) {
         console.warn('Fallback load on boot:', err);
-        loadedLocal = loadDatabase();
+        loadedLocal = loadDatabase(initialBranch);
       }
 
       if (!isMounted) return;
@@ -860,24 +1069,76 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
         setActivePeriodId(matched.id);
       }
 
-      const status = await fetchPostgresStatus();
+      const status = await fetchPostgresStatus(initialBranch);
       if (!isMounted) return;
       setServerStatus(status);
 
       if (status.mode === 'postgres' && status.connected) {
-        const [pubUsers, activeSessionUser] = await Promise.all([
+        const [pubUsers, pubBranches, activeSessionUser] = await Promise.all([
           fetchPublicUsers(),
+          fetchPublicBranches(),
           fetchCurrentUser(),
         ]);
         if (!isMounted) return;
         setPublicUsers(pubUsers);
+        if (pubBranches.length > 0) {
+          setBranches(
+            pubBranches.map((b) => ({
+              id: b.id,
+              slug: b.slug,
+              name: b.name,
+              dbName: b.isDefault ? (status.databaseName || 'gatan_erp') : `gatan_${b.slug.replace(/-/g, '_')}`,
+              isDefault: b.isDefault,
+              isActive: b.isActive,
+              createdAt: '',
+            }))
+          );
+        }
         if (activeSessionUser) {
+          const bRes = await fetchBranches();
+          const availableList =
+            bRes.ok && bRes.branches.length > 0
+              ? bRes.branches
+              : pubBranches.length > 0
+              ? pubBranches.map((b) => ({
+                  id: b.id,
+                  slug: b.slug,
+                  name: b.name,
+                  dbName: b.isDefault ? (status.databaseName || 'gatan_erp') : `gatan_${b.slug.replace(/-/g, '_')}`,
+                  isDefault: b.isDefault,
+                  isActive: b.isActive,
+                  createdAt: '',
+                }))
+              : DEFAULT_BRANCHES;
+          if (!isMounted) return;
+          setBranches(availableList);
+
+          const allowedForSession = getAllowedBranches(
+            activeSessionUser,
+            availableList.filter((b) => b.isActive !== false)
+          );
+          const resolvedBranchId = allowedForSession.some((b) => b.id === initialBranch)
+            ? initialBranch
+            : allowedForSession[0]?.id || DEFAULT_BRANCH_ID;
+          if (resolvedBranchId !== initialBranch) {
+            applyActiveBranchSelection(resolvedBranchId);
+            const refreshedStatus = await fetchPostgresStatus(resolvedBranchId);
+            if (!isMounted) return;
+            setServerStatus(refreshedStatus);
+          }
+
           setCurrentUser(activeSessionUser);
           if (!canAccessTab(activeSessionUser, activeTab as SystemTabId)) {
             setActiveTab(getFirstAllowedTab(activeSessionUser));
           }
-          await hydrateFromPostgres(activeSessionUser, loadedLocal);
+          await hydrateFromPostgres(
+            activeSessionUser,
+            resolvedBranchId === DEFAULT_BRANCH_ID ? loadedLocal : null,
+            resolvedBranchId
+          );
         }
+      } else {
+        setBranches(getLocalBranches());
       }
     };
 
@@ -931,7 +1192,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
         lastSyncedDbRef.current = merged;
         latestDbRef.current = merged;
         setDb(merged);
-        saveDatabase(merged, { skipLocalStorage: true });
+        saveDatabase(merged, { skipLocalStorage: true, branchId: activeBranchIdRef.current });
         setLastPgSyncTime(new Date().toLocaleTimeString('fa-IR'));
       } catch {
         // silent background retry next tick
@@ -939,7 +1200,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     }, 12000);
 
     return () => clearInterval(intervalId);
-  }, [serverMode, currentUser?.id]);
+  }, [serverMode, currentUser?.id, activeBranchId]);
 
   // Automatic Daily Database Backup Scheduler (System Admin Only)
   useEffect(() => {
@@ -988,7 +1249,10 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     const sanitized = sanitizeChangedCollections(latestDbRef.current, updatedDb);
     latestDbRef.current = sanitized;
     setDb(sanitized);
-    saveDatabase(sanitized, { skipLocalStorage: serverMode === 'postgres' });
+    saveDatabase(sanitized, {
+      skipLocalStorage: serverMode === 'postgres',
+      branchId: activeBranchIdRef.current,
+    });
 
     if (serverMode === 'postgres' && currentUserRef.current) {
       schedulePostgresDeltaSync();
@@ -1053,7 +1317,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     const sanitized = sanitizeAndMergeDatabase(restoredDb);
     latestDbRef.current = sanitized;
     setDb(sanitized);
-    saveDatabase(sanitized);
+    saveDatabase(sanitized, { branchId: activeBranchIdRef.current });
 
     if (serverMode === 'postgres') {
       try {
@@ -1160,7 +1424,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
 
           latestDbRef.current = sanitized;
           setDb(sanitized);
-          saveDatabase(sanitized);
+          saveDatabase(sanitized, { branchId: activeBranchIdRef.current });
 
           if (serverMode === 'postgres') {
             try {
@@ -1253,10 +1517,13 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
           'تایید نهایی فرآیند بازنشانی',
           'این کار تمام اطلاعات را مواجه با حذف دائمی می‌کند. آیا فرآیند بازنشانی دیتابیس آغاز شود؟ آی‌پی شما و مهر زمانی ثبت خواهد شد.',
           async () => {
-            const freshDb = getInitialDatabase();
+            const freshDb =
+              activeBranchIdRef.current === DEFAULT_BRANCH_ID
+                ? getInitialDatabase()
+                : createBlankBranchDatabase(db?.users, db?.roles);
             latestDbRef.current = freshDb;
             setDb(freshDb);
-            saveDatabase(freshDb);
+            saveDatabase(freshDb, { branchId: activeBranchIdRef.current });
             if (serverMode === 'postgres') {
               const pgRes = await importDatabaseToPostgres(freshDb, 'factory_reset');
               if (pgRes.versions) collectionVersionsRef.current = pgRes.versions;
@@ -1273,271 +1540,30 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
     );
   };
 
-  // 4. Time Periods Manager
+  // 4. Time Periods Manager — 100% Isolated Blank Periods
   const handleCreatePeriod = (e: React.FormEvent) => {
     e.preventDefault();
     if (!db || !newPeriodName.trim()) return;
 
-    const newPeriod: Period = {
-      id: `period-${Date.now()}`,
+    const { updatedDb, period: newPeriod } = createBlankPeriod(db, {
       name: newPeriodName.trim(),
-      isActive: true,
       startDate: toEnglishDigits(newPeriodStartDate).trim() || '1405/01/01',
       endDate: toEnglishDigits(newPeriodEndDate).trim() || '1405/12/29',
-      createdAt: new Date().toISOString()
-    };
-
-    const selectedSourceId = copySourcePeriodId || activePeriodId;
-    const sourcePeriodId = selectedSourceId === 'none' ? '' : selectedSourceId;
-
-    // Cloning maps
-    const itemCatMap: Record<string, string> = {};
-    const clonedItemCategories = (db.itemCategories || []).filter(cat => cat.periodId === sourcePeriodId).map((cat, idx) => {
-      const newId = `cat-item-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      itemCatMap[cat.id] = newId;
-      return {
-        ...cat,
-        id: newId,
-        periodId: newPeriod.id
-      };
     });
-
-    const warehouseMap: Record<string, string> = {};
-    const clonedWarehouses = (db.warehouses || []).filter(wh => wh.periodId === sourcePeriodId).map((wh, idx) => {
-      const newId = `wh-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      warehouseMap[wh.id] = newId;
-      return {
-        ...wh,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const itemMap: Record<string, string> = {};
-    const clonedItems = (db.items || []).filter(item => item.periodId === sourcePeriodId).map((item, idx) => {
-      const newId = `item-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      itemMap[item.id] = newId;
-      return {
-        ...item,
-        id: newId,
-        periodId: newPeriod.id,
-        categoryId: itemCatMap[item.categoryId] || item.categoryId,
-        warehouse: item.warehouse ? (warehouseMap[item.warehouse] || item.warehouse) : item.warehouse
-      };
-    });
-
-    const deptMap: Record<string, string> = {};
-    const clonedDepartments = (db.departments || []).filter(d => d.periodId === sourcePeriodId).map((d, idx) => {
-      const newId = d.isShared ? `dept-${Date.now()}-${idx}-cat-4` : `dept-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      deptMap[d.id] = newId;
-      return {
-        ...d,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const prodCatMap: Record<string, string> = {};
-    const clonedProductCategories = (db.productCategories || []).filter(pcat => pcat.periodId === sourcePeriodId).map((pcat, idx) => {
-      const newId = `cat-prod-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      prodCatMap[pcat.id] = newId;
-      return {
-        ...pcat,
-        id: newId,
-        periodId: newPeriod.id,
-        departmentId: pcat.departmentId ? (deptMap[pcat.departmentId] || pcat.departmentId) : undefined
-      };
-    });
-
-    const productMap: Record<string, string> = {};
-    const clonedProducts = (db.products || []).filter(prod => prod.periodId === sourcePeriodId).map((prod, idx) => {
-      const newId = `prod-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      productMap[prod.id] = newId;
-      return {
-        ...prod,
-        id: newId,
-        periodId: newPeriod.id,
-        categoryId: prodCatMap[prod.categoryId] || prod.categoryId
-      };
-    });
-
-    const clonedSuppliers = (db.suppliers || []).filter(sup => sup.periodId === sourcePeriodId).map((sup, idx) => {
-      const newId = `sup-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      const mappedSuppliedItemIds = (sup.suppliedItemIds || []).map(oldId => itemMap[oldId] || oldId);
-      return {
-        ...sup,
-        id: newId,
-        periodId: newPeriod.id,
-        suppliedItemIds: mappedSuppliedItemIds
-      };
-    });
-
-    const clonedUnitConversions = (db.unitConversions || []).filter(conv => conv.periodId === sourcePeriodId).map((conv, idx) => {
-      const newId = `conv-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...conv,
-        id: newId,
-        periodId: newPeriod.id,
-        rawMaterialId: itemMap[conv.rawMaterialId] || conv.rawMaterialId
-      };
-    });
-
-    const clonedProductFormulas = (db.productFormulas || []).filter(f => f.periodId === sourcePeriodId).map((f, idx) => {
-      const newId = `formula-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      const sourceItemsList = (db.items || []).filter(i => i.periodId === sourcePeriodId);
-      const sourceProductsList = (db.products || []).filter(p => p.periodId === sourcePeriodId);
-
-      const sourceProdObj = sourceProductsList.find(p =>
-        (p.accountId && normalizeAccountingCode(p.accountId) === normalizeAccountingCode(f.productId)) || p.id === f.productId
-      );
-      const clonedProdObj = sourceProdObj ? clonedProducts.find(cp => cp.id === productMap[sourceProdObj.id]) : undefined;
-      const targetProdFormulaKey = clonedProdObj
-        ? getProductFormulaKey(clonedProdObj)
-        : (productMap[f.productId] || normalizeAccountingCode(f.productId) || f.productId);
-
-      const mappedIngredients = (f.ingredients || []).map(ing => {
-        const srcItem = sourceItemsList.find(i =>
-          (i.accountId && normalizeAccountingCode(i.accountId) === normalizeAccountingCode(ing.rawMaterialId)) || i.id === ing.rawMaterialId
-        );
-        const clonedItem = srcItem ? clonedItems.find(ci => ci.id === itemMap[srcItem.id]) : undefined;
-        const srcWip = !srcItem ? sourceProductsList.find(p =>
-          p.isWip && ((p.accountId && normalizeAccountingCode(p.accountId) === normalizeAccountingCode(ing.rawMaterialId)) || p.id === ing.rawMaterialId)
-        ) : undefined;
-        const clonedWip = srcWip ? clonedProducts.find(cp => cp.id === productMap[srcWip.id]) : undefined;
-
-        const targetMatKey = clonedItem
-          ? getMaterialFormulaKey(clonedItem)
-          : clonedWip
-            ? getMaterialFormulaKey(clonedWip)
-            : (itemMap[ing.rawMaterialId] || productMap[ing.rawMaterialId] || normalizeAccountingCode(ing.rawMaterialId) || ing.rawMaterialId);
-
-        return {
-          ...ing,
-          rawMaterialId: targetMatKey
-        };
-      });
-      return {
-        ...f,
-        id: newId,
-        periodId: newPeriod.id,
-        productId: targetProdFormulaKey,
-        ingredients: mappedIngredients
-      };
-    });
-
-    const clonedDailyProductionSegments = (db.dailyProductionSegments || []).filter(seg => seg.periodId === sourcePeriodId).map((seg, idx) => {
-      const newId = `seg-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...seg,
-        id: newId,
-        periodId: newPeriod.id,
-        productId: productMap[seg.productId] || seg.productId
-      };
-    });
-
-    const clonedPersonnelAllocations = (db.personnelAllocations || []).filter(alloc => alloc.periodId === sourcePeriodId).map((alloc, idx) => {
-      const newId = `alloc-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...alloc,
-        id: newId,
-        periodId: newPeriod.id,
-        departmentCategoryId: deptMap[alloc.departmentCategoryId] || prodCatMap[alloc.departmentCategoryId] || alloc.departmentCategoryId
-      };
-    });
-
-    const clonedPersonnel = (db.personnel || []).filter(pers => pers.periodId === sourcePeriodId).map((pers, idx) => {
-      const newId = `pers-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...pers,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const clonedSalesPeriods = (db.salesPeriods || []).filter(s => s.periodId === sourcePeriodId).map((s, idx) => {
-      const newId = `sp-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...s,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const clonedPayrollPeriods = (db.payrollPeriods || []).filter(p => p.periodId === sourcePeriodId).map((p, idx) => {
-      const newId = `pp-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...p,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const clonedSalaryBaseRates = (db.salaryBaseRates || []).filter(rate => rate.periodId === sourcePeriodId).map((rate, idx) => {
-      const newId = `rate-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...rate,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const clonedPersonnelContracts = (db.personnelContracts || []).filter(contract => contract.periodId === sourcePeriodId).map((contract, idx) => {
-      const newId = `contract-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...contract,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const clonedCustomers = (db.customers || []).filter(cust => cust.periodId === sourcePeriodId).map((cust, idx) => {
-      const newId = `cust-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 10)}`;
-      return {
-        ...cust,
-        id: newId,
-        periodId: newPeriod.id
-      };
-    });
-
-    const updatedDb: AppDatabase = {
-      ...db,
-      periods: [...db.periods, newPeriod],
-      itemCategories: [...db.itemCategories, ...clonedItemCategories],
-      warehouses: [...(db.warehouses || []), ...clonedWarehouses],
-      items: [...db.items, ...clonedItems],
-      productCategories: [...db.productCategories, ...clonedProductCategories],
-      departments: [...(db.departments || []), ...clonedDepartments],
-      products: [...db.products, ...clonedProducts],
-      suppliers: [...db.suppliers, ...clonedSuppliers],
-      unitConversions: [...db.unitConversions, ...clonedUnitConversions],
-      productFormulas: [...db.productFormulas, ...clonedProductFormulas],
-      dailyProductionSegments: [...(db.dailyProductionSegments || []), ...clonedDailyProductionSegments],
-      personnelAllocations: [...db.personnelAllocations, ...clonedPersonnelAllocations],
-      personnel: [...db.personnel, ...clonedPersonnel],
-      salesPeriods: [...(db.salesPeriods || []), ...clonedSalesPeriods],
-      payrollPeriods: [...(db.payrollPeriods || []), ...clonedPayrollPeriods],
-      salaryBaseRates: [...(db.salaryBaseRates || []), ...clonedSalaryBaseRates],
-      personnelContracts: [...(db.personnelContracts || []), ...clonedPersonnelContracts],
-      customers: [...(db.customers || []), ...clonedCustomers]
-    };
 
     handleUpdateDatabase(updatedDb);
     setNewPeriodName('');
-    setCopySourcePeriodId('');
     setActivePeriodId(newPeriod.id);
     setShowPeriodManager(false);
-    if (sourcePeriodId) {
-      const sourceName = db.periods.find(p => p.id === sourcePeriodId)?.name || '';
-      alert(`دوره مالی "${newPeriod.name}" با موفقیت ایجاد و فعال گردید.\nاطلاعات بخش‌های تنظیم و مدیریت انبارها، فرمولاسیون، برنامه‌ریزی تولید، ضریب تبدیل، کالای در جریان ساخت، حساب‌های تامین‌کنندگان و تسهیم زمان‌محور با موفقیت از دوره منتخب (${sourceName}) تکثیر شد.`);
-    } else {
-      alert(`دوره مالی "${newPeriod.name}" به عنوان یک دوره کاری جدید و خام با موفقیت ایجاد و فعال گردید.`);
-    }
+    feedback.success(
+      `دوره مالی «${newPeriod.name}» با شناسه ${newPeriod.id} به‌صورت کاملاً مستقل و خالی ایجاد شد. در صورت نیاز از دکمه «کپی از دوره» در هر بخش استفاده کنید.`
+    );
   };
 
   const handleOpenCleanupModal = (p: Period) => {
     if (!db) return;
     if (db.periods.length <= 1) {
-      alert('حداقل وجود یک دوره کاری الزامی است. شما نمی‌توانید تنها دوره موجود را حذف کنید.');
+      feedback.warning('حداقل وجود یک دوره مالی الزامی است. نمی‌توانید تنها دوره موجود را حذف کنید.');
       return;
     }
     setCleanupTargetPeriod(p);
@@ -1546,301 +1572,26 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
 
   const handleExecuteSmartCleanup = () => {
     if (!db || !cleanupTargetPeriod) return;
-    if (cleanupConfirmInput.trim() !== 'پاکسازی دوره') {
-      alert('لطفاً جهت تایید نهایی عبارت «پاکسازی دوره» را دقیقا وارد نمایید.');
+    if (cleanupConfirmInput.trim() !== 'حذف دوره' && cleanupConfirmInput.trim() !== 'پاکسازی دوره') {
+      feedback.warning('لطفاً جهت تایید نهایی عبارت «حذف دوره» را وارد نمایید.');
       return;
     }
 
     const targetPeriodId = cleanupTargetPeriod.id;
     const pName = cleanupTargetPeriod.name;
+    const { updatedDb, nextPeriodId, removedCount } = purgePeriodData(db, targetPeriodId);
 
-    let nextActiveId = activePeriodId;
-    if (activePeriodId === targetPeriodId) {
-      const remaining = db.periods.filter(p => p.id !== targetPeriodId);
-      nextActiveId = remaining[0]?.id || '';
-      setActivePeriodId(nextActiveId);
+    if (activePeriodId === targetPeriodId && nextPeriodId) {
+      setActivePeriodId(nextPeriodId);
     }
-
-    // 1. MASTER DATA CONSOLIDATION TO NEXT ACTIVE PERIOD (nextActiveId)
-
-    // a) Personnel
-    const activeEmpCodes = new Set(
-      (db.personnel || [])
-        .filter(p => p.periodId === nextActiveId)
-        .map(p => String(p.employeeCode || '').trim())
-    );
-    const clonedPersonnel = (db.personnel || [])
-      .filter(p => p.periodId === targetPeriodId)
-      .filter(p => p.employeeCode && !activeEmpCodes.has(String(p.employeeCode).trim()))
-      .map(p => ({
-        ...p,
-        id: p.id.startsWith('emp-') ? p.id : `emp-${p.employeeCode}-${Date.now()}`,
-        periodId: nextActiveId,
-        isActive: true
-      }));
-
-    const updatedPersonnel = [
-      ...(db.personnel || []).filter(p => p.periodId !== targetPeriodId),
-      ...clonedPersonnel
-    ];
-
-    // b) Items & Categories
-    const activeItemCodes = new Set(
-      (db.items || [])
-        .filter(i => i.periodId === nextActiveId)
-        .map(i => String(i.code || i.barcode || '').trim())
-    );
-    const clonedItems = (db.items || [])
-      .filter(i => i.periodId === targetPeriodId)
-      .filter(i => (i.code || i.barcode) && !activeItemCodes.has(String(i.code || i.barcode).trim()))
-      .map(i => ({
-        ...i,
-        id: i.id.startsWith('item-') ? i.id : `item-${i.code}-${Date.now()}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedItems = [
-      ...(db.items || []).filter(i => i.periodId !== targetPeriodId),
-      ...clonedItems
-    ];
-
-    const activeItemCatNames = new Set(
-      (db.itemCategories || [])
-        .filter(c => c.periodId === nextActiveId)
-        .map(c => c.name.trim())
-    );
-    const clonedItemCategories = (db.itemCategories || [])
-      .filter(c => c.periodId === targetPeriodId)
-      .filter(c => c.name && !activeItemCatNames.has(c.name.trim()))
-      .map(c => ({
-        ...c,
-        id: `icat-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedItemCategories = [
-      ...(db.itemCategories || []).filter(c => c.periodId !== targetPeriodId),
-      ...clonedItemCategories
-    ];
-
-    // c) Products & Product Categories
-    const activeProdCodes = new Set(
-      (db.products || [])
-        .filter(p => p.periodId === nextActiveId)
-        .map(p => String(p.code || p.barcode || '').trim())
-    );
-    const clonedProducts = (db.products || [])
-      .filter(p => p.periodId === targetPeriodId)
-      .filter(p => (p.code || p.barcode) && !activeProdCodes.has(String(p.code || p.barcode).trim()))
-      .map(p => ({
-        ...p,
-        id: p.id.startsWith('prod-') ? p.id : `prod-${p.code}-${Date.now()}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedProducts = [
-      ...(db.products || []).filter(p => p.periodId !== targetPeriodId),
-      ...clonedProducts
-    ];
-
-    const activeDeptNames = new Set(
-      (db.departments || [])
-        .filter(d => d.periodId === nextActiveId)
-        .map(d => d.name.trim())
-    );
-    const clonedDepartmentsCleanup = (db.departments || [])
-      .filter(d => d.periodId === targetPeriodId)
-      .filter(d => d.name && !activeDeptNames.has(d.name.trim()))
-      .map(d => ({
-        ...d,
-        id: `dept-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-    const updatedDepartments = [
-      ...(db.departments || []).filter(d => d.periodId !== targetPeriodId),
-      ...clonedDepartmentsCleanup
-    ];
-
-    const activeProdCatNames = new Set(
-      (db.productCategories || [])
-        .filter(c => c.periodId === nextActiveId)
-        .map(c => c.name.trim())
-    );
-    const clonedProdCategories = (db.productCategories || [])
-      .filter(c => c.periodId === targetPeriodId)
-      .filter(c => c.name && !activeProdCatNames.has(c.name.trim()))
-      .map(c => ({
-        ...c,
-        id: `pcat-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedProductCategories = [
-      ...(db.productCategories || []).filter(c => c.periodId !== targetPeriodId),
-      ...clonedProdCategories
-    ];
-
-    // d) Customers & Customer Categories
-    const activeCustomerCodes = new Set(
-      (db.customers || [])
-        .filter(c => c.periodId === nextActiveId)
-        .map(c => String(c.code || c.nationalId || c.phone || '').trim())
-    );
-    const clonedCustomers = (db.customers || [])
-      .filter(c => c.periodId === targetPeriodId)
-      .filter(c => (c.code || c.nationalId || c.phone) && !activeCustomerCodes.has(String(c.code || c.nationalId || c.phone).trim()))
-      .map(c => ({
-        ...c,
-        id: c.id.startsWith('cust-') ? c.id : `cust-${c.code}-${Date.now()}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedCustomers = [
-      ...(db.customers || []).filter(c => c.periodId !== targetPeriodId),
-      ...clonedCustomers
-    ];
-
-    // e) Suppliers
-    const activeSupplierNames = new Set(
-      (db.suppliers || [])
-        .filter(s => s.periodId === nextActiveId)
-        .map(s => String(s.name || s.phone || '').trim())
-    );
-    const clonedSuppliers = (db.suppliers || [])
-      .filter(s => s.periodId === targetPeriodId)
-      .filter(s => (s.name || s.phone) && !activeSupplierNames.has(String(s.name || s.phone).trim()))
-      .map(s => ({
-        ...s,
-        id: `sup-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedSuppliers = [
-      ...(db.suppliers || []).filter(s => s.periodId !== targetPeriodId),
-      ...clonedSuppliers
-    ];
-
-    // f) Product Formulas
-    const activeFormulaProdIds = new Set(
-      (db.productFormulas || [])
-        .filter(f => f.periodId === nextActiveId)
-        .map(f => normalizeAccountingCode(f.productId))
-    );
-    const clonedFormulas = (db.productFormulas || [])
-      .filter(f => f.periodId === targetPeriodId)
-      .filter(f => f.productId && !activeFormulaProdIds.has(normalizeAccountingCode(f.productId)))
-      .map(f => ({
-        ...f,
-        id: `form-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedFormulas = [
-      ...(db.productFormulas || []).filter(f => f.periodId !== targetPeriodId),
-      ...clonedFormulas
-    ];
-
-    // g) Unit Conversions
-    const activeConversionKeys = new Set(
-      (db.unitConversions || [])
-        .filter(uc => uc.periodId === nextActiveId)
-        .map(uc => `${uc.rawMaterialId}_${uc.consumptionUnit}`)
-    );
-    const clonedConversions = (db.unitConversions || [])
-      .filter(uc => uc.periodId === targetPeriodId)
-      .filter(uc => !activeConversionKeys.has(`${uc.rawMaterialId}_${uc.consumptionUnit}`))
-      .map(uc => ({
-        ...uc,
-        id: `uc-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        periodId: nextActiveId
-      }));
-
-    const updatedConversions = [
-      ...(db.unitConversions || []).filter(uc => uc.periodId !== targetPeriodId),
-      ...clonedConversions
-    ];
-
-    // h) Warehouses & Bank Accounts
-    const activeWarehouseNames = new Set(
-      (db.warehouses || []).filter(w => w.periodId === nextActiveId).map(w => w.name.trim())
-    );
-    const clonedWarehouses = (db.warehouses || [])
-      .filter(w => w.periodId === targetPeriodId && !activeWarehouseNames.has(w.name.trim()))
-      .map(w => ({ ...w, id: `wh-${Date.now()}`, periodId: nextActiveId }));
-
-    const updatedWarehouses = [
-      ...(db.warehouses || []).filter(w => w.periodId !== targetPeriodId),
-      ...clonedWarehouses
-    ];
-
-    const activeBankAccNos = new Set(
-      (db.bankAccounts || []).filter(b => b.periodId === nextActiveId).map(b => b.accountNo.trim())
-    );
-    const clonedBankAccounts = (db.bankAccounts || [])
-      .filter(b => b.periodId === targetPeriodId && !activeBankAccNos.has(b.accountNo.trim()))
-      .map(b => ({ ...b, id: `bank-${Date.now()}`, periodId: nextActiveId }));
-
-    const updatedBankAccounts = [
-      ...(db.bankAccounts || []).filter(b => b.periodId !== targetPeriodId),
-      ...clonedBankAccounts
-    ];
-
-    // 2. TRANSACTIONAL PURGING (حذف کامل داده‌های سنگین دوره قدیم)
-    const updatedDb: AppDatabase = {
-      ...db,
-      periods: (db.periods || []).filter(p => p.id !== targetPeriodId),
-      selectedPeriodId: db.selectedPeriodId === targetPeriodId ? nextActiveId : (db.selectedPeriodId || nextActiveId),
-
-      // Master Data (consolidated)
-      personnel: updatedPersonnel,
-      items: updatedItems,
-      itemCategories: updatedItemCategories,
-      products: updatedProducts,
-      productCategories: updatedProductCategories,
-      departments: updatedDepartments,
-      customers: updatedCustomers,
-      suppliers: updatedSuppliers,
-      productFormulas: updatedFormulas,
-      unitConversions: updatedConversions,
-      warehouses: updatedWarehouses,
-      bankAccounts: updatedBankAccounts,
-
-      // Purged Heavy Transactions
-      salesTransactions: (db.salesTransactions || []).filter(x => x.periodId !== targetPeriodId),
-      purchaseInvoices: (db.purchaseInvoices || []).filter(x => x.periodId !== targetPeriodId),
-      stockCountAudits: (db.stockCountAudits || []).filter(x => x.periodId !== targetPeriodId),
-      stockCounts: (db.stockCounts || []).filter(x => x.periodId !== targetPeriodId),
-      procurementOrders: (db.procurementOrders || []).filter(x => x.periodId !== targetPeriodId),
-      dailyProductionSegments: (db.dailyProductionSegments || []).filter(x => x.periodId !== targetPeriodId),
-      productSales: (db.productSales || []).filter(x => x.periodId !== targetPeriodId),
-      salesPeriods: (db.salesPeriods || []).filter(x => x.periodId !== targetPeriodId),
-      periodOverheads: (db.periodOverheads || []).filter(x => x.periodId !== targetPeriodId),
-      productionPlanningOrders: (db.productionPlanningOrders || []).filter(x => x.periodId !== targetPeriodId),
-      treasuryReceipts: (db.treasuryReceipts || []).filter(x => x.periodId !== targetPeriodId),
-      treasuryPayments: (db.treasuryPayments || []).filter(x => x.periodId !== targetPeriodId),
-      barterTransactions: (db.barterTransactions || []).filter(x => x.periodId !== targetPeriodId),
-      counterpartySettlements: (db.counterpartySettlements || []).filter(x => x.periodId !== targetPeriodId),
-      cashierShiftCloseouts: (db.cashierShiftCloseouts || []).filter(x => x.periodId !== targetPeriodId),
-      payrollPeriods: (db.payrollPeriods || []).filter(x => x.periodId !== targetPeriodId),
-      payrollItems: (db.payrollItems || []).filter(x => x.periodId !== targetPeriodId),
-      personnelAllocations: (db.personnelAllocations || []).filter(x => x.periodId !== targetPeriodId),
-      salaryBaseRates: (db.salaryBaseRates || []).filter(x => x.periodId !== targetPeriodId),
-      personnelContracts: (db.personnelContracts || []).filter(x => x.periodId !== targetPeriodId),
-      personnelSettlements: (db.personnelSettlements || []).filter(x => x.periodId !== targetPeriodId),
-      shiftAssignments: (db.shiftAssignments || []).filter(x => x.periodId !== targetPeriodId),
-      attendanceRecords: (db.attendanceRecords || []).filter(x => x.periodId !== targetPeriodId),
-      cashDrawers: (db.cashDrawers || []).filter(x => x.periodId !== targetPeriodId),
-      posTerminals: (db.posTerminals || []).filter(x => x.periodId !== targetPeriodId),
-      cashiers: (db.cashiers || []).filter(x => x.periodId !== targetPeriodId),
-      chequeBooks: (db.chequeBooks || []).filter(x => x.periodId !== targetPeriodId),
-      chequeLeaves: (db.chequeLeaves || []).filter(x => x.periodId !== targetPeriodId)
-    };
 
     handleUpdateDatabase(updatedDb);
     setCleanupTargetPeriod(null);
     setCleanupConfirmInput('');
 
-    alert(`دوره مالی "${pName}" با موفقیت پاکسازی شد.\n\n✓ اطلاعات پایه مشترک (شامل ${toPersianDigits(clonedPersonnel.length)} پرسنل، ${toPersianDigits(clonedItems.length)} کالا، ${toPersianDigits(clonedProducts.length)} محصول، ${toPersianDigits(clonedFormulas.length)} فرمول ساخت و ${toPersianDigits(clonedCustomers.length)} مشتری جدید) با موفقیت به دوره فعال منتقل گردید.\n✓ تمام داده‌ها و تراکنش‌های سنگین قدیمی با موفقیت پاکسازی شدند و حافظه سیستم آزاد شد.`);
+    feedback.success(
+      `دوره مالی «${pName}» و ${toPersianDigits(removedCount)} رکورد اختصاصی آن بدون تاثیر بر سایر دوره‌ها حذف شد.`
+    );
   };
 
 
@@ -1863,10 +1614,22 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
         users={db.users}
         serverMode={serverMode}
         publicUsers={publicUsers}
+        branches={branches}
+        initialBranchId={activeBranchId}
         onLoginSuccess={handleLoginSuccess} 
       />
     );
   }
+
+  const activeBranchesList: BranchStatusItem[] = branches.filter((b) => b.isActive !== false);
+  const allowedBranchesForUser: BranchStatusItem[] = getAllowedBranches<BranchStatusItem>(
+    currentUser,
+    activeBranchesList.length > 0 ? activeBranchesList : DEFAULT_BRANCHES
+  );
+  const activeBranch: BranchStatusItem =
+    branches.find((b) => b.id === activeBranchId) ||
+    allowedBranchesForUser[0] ||
+    DEFAULT_BRANCHES[0];
 
 
   const navItems: Array<{
@@ -2008,27 +1771,53 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
             </div>
           </div>
 
-          {/* Slim Secondary Meta Row: Period Selector + User Name + Logout */}
-          <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-800/70 text-[11px]">
-            <div className="flex items-center gap-1 min-w-0">
-              <Calendar className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-              <select
-                aria-label="دوره کاری"
-                className="mobile-compact-select bg-zinc-900 text-zinc-100 font-bold max-w-[165px] truncate outline-none"
-                value={activePeriodId}
-                onChange={(e) => setActivePeriodId(e.target.value)}
-              >
-                {db.periods.map(p => (
-                  <option key={p.id} value={p.id} className="bg-zinc-950 text-zinc-100">{p.name}</option>
-                ))}
-              </select>
+          {/* Slim Secondary Meta Row: Branch Switcher + Period Selector + User Name + Logout */}
+          <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-zinc-800/70 text-[11px]">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <div className="flex items-center gap-1 min-w-0 shrink">
+                <Building2 className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                {allowedBranchesForUser.length > 1 ? (
+                  <select
+                    aria-label="شعبه فعال"
+                    disabled={isSwitchingBranch}
+                    className="mobile-compact-select bg-zinc-900 text-zinc-100 font-bold max-w-[115px] truncate outline-none"
+                    value={activeBranchId}
+                    onChange={(e) => handleSwitchBranch(e.target.value)}
+                  >
+                    {allowedBranchesForUser.map((b) => (
+                      <option key={b.id} value={b.id} className="bg-zinc-950 text-zinc-100">
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="font-bold text-zinc-200 truncate max-w-[100px]">
+                    {activeBranch?.name}
+                  </span>
+                )}
+              </div>
+
+              <span className="text-zinc-700 select-none shrink-0" aria-hidden="true">·</span>
+
+              <div className="flex items-center gap-1 min-w-0 shrink">
+                <Calendar className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                <select
+                  aria-label="دوره کاری"
+                  className="mobile-compact-select bg-zinc-900 text-zinc-100 font-bold max-w-[125px] truncate outline-none"
+                  value={activePeriodId}
+                  onChange={(e) => setActivePeriodId(e.target.value)}
+                >
+                  {db.periods.map(p => (
+                    <option key={p.id} value={p.id} className="bg-zinc-950 text-zinc-100">{p.name}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1.5 min-w-0 shrink-0">
-              <span className="text-[11px] font-bold text-emerald-400 truncate max-w-[110px]">
+            <div className="flex items-center gap-1 min-w-0 shrink-0">
+              <span className="text-[11px] font-bold text-emerald-400 truncate max-w-[78px]">
                 {currentUser.fullName || currentUser.name || currentUser.username}
               </span>
-              <span className="text-zinc-700 select-none" aria-hidden="true">·</span>
               <button
                 type="button"
                 onClick={handleLogoutClick}
@@ -2114,11 +1903,46 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
               )}
             </button>
 
-            {/* Active Switcher for Period validation */}
+            {/* Active Branch & Period Switchers */}
             <div className="h-9 w-[1px] bg-slate-200 dark:bg-zinc-800 hidden md:block" />
 
+            <div className="flex items-center gap-1.5">
+              <Building2 className={`h-4 w-4 text-sky-600 dark:text-sky-400 shrink-0 ${isSwitchingBranch ? 'animate-pulse' : ''}`} />
+              {allowedBranchesForUser.length > 1 ? (
+                <select
+                  id="active-branch-selector"
+                  aria-label="انتخاب شعبه فعال"
+                  disabled={isSwitchingBranch}
+                  className="bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 p-1.5 px-2.5 rounded-lg border border-slate-300 dark:border-zinc-800 text-xs font-bold focus:border-emerald-500 outline-none cursor-pointer disabled:opacity-60"
+                  value={activeBranchId}
+                  onChange={(e) => handleSwitchBranch(e.target.value)}
+                >
+                  {allowedBranchesForUser.map((b) => (
+                    <option key={b.id} value={b.id} className="bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100">
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-xs font-bold text-slate-800 dark:text-zinc-200">
+                  {activeBranch?.name}
+                </span>
+              )}
+              {allowedBranchesForUser.length > 1 && isAdminUser(currentUser) && (
+                <button
+                  type="button"
+                  onClick={() => setShowCopyFromBranchModal(true)}
+                  className="p-1.5 bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-750 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg cursor-pointer transition-colors"
+                  title="کپی اطلاعات از شعبه دیگر"
+                  aria-label="کپی اطلاعات از شعبه دیگر"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+
             <div className="flex items-center gap-1">
-              <span className="text-slate-500 dark:text-zinc-500 hidden md:inline ml-1">دوره کاری:</span>
+              <span className="text-slate-500 dark:text-zinc-500 hidden xl:inline ml-1">دوره کاری:</span>
               <select
                 id="active-period-selector"
                 className="bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-150 p-1.5 px-2.5 rounded-lg border border-slate-300 dark:border-zinc-800 text-xs font-bold focus:border-emerald-500 outline-none"
@@ -2411,6 +2235,7 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
           </div>
 
           <div className="hidden lg:block mt-8 border-t border-slate-200 dark:border-zinc-850 pt-4 space-y-2 text-[10px] text-slate-500 dark:text-zinc-500 font-normal leading-normal select-none">
+            <div>شعبه فعال: <strong className="text-sky-700 dark:text-sky-400 block mt-0.5">{activeBranch?.name}</strong></div>
             <div>فعال در بازه مالی: <strong className="text-emerald-700 dark:text-emerald-400 block mt-0.5">{db.periods.find(p => p.id === activePeriodId)?.name}</strong></div>
             <div>
               {serverMode === 'postgres'
@@ -2476,7 +2301,6 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
               db={db}
               onUpdateDb={handleUpdateDatabase}
               activePeriodId={activePeriodId}
-              currentUserName={currentUser?.fullName || currentUser?.name || currentUser?.username || ''}
             />
           )}
 
@@ -2534,7 +2358,10 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
               onUpdateDb={handleUpdateDatabase}
               activePeriodId={activePeriodId}
               serverMode={serverMode}
-              onOpenPublicPreview={onOpenPublicMenu}
+              activeBranch={activeBranch}
+              onOpenPublicPreview={() =>
+                onOpenPublicMenu(activeBranch && !activeBranch.isDefault ? activeBranch.slug : undefined)
+              }
             />
           )}
 
@@ -2546,6 +2373,11 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
               serverStatus={serverStatus}
               pgSyncState={pgSyncState}
               lastPgSyncTime={lastPgSyncTime}
+              branches={branches}
+              activeBranchId={activeBranchId}
+              onSwitchBranch={handleSwitchBranch}
+              onBranchesChanged={setBranches}
+              onOpenCopyFromBranch={() => setShowCopyFromBranchModal(true)}
               onRefreshStatusAndPull={handleRefreshStatusAndPull}
               onMigrateLocalToPostgres={handleMigrateLocalToPostgres}
               onUpdateDb={handleUpdateDatabase}
@@ -2567,6 +2399,16 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
           )}
         </section>
       </main>
+      <CopyFromBranchModal
+        open={showCopyFromBranchModal}
+        onClose={() => setShowCopyFromBranchModal(false)}
+        branches={allowedBranchesForUser}
+        activeBranchId={activeBranchId}
+        targetDb={db}
+        targetPeriodId={activePeriodId}
+        serverMode={serverMode}
+        onUpdateDb={handleUpdateDatabase}
+      />
       <DatabaseBackupModal
         isOpen={showBackupPanel}
         onClose={() => setShowBackupPanel(false)}
@@ -2642,36 +2484,17 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
               </form>
             ) : (
               <form onSubmit={handleCreatePeriod} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label htmlFor="new-period-name-modal" className="block text-[10.5px] font-bold text-zinc-400 mb-1.5">تعریف دوره مالی جدید</label>
-                    <input
-                      id="new-period-name-modal"
-                      type="text"
-                      required
-                      placeholder="مثال: دوره فروردین ۱۴۰۵"
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 outline-none transition-all font-bold"
-                      value={newPeriodName}
-                      onChange={(e) => setNewPeriodName(e.target.value)}
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="copy-source-period-modal" className="block text-[10.5px] font-bold text-zinc-400 mb-1.5">کپی اطلاعات پایه از دوره:</label>
-                    <select
-                      id="copy-source-period-modal"
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 outline-none transition-all font-bold"
-                      value={copySourcePeriodId || activePeriodId}
-                      onChange={(e) => setCopySourcePeriodId(e.target.value)}
-                    >
-                      {db.periods.map(p => (
-                        <option key={p.id} value={p.id} className="bg-zinc-950 text-zinc-100">
-                          {p.name} {p.id === activePeriodId ? ' (دوره جاری)' : ''}
-                        </option>
-                      ))}
-                      <option value="none" className="bg-zinc-950 text-zinc-455">بدون کپی اطلاعات (دوره خام)</option>
-                    </select>
-                  </div>
+                <div>
+                  <label htmlFor="new-period-name-modal" className="block text-[10.5px] font-bold text-zinc-400 mb-1.5">نام دوره مالی جدید</label>
+                  <input
+                    id="new-period-name-modal"
+                    type="text"
+                    required
+                    placeholder="مثال: دوره خرداد ۱۴۰۵"
+                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 outline-none transition-all font-bold"
+                    value={newPeriodName}
+                    onChange={(e) => setNewPeriodName(e.target.value)}
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2679,12 +2502,16 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
                   {renderShamsiDatePicker('new-end-date', 'تاریخ پایان دوره (انتخابگر شمسی)', newPeriodEndDate, setNewPeriodEndDate)}
                 </div>
 
+                <div className="p-2.5 rounded-xl bg-emerald-950/25 border border-emerald-800/40 text-[11px] text-emerald-300 leading-5">
+                  دوره جدید به‌صورت کاملاً ایزوله و خالی ایجاد می‌شود تا هیچ تداخلی با دوره‌های قبلی رخ ندهد. برای انتقال هر بخش می‌توانید از دکمه «کپی از دوره» در همان بخش استفاده کنید.
+                </div>
+
                 <div className="flex gap-2 pt-1 border-b border-zinc-800 pb-3">
                   <button
                     type="submit"
                     className="flex-grow bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 rounded-xl shadow cursor-pointer transition-colors"
                   >
-                    ایجاد دوره کاری جدید
+                    افزودن دوره جدید
                   </button>
                   <button
                     type="button"
@@ -2777,109 +2604,99 @@ function ErpApplication({ onOpenPublicMenu }: { onOpenPublicMenu: () => void }) 
         </div>
       )}
 
-      {cleanupTargetPeriod && db && (
-        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in font-sans text-right" dir="rtl">
-          <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl text-zinc-100">
-            <div className="flex items-center justify-between border-b border-zinc-850 pb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl">
-                  <Trash2 className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-white">پاکسازی هوشمند و حذف دوره مالی</h3>
-                  <span className="text-[11px] font-bold text-zinc-400">دوره انتخاب شده: {cleanupTargetPeriod.name}</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCleanupTargetPeriod(null)}
-                className="p-1.5 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div className="bg-emerald-950/20 border border-emerald-800/40 rounded-2xl p-3.5 space-y-2">
-                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
-                  <CheckCircle className="h-4 w-4 shrink-0" />
-                  <span>اطلاعات پایه انتقالی/ادغام شونده به دوره فعال (بدون حذف)</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-bold pt-1">
-                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    پرسنل جدید: <strong className="text-emerald-400 font-mono">{toPersianDigits((db.personnel || []).filter(p => p.periodId === cleanupTargetPeriod.id).length)}</strong> نفر
+      {cleanupTargetPeriod && db && (() => {
+        const counts = getPeriodRecordCounts(db, cleanupTargetPeriod.id);
+        const canConfirmDelete =
+          cleanupConfirmInput.trim() === 'حذف دوره' || cleanupConfirmInput.trim() === 'پاکسازی دوره';
+        return (
+          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in font-sans text-right" dir="rtl">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl text-zinc-100">
+              <div className="flex items-center justify-between border-b border-zinc-850 pb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl">
+                    <Trash2 className="h-5 w-5" />
                   </div>
-                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    کالاها و محصولات: <strong className="text-emerald-400 font-mono">{toPersianDigits((db.items || []).filter(i => i.periodId === cleanupTargetPeriod.id).length + (db.products || []).filter(p => p.periodId === cleanupTargetPeriod.id).length)}</strong> کالا
-                  </div>
-                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    فرمول‌های ساخت: <strong className="text-emerald-400 font-mono">{toPersianDigits((db.productFormulas || []).filter(f => f.periodId === cleanupTargetPeriod.id).length)}</strong> فرمول
-                  </div>
-                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    مشتریان و تامین‌کنندگان: <strong className="text-emerald-400 font-mono">{toPersianDigits((db.customers || []).filter(c => c.periodId === cleanupTargetPeriod.id).length + (db.suppliers || []).filter(s => s.periodId === cleanupTargetPeriod.id).length)}</strong> شخص
+                  <div>
+                    <h3 className="text-sm font-black text-white">حذف کامل دوره مالی (ایزوله)</h3>
+                    <span className="text-[11px] font-bold text-zinc-400">
+                      دوره انتخاب شده: {cleanupTargetPeriod.name} ({cleanupTargetPeriod.id})
+                    </span>
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setCleanupTargetPeriod(null)}
+                  className="p-1.5 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+                >
+                  ✕
+                </button>
               </div>
 
-              <div className="bg-rose-950/20 border border-rose-800/40 rounded-2xl p-3.5 space-y-2">
+              <div className="bg-rose-950/20 border border-rose-800/40 rounded-2xl p-3.5 space-y-2.5">
                 <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
-                  <span>حجم تراکنش‌های سنگین قابل پاکسازی (آزادسازی حافظه)</span>
+                  <span>فقط اطلاعات این دوره ({toPersianDigits(counts.total)} رکورد) حذف می‌شود و هیچ داده‌ای به دوره‌های دیگر منتقل یا ادغام نمی‌گردد.</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-bold pt-1">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] text-zinc-300 font-bold pt-1">
                   <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    تراکنش‌های فروش: <strong className="text-rose-400 font-mono">{toPersianDigits((db.salesTransactions || []).filter(t => t.periodId === cleanupTargetPeriod.id).length)}</strong> ردیف
+                    کالاها و محصولات: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.items + counts.products)}</strong>
                   </div>
                   <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    فاکتورهای خرید: <strong className="text-rose-400 font-mono">{toPersianDigits((db.purchaseInvoices || []).filter(p => p.periodId === cleanupTargetPeriod.id).length)}</strong> فاکتور
+                    فرمول‌های ساخت: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.formulas)}</strong>
                   </div>
                   <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    اسناد خزانه‌داری: <strong className="text-rose-400 font-mono">{toPersianDigits((db.treasuryReceipts || []).filter(r => r.periodId === cleanupTargetPeriod.id).length + (db.treasuryPayments || []).filter(p => p.periodId === cleanupTargetPeriod.id).length)}</strong> سند
+                    پرسنل: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.personnel)}</strong>
                   </div>
                   <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
-                    شمارش‌های انبار: <strong className="text-rose-400 font-mono">{toPersianDigits((db.stockCounts || []).filter(s => s.periodId === cleanupTargetPeriod.id).length)}</strong> سطر
+                    فروش و خرید: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.salesTransactions + counts.purchaseInvoices)}</strong>
+                  </div>
+                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
+                    اسناد خزانه: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.treasuryDocs)}</strong>
+                  </div>
+                  <div className="bg-zinc-900/60 p-2 rounded-xl border border-zinc-800">
+                    مشتریان و تامین: <strong className="text-rose-400 font-mono">{toPersianDigits(counts.customers + counts.suppliers)}</strong>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <div className="space-y-2 pt-1 border-t border-zinc-850">
-              <label className="block text-[11px] font-bold text-zinc-300">
-                جهت تایید نهایی پاکسازی و آزادسازی حافظه، عبارت <strong className="text-rose-400 font-mono underline">پاکسازی دوره</strong> را وارد نمایید:
-              </label>
-              <input
-                type="text"
-                value={cleanupConfirmInput}
-                onChange={(e) => setCleanupConfirmInput(e.target.value)}
-                placeholder="پاکسازی دوره"
-                className="w-full px-3.5 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-bold text-white placeholder-zinc-600 focus:border-rose-500 outline-none transition-all font-mono text-center"
-              />
-            </div>
+              <div className="space-y-2 pt-1 border-t border-zinc-850">
+                <label className="block text-[11px] font-bold text-zinc-300">
+                  جهت تایید نهایی حذف دوره، عبارت <strong className="text-rose-400 font-mono underline">حذف دوره</strong> را وارد نمایید:
+                </label>
+                <input
+                  type="text"
+                  value={cleanupConfirmInput}
+                  onChange={(e) => setCleanupConfirmInput(e.target.value)}
+                  placeholder="حذف دوره"
+                  className="w-full px-3.5 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-bold text-white placeholder-zinc-600 focus:border-rose-500 outline-none transition-all font-mono text-center"
+                />
+              </div>
 
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={handleExecuteSmartCleanup}
-                disabled={cleanupConfirmInput.trim() !== 'پاکسازی دوره'}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all shadow cursor-pointer ${
-                  cleanupConfirmInput.trim() === 'پاکسازی دوره'
-                    ? 'bg-rose-600 hover:bg-rose-500 text-white'
-                    : 'bg-zinc-850 text-zinc-600 cursor-not-allowed'
-                }`}
-              >
-                اجرای یکپارچه‌سازی و پاکسازی دوره
-              </button>
-              <button
-                type="button"
-                onClick={() => setCleanupTargetPeriod(null)}
-                className="px-5 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold hover:bg-zinc-800 transition-colors cursor-pointer"
-              >
-                انصراف
-              </button>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleExecuteSmartCleanup}
+                  disabled={!canConfirmDelete}
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all shadow cursor-pointer ${
+                    canConfirmDelete
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                      : 'bg-zinc-850 text-zinc-600 cursor-not-allowed'
+                  }`}
+                >
+                  حذف دوره
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCleanupTargetPeriod(null)}
+                  className="px-5 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );

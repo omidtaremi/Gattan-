@@ -16,7 +16,8 @@ import {
   type PublicMenuProduct,
 } from '../shared/digitalMenu';
 import { fetchPublicDigitalMenu } from '../services/postgresSyncService';
-import { loadDatabaseAsync } from '../db';
+import { getLocalBranches, loadDatabaseAsync } from '../db';
+import { DEFAULT_BRANCH_ID } from '../shared/branches';
 import { toPersianDigits } from '../utils/persianUtils';
 
 const LANG_STORAGE_KEY = 'gatan_public_menu_lang';
@@ -226,7 +227,7 @@ function getDietaryLabel(id: string, lang: DigitalMenuLanguage): string {
   return lang === 'en' ? found.labelEn : found.labelFa;
 }
 
-export default function PublicDigitalMenu() {
+export default function PublicDigitalMenu({ branchParam }: { branchParam?: string } = {}) {
   const [menu, setMenu] = useState<PublicDigitalMenuPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +247,7 @@ export default function PublicDigitalMenu() {
     setLoading(true);
     setError(null);
     try {
-      const apiRes = await fetchPublicDigitalMenu();
+      const apiRes = await fetchPublicDigitalMenu(branchParam);
       if (apiRes.ok && apiRes.mode === 'postgres' && apiRes.menu) {
         setMenu(apiRes.menu);
         if (!getSavedLanguage() && apiRes.menu.appearance.defaultLanguage) {
@@ -257,7 +258,15 @@ export default function PublicDigitalMenu() {
       }
 
       // Local preview / offline fallback using the exact same sanitized public projection
-      const localDb = await loadDatabaseAsync();
+      const localBranches = getLocalBranches();
+      const needle = String(branchParam || '').trim().toLowerCase();
+      const matchedBranch = needle
+        ? localBranches.find(
+            (b) => b.id.toLowerCase() === needle || b.slug.toLowerCase() === needle
+          )
+        : localBranches.find((b) => b.isDefault) || localBranches[0];
+      const targetBranchId = matchedBranch?.id || DEFAULT_BRANCH_ID;
+      const localDb = await loadDatabaseAsync(targetBranchId);
       const localMenu = buildPublicDigitalMenuPayload({
         periods: localDb.periods,
         productCategories: localDb.productCategories,
@@ -273,7 +282,7 @@ export default function PublicDigitalMenu() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [branchParam]);
 
   useEffect(() => {
     loadMenu();

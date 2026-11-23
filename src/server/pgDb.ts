@@ -29,15 +29,31 @@ import {
   type ErpProductLike,
 } from '../shared/digitalMenu.ts';
 
+import {
+  DEFAULT_BRANCHES,
+  DEFAULT_BRANCH_ID,
+  SECOND_BRANCH_ID,
+  buildSafeBranchDbName,
+  canAccessBranch,
+  isValidPgDatabaseName,
+  normalizeAllowedBranches,
+  normalizeBranchSlug,
+  type BranchDefinition,
+} from '../shared/branches.ts';
+
 const CHUNK_SIZE = 5000;
 const SESSION_TTL_HOURS = 24 * 7; // 7 days
 const PUBLIC_MENU_CACHE_TTL_MS = 30_000;
 const PUBLIC_MENU_RELEVANT_KEYS = new Set(['periods', 'productCategories', 'products', 'digitalMenu']);
 
-let cachedPublicMenu: { payload: PublicDigitalMenuPayload; expiresAt: number } | null = null;
+const cachedPublicMenus = new Map<string, { payload: PublicDigitalMenuPayload; expiresAt: number }>();
 
-export function invalidatePublicDigitalMenuCache(): void {
-  cachedPublicMenu = null;
+export function invalidatePublicDigitalMenuCache(branchId?: string): void {
+  if (branchId) {
+    cachedPublicMenus.delete(branchId);
+  } else {
+    cachedPublicMenus.clear();
+  }
 }
 
 function safePgJsonStringify(value: unknown): string {
@@ -52,9 +68,15 @@ export interface PgUserPublic {
   name: string;
   role: string;
   permissions: string[];
+  allowedBranches: string[];
   is2FA: boolean;
   isActive: boolean;
   secretCode?: string;
+}
+
+export interface PgBranchStatus extends BranchDefinition {
+  databaseExists?: boolean;
+  dbSizeBytes?: number;
 }
 
 export interface PgDbStatus {
@@ -63,6 +85,8 @@ export interface PgDbStatus {
   connected: boolean;
   dbVersion?: string;
   databaseName?: string;
+  branchId?: string;
+  branchName?: string;
   dbSizeBytes?: number;
   isEmpty?: boolean;
   initializedByUser?: boolean;
@@ -118,6 +142,9 @@ const DEFAULT_SEED_USERS = [
 ];
 
 let pool: Pool | null = null;
+let primaryDbName = 'gatan_db';
+const branchPools = new Map<string, Pool>();
+const branchSchemaReady = new Set<string>();
 let isPgConfigured = false;
 let isPgReady = false;
 let lastPgError: string | null = null;
@@ -142,14 +169,24 @@ function hasPostgresEnv(): boolean {
   return false;
 }
 
-function createPgPool(): Pool {
+function createPgPool(overrideDbName?: string): Pool {
   const sslEnabled =
     process.env.PGSSLMODE === 'require' || process.env.DATABASE_SSL === 'true';
 
+  if (overrideDbName && !isValidPgDatabaseName(overrideDbName)) {
+    throw new Error('نام پایگاه داده شعبه نامعتبر است.');
+  }
+
   if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim() !== '') {
+    let connStr = process.env.DATABASE_URL.trim();
+    if (overrideDbName) {
+      const parsed = new URL(connStr);
+      parsed.pathname = `/${overrideDbName}`;
+      connStr = parsed.toString();
+    }
     return new Pool({
-      connectionString: process.env.DATABASE_URL.trim(),
-      max: 20,
+      connectionString: connStr,
+      max: overrideDbName ? 12 : 20,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
       ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
@@ -161,12 +198,137 @@ function createPgPool(): Pool {
     port: Number(process.env.PGPORT || 5432),
     user: process.env.PGUSER || 'postgres',
     password: process.env.PGPASSWORD || '',
-    database: process.env.PGDATABASE || 'gatan_db',
-    max: 20,
+    database: overrideDbName || process.env.PGDATABASE || 'gatan_db',
+    max: overrideDbName ? 12 : 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
   });
+}
+
+function mapBranchRow(row: any): BranchDefinition {
+  return {
+    id: String(row.id),
+    slug: String(row.slug),
+    name: String(row.name),
+    dbName: String(row.db_name),
+    isDefault: Boolean(row.is_default),
+    isActive: row.is_active !== false,
+    address: row.address ? String(row.address) : undefined,
+    phone: row.phone ? String(row.phone) : undefined,
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : row.created_at
+        ? String(row.created_at)
+        : undefined,
+  };
+}
+
+function readSchemaDdl(): string {
+  const schemaPath = path.resolve(process.cwd(), 'db', 'schema.sql');
+  if (!fs.existsSync(schemaPath)) return '';
+  return fs.readFileSync(schemaPath, 'utf8');
+}
+
+async function ensureBranchDatabaseProvisioned(dbName: string): Promise<Pool> {
+  if (!pool) throw new Error('پایگاه داده اصلی PostgreSQL متصل نیست.');
+  if (!isValidPgDatabaseName(dbName)) {
+    throw new Error('نام پایگاه داده شعبه معتبر نیست (فقط حروف کوچک انگلیسی، اعداد و زیرخط مجاز است).');
+  }
+  if (dbName === primaryDbName) {
+    return pool;
+  }
+
+  let targetPool = branchPools.get(dbName);
+  if (!targetPool) {
+    const { rows } = await pool.query<{ exists: number }>(
+      'SELECT 1 AS exists FROM pg_database WHERE datname = $1 LIMIT 1',
+      [dbName]
+    );
+    if (rows.length === 0) {
+      try {
+        // Safe identifier: strictly validated against ^[a-z][a-z0-9_]{1,48}$ above
+        await pool.query(`CREATE DATABASE "${dbName}"`);
+        console.log(`[PostgreSQL] Created isolated branch database: ${dbName}`);
+      } catch (err: any) {
+        if (err?.code === '42501') {
+          throw new Error(
+            `کاربر پایگاه داده مجوز ساخت دیتابیس جدید (CREATEDB) ندارد. روی سرور Ubuntu دستور زیر را اجرا کنید: sudo -u postgres psql -c "ALTER USER ${process.env.PGUSER || 'gatan_user'} CREATEDB;" و یا دیتابیس ${dbName} را بسازید.`
+          );
+        }
+        if (err?.code !== '42P04') {
+          throw err;
+        }
+      }
+    }
+
+    targetPool = createPgPool(dbName);
+    targetPool.on('error', (poolErr) => {
+      console.warn(`[PostgreSQL:${dbName}] Pool background notice:`, poolErr?.message || String(poolErr));
+    });
+    branchPools.set(dbName, targetPool);
+  }
+
+  if (!branchSchemaReady.has(dbName)) {
+    const ddl = readSchemaDdl();
+    if (ddl) {
+      const client = await targetPool.connect();
+      try {
+        await client.query(ddl);
+        branchSchemaReady.add(dbName);
+      } finally {
+        client.release();
+      }
+    } else {
+      branchSchemaReady.add(dbName);
+    }
+  }
+
+  return targetPool;
+}
+
+export async function resolveBranchRecord(branchIdOrSlug?: string): Promise<BranchDefinition> {
+  if (!pool) {
+    return {
+      ...DEFAULT_BRANCHES[0],
+      dbName: primaryDbName,
+    };
+  }
+  const clean = String(branchIdOrSlug || '').trim();
+  if (!clean) {
+    const { rows } = await pool.query(
+      'SELECT * FROM app_branches WHERE is_default = TRUE ORDER BY created_at ASC LIMIT 1'
+    );
+    if (rows[0]) return mapBranchRow(rows[0]);
+    return { ...DEFAULT_BRANCHES[0], dbName: primaryDbName };
+  }
+
+  const { rows } = await pool.query(
+    'SELECT * FROM app_branches WHERE id = $1 OR slug = $1 LIMIT 1',
+    [clean]
+  );
+  if (rows[0]) {
+    return mapBranchRow(rows[0]);
+  }
+  if (clean === DEFAULT_BRANCH_ID) {
+    return { ...DEFAULT_BRANCHES[0], dbName: primaryDbName };
+  }
+  throw new Error('شعبه مورد نظر یافت نشد.');
+}
+
+async function getBranchContext(
+  branchIdOrSlug?: string
+): Promise<{ targetPool: Pool; branch: BranchDefinition }> {
+  if (!pool) {
+    throw new Error('پایگاه داده PostgreSQL متصل نیست.');
+  }
+  const branch = await resolveBranchRecord(branchIdOrSlug);
+  if (branch.isDefault || branch.dbName === primaryDbName) {
+    return { targetPool: pool, branch };
+  }
+  const targetPool = await ensureBranchDatabaseProvisioned(branch.dbName);
+  return { targetPool, branch };
 }
 
 function hashToken(token: string): string {
@@ -180,13 +342,16 @@ function isBcryptHash(val: string): boolean {
 
 function mapUserRow(row: any, includeSecret = false): PgUserPublic {
   const perms = Array.isArray(row.permissions) ? row.permissions : [];
+  const normalizedPerms = normalizePermissions(perms);
+  const roleStr = String(row.role);
   const mapped: PgUserPublic = {
     id: String(row.id),
     username: String(row.username),
     fullName: String(row.full_name),
     name: String(row.full_name),
-    role: String(row.role),
-    permissions: normalizePermissions(perms),
+    role: roleStr,
+    permissions: normalizedPerms,
+    allowedBranches: normalizeAllowedBranches(row.allowed_branches, roleStr, normalizedPerms),
     is2FA: Boolean(row.is_2fa),
     isActive: row.is_active !== false,
   };
@@ -214,6 +379,17 @@ export function isPostgresModeActive(): boolean {
 
 export function getPgPool(): Pool | null {
   return isPostgresModeActive() ? pool : null;
+}
+
+export async function getPgPoolAsync(branchIdOrSlug?: string): Promise<Pool | null> {
+  if (!isPostgresModeActive() || !pool) return null;
+  if (!branchIdOrSlug || branchIdOrSlug === DEFAULT_BRANCH_ID) return pool;
+  try {
+    const ctx = await getBranchContext(branchIdOrSlug);
+    return ctx.targetPool;
+  } catch {
+    return null;
+  }
 }
 
 export async function initPostgres(): Promise<void> {
@@ -318,9 +494,37 @@ export async function initPostgres(): Promise<void> {
         );
       }
 
+      const { rows: dbNameRows } = await client.query<{ db_name: string }>(
+        'SELECT current_database() AS db_name'
+      );
+      if (dbNameRows[0]?.db_name) {
+        primaryDbName = String(dbNameRows[0].db_name);
+        branchSchemaReady.add(primaryDbName);
+      }
+
+      // Seed default two branches in app_branches (Branch 1 keeps primaryDbName with 0 data loss)
+      await client.query(
+        `INSERT INTO app_branches (id, slug, name, db_name, is_default, is_active)
+         VALUES ($1, $2, $3, $4, TRUE, TRUE)
+         ON CONFLICT (id) DO UPDATE
+         SET db_name = EXCLUDED.db_name, is_default = TRUE`,
+        [DEFAULT_BRANCH_ID, 'branch-1', 'شعبه ۱ (مرکزی)', primaryDbName]
+      );
+      await client.query(
+        `INSERT INTO app_branches (id, slug, name, db_name, is_default, is_active)
+         VALUES ($1, $2, $3, $4, FALSE, TRUE)
+         ON CONFLICT (id) DO NOTHING`,
+        [SECOND_BRANCH_ID, 'branch-2', 'شعبه ۲', 'gatan_branch_2']
+      );
+
       isPgReady = true;
       lastPgError = null;
-      console.log('[PostgreSQL] Connected and schema initialized successfully.');
+      console.log(`[PostgreSQL] Connected (${primaryDbName}) and schema initialized successfully.`);
+
+      // Opportunistically provision second branch DB if missing (non-blocking if user lacks CREATEDB)
+      ensureBranchDatabaseProvisioned('gatan_branch_2').catch((branchErr: any) => {
+        console.warn('[PostgreSQL] Notice initializing gatan_branch_2:', branchErr?.message || branchErr);
+      });
     } finally {
       client.release();
     }
@@ -343,7 +547,253 @@ export async function initPostgres(): Promise<void> {
   }
 }
 
-export async function getPostgresStatus(): Promise<PgDbStatus> {
+export async function getPublicBranchesFromPg(): Promise<
+  Array<{ id: string; slug: string; name: string; isDefault: boolean; isActive: boolean }>
+> {
+  if (!pool) return [];
+  const { rows } = await pool.query(
+    `SELECT id, slug, name, is_default, is_active
+     FROM app_branches
+     WHERE is_active = TRUE
+     ORDER BY is_default DESC, created_at ASC`
+  );
+  return rows.map((r) => ({
+    id: String(r.id),
+    slug: String(r.slug),
+    name: String(r.name),
+    isDefault: Boolean(r.is_default),
+    isActive: r.is_active !== false,
+  }));
+}
+
+export async function getBranchesWithStatusFromPg(actor: AuthUserLike): Promise<PgBranchStatus[]> {
+  if (!pool) return [];
+  const adminView = isAdminUser(actor);
+  const { rows } = await pool.query(
+    `SELECT * FROM app_branches
+     ORDER BY is_default DESC, created_at ASC`
+  );
+  const allBranches = rows.map(mapBranchRow);
+  const visibleBranches = adminView
+    ? allBranches
+    : allBranches.filter((b) => b.isActive && canAccessBranch(actor, b.id));
+
+  if (!adminView || visibleBranches.length === 0) {
+    return visibleBranches;
+  }
+
+  const dbNames = visibleBranches.map((b) => b.dbName);
+  const { rows: dbRows } = await pool.query<{ datname: string; size_bytes: string }>(
+    `SELECT datname, pg_database_size(datname)::text AS size_bytes
+     FROM pg_database
+     WHERE datname = ANY($1::text[])`,
+    [dbNames]
+  );
+  const sizeMap = new Map<string, number>();
+  for (const r of dbRows) {
+    sizeMap.set(String(r.datname), Number(r.size_bytes || 0));
+  }
+
+  return visibleBranches.map((b) => ({
+    ...b,
+    databaseExists: sizeMap.has(b.dbName),
+    dbSizeBytes: sizeMap.get(b.dbName) ?? 0,
+  }));
+}
+
+export async function createBranchAdminInPg(
+  actor: AuthUserLike,
+  input: {
+    name: string;
+    slug?: string;
+    dbName?: string;
+    address?: string;
+    phone?: string;
+  },
+  ipAddress?: string
+): Promise<PgBranchStatus> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  const cleanName = String(input.name || '').trim();
+  if (!cleanName) throw new Error('نام شعبه الزامی است.');
+
+  const { rows: existingRows } = await pool.query('SELECT id, slug, db_name FROM app_branches');
+  let maxNum = 2;
+  const usedIds = new Set<string>();
+  const usedSlugs = new Set<string>();
+  const usedDbNames = new Set<string>();
+  for (const r of existingRows) {
+    usedIds.add(String(r.id));
+    usedSlugs.add(String(r.slug));
+    usedDbNames.add(String(r.db_name));
+    const m = String(r.id).match(/^branch-(\d+)$/);
+    if (m) maxNum = Math.max(maxNum, Number(m[1]));
+  }
+
+  let seq = maxNum + 1;
+  let newId = `branch-${seq}`;
+  while (usedIds.has(newId)) {
+    seq++;
+    newId = `branch-${seq}`;
+  }
+
+  const baseSlug = normalizeBranchSlug(input.slug || '', newId);
+  let finalSlug = baseSlug;
+  let slugSuffix = 2;
+  while (usedSlugs.has(finalSlug)) {
+    finalSlug = `${baseSlug}-${slugSuffix++}`;
+  }
+
+  let finalDbName = String(input.dbName || '').trim().toLowerCase();
+  if (finalDbName) {
+    if (!isValidPgDatabaseName(finalDbName)) {
+      throw new Error('نام دیتابیس شعبه باید با حرف انگلیسی کوچک شروع شود و فقط شامل حروف کوچک انگلیسی، اعداد و _ باشد.');
+    }
+    if (usedDbNames.has(finalDbName)) {
+      throw new Error('نام دیتابیس انتخاب‌شده قبلاً برای شعبه دیگری ثبت شده است.');
+    }
+  } else {
+    finalDbName = buildSafeBranchDbName(seq);
+    while (usedDbNames.has(finalDbName)) {
+      seq++;
+      finalDbName = buildSafeBranchDbName(seq);
+    }
+  }
+
+  // Provision physical PostgreSQL database and initialize schema first
+  await ensureBranchDatabaseProvisioned(finalDbName);
+
+  const { rows } = await pool.query(
+    `INSERT INTO app_branches (id, slug, name, db_name, is_default, is_active, address, phone)
+     VALUES ($1, $2, $3, $4, FALSE, TRUE, $5, $6)
+     RETURNING *`,
+    [
+      newId,
+      finalSlug,
+      cleanName,
+      finalDbName,
+      input.address ? String(input.address).trim().slice(0, 250) : null,
+      input.phone ? String(input.phone).trim().slice(0, 60) : null,
+    ]
+  );
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'BRANCH_CREATE',
+    'branches',
+    1,
+    { branchId: newId, name: cleanName, dbName: finalDbName, slug: finalSlug },
+    ipAddress
+  );
+
+  const created = mapBranchRow(rows[0]);
+  return { ...created, databaseExists: true, dbSizeBytes: 0 };
+}
+
+export async function updateBranchAdminInPg(
+  actor: AuthUserLike,
+  branchId: string,
+  input: {
+    name?: string;
+    address?: string;
+    phone?: string;
+    isActive?: boolean;
+  },
+  ipAddress?: string
+): Promise<BranchDefinition> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  const { rows: existingRows } = await pool.query(
+    'SELECT * FROM app_branches WHERE id = $1 LIMIT 1',
+    [branchId]
+  );
+  const existing = existingRows[0];
+  if (!existing) throw new Error('شعبه مورد نظر یافت نشد.');
+
+  const nextName = input.name !== undefined ? String(input.name).trim() : String(existing.name);
+  if (!nextName) throw new Error('نام شعبه نمی‌تواند خالی باشد.');
+
+  const nextActive = input.isActive !== undefined ? Boolean(input.isActive) : existing.is_active !== false;
+  if (existing.is_default && !nextActive) {
+    throw new Error('شعبه پیش‌فرض (مرکزی) را نمی‌توان غیرفعال کرد.');
+  }
+
+  const nextAddress =
+    input.address !== undefined
+      ? String(input.address).trim().slice(0, 250) || null
+      : existing.address;
+  const nextPhone =
+    input.phone !== undefined
+      ? String(input.phone).trim().slice(0, 60) || null
+      : existing.phone;
+
+  const { rows } = await pool.query(
+    `UPDATE app_branches
+     SET name = $1,
+         address = $2,
+         phone = $3,
+         is_active = $4,
+         updated_at = NOW()
+     WHERE id = $5
+     RETURNING *`,
+    [nextName, nextAddress, nextPhone, nextActive, branchId]
+  );
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'BRANCH_UPDATE',
+    'branches',
+    1,
+    { branchId, name: nextName, isActive: nextActive },
+    ipAddress
+  );
+
+  invalidatePublicDigitalMenuCache(branchId);
+  return mapBranchRow(rows[0]);
+}
+
+export async function deleteBranchAdminInPg(
+  actor: AuthUserLike,
+  branchId: string,
+  ipAddress?: string
+): Promise<void> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  const { rows: existingRows } = await pool.query(
+    'SELECT * FROM app_branches WHERE id = $1 LIMIT 1',
+    [branchId]
+  );
+  const existing = existingRows[0];
+  if (!existing) throw new Error('شعبه مورد نظر یافت نشد.');
+  if (existing.is_default) {
+    throw new Error('شعبه اصلی (مرکزی) قابل حذف نیست.');
+  }
+
+  const dbName = String(existing.db_name);
+  const existingPool = branchPools.get(dbName);
+  if (existingPool) {
+    branchPools.delete(dbName);
+    branchSchemaReady.delete(dbName);
+    await existingPool.end().catch(() => {});
+  }
+
+  await pool.query('DELETE FROM app_branches WHERE id = $1', [branchId]);
+  invalidatePublicDigitalMenuCache(branchId);
+
+  await logAuditAction(
+    pool,
+    actor.id || null,
+    actor.username || 'admin',
+    'BRANCH_DELETE',
+    'branches',
+    1,
+    { branchId, name: existing.name, dbName },
+    ipAddress
+  );
+}
+
+export async function getPostgresStatus(branchId?: string): Promise<PgDbStatus> {
   if (!isPgConfigured) {
     return {
       mode: 'local',
@@ -362,21 +812,22 @@ export async function getPostgresStatus(): Promise<PgDbStatus> {
   }
 
   try {
+    const { targetPool, branch } = await getBranchContext(branchId);
     const [verRes, sizeRes, sessRes, usersRes, collRes, metaRes] = await Promise.all([
-      pool.query<{ version: string; db_name: string }>(
+      targetPool.query<{ version: string; db_name: string }>(
         'SELECT version() AS version, current_database() AS db_name'
       ),
-      pool.query<{ size_bytes: string }>(
+      targetPool.query<{ size_bytes: string }>(
         'SELECT pg_database_size(current_database())::text AS size_bytes'
       ),
       pool.query<{ cnt: string }>(
         'SELECT COUNT(*)::text AS cnt FROM app_sessions WHERE expires_at > NOW()'
       ),
       pool.query<{ cnt: string }>('SELECT COUNT(*)::text AS cnt FROM app_users'),
-      pool.query<{ collection_key: string; item_count: number }>(
+      targetPool.query<{ collection_key: string; item_count: number }>(
         'SELECT collection_key, item_count FROM app_collections'
       ),
-      pool.query<{ meta_value: any }>(
+      targetPool.query<{ meta_value: any }>(
         "SELECT meta_value FROM app_metadata WHERE meta_key = 'seed_state'"
       ),
     ]);
@@ -396,6 +847,8 @@ export async function getPostgresStatus(): Promise<PgDbStatus> {
       connected: true,
       dbVersion: verRes.rows[0]?.version?.split(' ').slice(0, 2).join(' ') || 'PostgreSQL',
       databaseName: verRes.rows[0]?.db_name,
+      branchId: branch.id,
+      branchName: branch.name,
       dbSizeBytes: Number(sizeRes.rows[0]?.size_bytes || 0),
       isEmpty: collRes.rows.length === 0,
       initializedByUser: Boolean(seedState?.initializedByUser),
@@ -404,23 +857,26 @@ export async function getPostgresStatus(): Promise<PgDbStatus> {
       collectionCounts,
     };
   } catch (err: any) {
-    isPgReady = false;
-    lastPgError = err?.message || String(err);
+    const message = err?.message || String(err);
+    if (!branchId || branchId === DEFAULT_BRANCH_ID) {
+      isPgReady = false;
+      lastPgError = message;
+    }
     return {
       mode: 'postgres',
       configured: true,
       connected: false,
-      error: lastPgError || 'Connection check failed',
+      error: message || 'Connection check failed',
     };
   }
 }
 
 export async function getPublicUsersFromPg(): Promise<
-  Array<{ id: string; username: string; fullName: string; role: string; is2FA: boolean }>
+  Array<{ id: string; username: string; fullName: string; role: string; is2FA: boolean; allowedBranches: string[] }>
 > {
   if (!pool) return [];
   const { rows } = await pool.query(
-    `SELECT id, username, full_name, role, is_2fa
+    `SELECT id, username, full_name, role, permissions, allowed_branches, is_2fa
      FROM app_users
      WHERE is_active = TRUE
      ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, created_at ASC`
@@ -431,6 +887,11 @@ export async function getPublicUsersFromPg(): Promise<
     fullName: String(r.full_name),
     role: String(r.role),
     is2FA: Boolean(r.is_2fa),
+    allowedBranches: normalizeAllowedBranches(
+      r.allowed_branches,
+      String(r.role),
+      Array.isArray(r.permissions) ? r.permissions : []
+    ),
   }));
 }
 
@@ -562,6 +1023,7 @@ export async function createUserAdminInPg(
     fullName: string;
     role: string;
     permissions: string[];
+    allowedBranches?: string[];
     password: string;
     is2FA?: boolean;
     secretCode?: string;
@@ -580,17 +1042,20 @@ export async function createUserAdminInPg(
   const id = input.id?.trim() || `usr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const pwHash = await bcrypt.hash(input.password, 10);
   const perms = normalizePermissions(input.permissions);
+  const roleName = input.role || 'کاربر انبار';
+  const allowedBranches = normalizeAllowedBranches(input.allowedBranches, roleName, perms);
 
   const { rows } = await pool.query(
-    `INSERT INTO app_users (id, username, full_name, role, permissions, password_hash, is_2fa, secret_code, is_active)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+    `INSERT INTO app_users (id, username, full_name, role, permissions, allowed_branches, password_hash, is_2fa, secret_code, is_active)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)
      RETURNING *`,
     [
       id,
       cleanUsername,
       input.fullName.trim() || cleanUsername,
-      input.role || 'کاربر انبار',
+      roleName,
       JSON.stringify(perms),
+      JSON.stringify(allowedBranches),
       pwHash,
       Boolean(input.is2FA),
       String(input.secretCode || '123456'),
@@ -605,7 +1070,7 @@ export async function createUserAdminInPg(
     'USER_CREATE',
     'users',
     1,
-    { targetUsername: cleanUsername, role: input.role, permissions: perms },
+    { targetUsername: cleanUsername, role: roleName, permissions: perms, allowedBranches },
     ipAddress
   );
 
@@ -620,6 +1085,7 @@ export async function updateUserAdminInPg(
     fullName?: string;
     role?: string;
     permissions?: string[];
+    allowedBranches?: string[];
     password?: string;
     is2FA?: boolean;
     secretCode?: string;
@@ -640,6 +1106,10 @@ export async function updateUserAdminInPg(
     input.permissions !== undefined
       ? normalizePermissions(input.permissions)
       : existing.permissions;
+  const nextAllowedBranches =
+    input.allowedBranches !== undefined
+      ? normalizeAllowedBranches(input.allowedBranches, nextRole, nextPerms)
+      : normalizeAllowedBranches(existing.allowed_branches, nextRole, nextPerms);
   const nextIs2FA = input.is2FA !== undefined ? Boolean(input.is2FA) : existing.is_2fa;
   const nextSecret = input.secretCode !== undefined ? String(input.secretCode) : existing.secret_code;
   const nextIsActive = input.isActive !== undefined ? Boolean(input.isActive) : existing.is_active;
@@ -655,18 +1125,20 @@ export async function updateUserAdminInPg(
          full_name = $2,
          role = $3,
          permissions = $4::jsonb,
-         password_hash = $5,
-         is_2fa = $6,
-         secret_code = $7,
-         is_active = $8,
+         allowed_branches = $5::jsonb,
+         password_hash = $6,
+         is_2fa = $7,
+         secret_code = $8,
+         is_active = $9,
          updated_at = NOW()
-     WHERE id = $9
+     WHERE id = $10
      RETURNING *`,
     [
       nextUsername,
       nextFullName,
       nextRole,
       JSON.stringify(nextPerms),
+      JSON.stringify(nextAllowedBranches),
       nextPasswordHash,
       nextIs2FA,
       nextSecret,
@@ -687,7 +1159,7 @@ export async function updateUserAdminInPg(
     'USER_UPDATE',
     'users',
     1,
-    { targetUserId: userId, targetUsername: nextUsername, role: nextRole },
+    { targetUserId: userId, targetUsername: nextUsername, role: nextRole, allowedBranches: nextAllowedBranches },
     ipAddress
   );
 
@@ -1205,9 +1677,10 @@ async function applyRecordPatchInTx(
   };
 }
 
-export async function getCollectionVersionsFromPg(): Promise<Record<string, number>> {
+export async function getCollectionVersionsFromPg(branchId?: string): Promise<Record<string, number>> {
   if (!pool) return {};
-  const { rows } = await pool.query<{ collection_key: string; version: string }>(
+  const { targetPool } = await getBranchContext(branchId);
+  const { rows } = await targetPool.query<{ collection_key: string; version: string }>(
     'SELECT collection_key, version::text AS version FROM app_collections'
   );
   const versions: Record<string, number> = {};
@@ -1219,7 +1692,8 @@ export async function getCollectionVersionsFromPg(): Promise<Record<string, numb
 
 export async function loadCollectionsFromPg(
   actor: AuthUserLike,
-  keys?: string[]
+  keys?: string[],
+  branchId?: string
 ): Promise<{
   collections: Record<string, unknown>;
   versions: Record<string, number>;
@@ -1229,13 +1703,14 @@ export async function loadCollectionsFromPg(
     return { collections: {}, versions: {}, isEmpty: true };
   }
 
+  const { targetPool } = await getBranchContext(branchId);
   const filterKeys = Array.isArray(keys) && keys.length > 0 ? keys : null;
   const { rows } = filterKeys
-    ? await pool.query(
+    ? await targetPool.query(
         'SELECT collection_key, data, is_chunked, version::text AS version FROM app_collections WHERE collection_key = ANY($1)',
         [filterKeys]
       )
-    : await pool.query(
+    : await targetPool.query(
         'SELECT collection_key, data, is_chunked, version::text AS version FROM app_collections'
       );
 
@@ -1260,7 +1735,7 @@ export async function loadCollectionsFromPg(
 
   // Batch-load all record-backed collections in ONE query instead of N+1
   if (recordStoreKeys.length > 0) {
-    const { rows: recRows } = await pool.query<{ collection_key: string; data: unknown }>(
+    const { rows: recRows } = await targetPool.query<{ collection_key: string; data: unknown }>(
       `SELECT collection_key, data
        FROM app_collection_records
        WHERE collection_key = ANY($1::text[])
@@ -1275,7 +1750,7 @@ export async function loadCollectionsFromPg(
 
   // Batch-load any legacy chunked collections in ONE query
   if (chunkedKeys.length > 0) {
-    const { rows: chunkRows } = await pool.query<{ collection_key: string; data: unknown[] }>(
+    const { rows: chunkRows } = await targetPool.query<{ collection_key: string; data: unknown[] }>(
       `SELECT collection_key, data
        FROM app_collection_chunks
        WHERE collection_key = ANY($1::text[])
@@ -1292,7 +1767,7 @@ export async function loadCollectionsFromPg(
     }
   }
 
-  // Always inject live sanitized users and roles lists from app_users / app_roles
+  // Always inject live sanitized users and roles lists from CENTRAL primary database
   if (!filterKeys || filterKeys.includes('users')) {
     const { rows: userRows } = await pool.query(
       `SELECT * FROM app_users ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, created_at ASC`
@@ -1308,10 +1783,10 @@ export async function loadCollectionsFromPg(
     collections.roles = await getRolesAdminFromPg();
   }
 
-  // Check if app_collections overall is empty
+  // Check if app_collections overall is empty in target branch DB
   let isEmpty = rows.length === 0;
   if (filterKeys) {
-    const { rows: totalRows } = await pool.query<{ cnt: string }>(
+    const { rows: totalRows } = await targetPool.query<{ cnt: string }>(
       'SELECT COUNT(*)::text AS cnt FROM app_collections'
     );
     isEmpty = Number(totalRows[0]?.cnt || 0) === 0;
@@ -1320,11 +1795,34 @@ export async function loadCollectionsFromPg(
   return { collections, versions, isEmpty };
 }
 
+export async function loadBranchCopySourceFromPg(
+  actor: AuthUserLike,
+  sourceBranchId: string
+): Promise<{
+  branch: BranchDefinition;
+  collections: Record<string, unknown>;
+  isEmpty: boolean;
+}> {
+  if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  const { branch } = await getBranchContext(sourceBranchId);
+  if (!canAccessBranch(actor, branch.id)) {
+    throw new Error('شما مجوز دسترسی به داده‌های این شعبه را ندارید.');
+  }
+  const { collections, isEmpty } = await loadCollectionsFromPg(actor, undefined, branch.id);
+  // Strip auth collections from copy payload
+  delete collections.users;
+  delete collections.roles;
+  return { branch, collections, isEmpty };
+}
+
 export async function exportFullDatabaseFromPg(
   actor: AuthUserLike,
-  ipAddress?: string
+  ipAddress?: string,
+  branchId?: string
 ): Promise<{
   exportedAt: string;
+  branchId: string;
+  branchName: string;
   database: Record<string, unknown>;
 }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
@@ -1332,7 +1830,8 @@ export async function exportFullDatabaseFromPg(
     throw new Error('فقط مدیر ارشد مجاز به دریافت فایل کامل پشتیبان پایگاه داده است.');
   }
 
-  const { collections } = await loadCollectionsFromPg(actor);
+  const { targetPool, branch } = await getBranchContext(branchId);
+  const { collections } = await loadCollectionsFromPg(actor, undefined, branch.id);
   const { rows: userRows } = await pool.query(
     `SELECT * FROM app_users ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, created_at ASC`
   );
@@ -1349,18 +1848,20 @@ export async function exportFullDatabaseFromPg(
   };
 
   await logAuditAction(
-    pool,
+    targetPool,
     actor.id || null,
     actor.username || 'admin',
     'BACKUP_EXPORT',
     '*',
     Object.keys(database).length,
-    { mode: 'postgres_json_backup' },
+    { mode: 'postgres_json_backup', branchId: branch.id, dbName: branch.dbName },
     ipAddress
   );
 
   return {
     exportedAt: new Date().toISOString(),
+    branchId: branch.id,
+    branchName: branch.name,
     database,
   };
 }
@@ -1370,7 +1871,8 @@ export async function syncCollectionsDeltaToPg(
   changes: Record<string, unknown>,
   baseVersions: Record<string, number>,
   ipAddress?: string,
-  recordPatches?: Record<string, RecordPatchInput>
+  recordPatches?: Record<string, RecordPatchInput>,
+  branchId?: string
 ): Promise<{
   ok: boolean;
   versions: Record<string, number>;
@@ -1389,6 +1891,7 @@ export async function syncCollectionsDeltaToPg(
     };
   }
 
+  const { targetPool, branch } = await getBranchContext(branchId);
   const safeChanges = changes && typeof changes === 'object' ? changes : {};
   const safePatches = recordPatches && typeof recordPatches === 'object' ? recordPatches : {};
 
@@ -1407,7 +1910,7 @@ export async function syncCollectionsDeltaToPg(
   const candidateKeys = Array.from(candidateKeySet);
 
   if (candidateKeys.length === 0) {
-    const versions = await getCollectionVersionsFromPg();
+    const versions = await getCollectionVersionsFromPg(branch.id);
     return { ok: true, versions, conflicts: [], conflictedCollections: {} };
   }
 
@@ -1424,7 +1927,7 @@ export async function syncCollectionsDeltaToPg(
     };
   }
 
-  const client = await pool.connect();
+  const client = await targetPool.connect();
   try {
     await client.query('BEGIN');
 
@@ -1517,17 +2020,17 @@ export async function syncCollectionsDeltaToPg(
     await client.query('COMMIT');
 
     if (candidateKeys.some((k) => PUBLIC_MENU_RELEVANT_KEYS.has(k))) {
-      invalidatePublicDigitalMenuCache();
+      invalidatePublicDigitalMenuCache(branch.id);
     }
 
     // Fetch latest data for any conflicted keys so the client can auto-reconcile
     let conflictedCollections: Record<string, unknown> = {};
     if (conflicts.length > 0) {
-      const loaded = await loadCollectionsFromPg(actor, conflicts);
+      const loaded = await loadCollectionsFromPg(actor, conflicts, branch.id);
       conflictedCollections = loaded.collections;
     }
 
-    const allVersions = await getCollectionVersionsFromPg();
+    const allVersions = await getCollectionVersionsFromPg(branch.id);
     return {
       ok: conflicts.length === 0,
       versions: { ...allVersions, ...updatedVersions },
@@ -1556,6 +2059,8 @@ async function upsertImportedUsersInTx(
     const perms = normalizePermissions(
       Array.isArray(rawUser.permissions) ? rawUser.permissions : ['*']
     );
+    const roleStr = String(rawUser.role || 'کاربر انبار');
+    const allowedBranches = normalizeAllowedBranches(rawUser.allowedBranches, roleStr, perms);
 
     const existingByUsername = await client.query<{ id: string; password_hash: string }>(
       'SELECT id, password_hash FROM app_users WHERE username = $1 LIMIT 1',
@@ -1578,16 +2083,18 @@ async function upsertImportedUsersInTx(
          SET full_name = $1,
              role = $2,
              permissions = $3::jsonb,
-             password_hash = $4,
-             is_2fa = $5,
-             secret_code = $6,
-             is_active = $7,
+             allowed_branches = $4::jsonb,
+             password_hash = $5,
+             is_2fa = $6,
+             secret_code = $7,
+             is_active = $8,
              updated_at = NOW()
-         WHERE username = $8`,
+         WHERE username = $9`,
         [
           String(rawUser.fullName || rawUser.name || uname),
-          String(rawUser.role || 'کاربر انبار'),
+          roleStr,
           safePgJsonStringify(perms),
+          safePgJsonStringify(allowedBranches),
           pwHash,
           Boolean(rawUser.is2FA),
           String(rawUser.secretCode || '123456'),
@@ -1608,14 +2115,15 @@ async function upsertImportedUsersInTx(
     }
 
     await client.query(
-      `INSERT INTO app_users (id, username, full_name, role, permissions, password_hash, is_2fa, secret_code, is_active)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
+      `INSERT INTO app_users (id, username, full_name, role, permissions, allowed_branches, password_hash, is_2fa, secret_code, is_active)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
       [
         candidateId,
         uname,
         String(rawUser.fullName || rawUser.name || uname),
-        String(rawUser.role || 'کاربر انبار'),
+        roleStr,
         safePgJsonStringify(perms),
+        safePgJsonStringify(allowedBranches),
         pwHash,
         Boolean(rawUser.is2FA),
         String(rawUser.secretCode || '123456'),
@@ -1676,23 +2184,53 @@ async function upsertImportedRolesInTx(
   }
 }
 
+async function upsertUsersAndRolesCentrally(users: unknown, roles: unknown): Promise<void> {
+  if (!pool) return;
+  const hasUsers = Array.isArray(users) && users.length > 0;
+  const hasRoles = Array.isArray(roles) && roles.length > 0;
+  if (!hasUsers && !hasRoles) return;
+
+  const centralClient = await pool.connect();
+  try {
+    await centralClient.query('BEGIN');
+    await upsertImportedRolesInTx(centralClient, roles);
+    await upsertImportedUsersInTx(centralClient, users);
+    await centralClient.query('COMMIT');
+  } catch (err) {
+    await centralClient.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    centralClient.release();
+  }
+}
+
 export async function importFullDatabaseToPg(
   actor: AuthUserLike,
   fullDb: Record<string, unknown>,
   source: string,
-  ipAddress?: string
+  ipAddress?: string,
+  branchId?: string
 ): Promise<{ versions: Record<string, number>; importedCollections: number }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
   if (!isAdminUser(actor)) {
     throw new Error('فقط مدیر ارشد مجاز به انتقال یا بازیابی کامل پایگاه داده است.');
   }
 
-  const client = await pool.connect();
+  const { targetPool, branch } = await getBranchContext(branchId);
+  const isCentralSameAsBranch = targetPool === pool;
+
+  if (!isCentralSameAsBranch) {
+    await upsertUsersAndRolesCentrally(fullDb.users, fullDb.roles);
+  }
+
+  const client = await targetPool.connect();
   try {
     await client.query('BEGIN');
 
-    await upsertImportedRolesInTx(client, fullDb.roles);
-    await upsertImportedUsersInTx(client, fullDb.users);
+    if (isCentralSameAsBranch) {
+      await upsertImportedRolesInTx(client, fullDb.roles);
+      await upsertImportedUsersInTx(client, fullDb.users);
+    }
 
     const keys = Object.keys(fullDb).filter(
       (k) => !CLIENT_ONLY_DB_KEYS.has(k) && k !== 'users' && k !== 'roles' && fullDb[k] !== undefined
@@ -1729,12 +2267,12 @@ export async function importFullDatabaseToPg(
       'IMPORT',
       '*',
       keys.length,
-      { source },
+      { source, branchId: branch.id },
       ipAddress
     );
 
     await client.query('COMMIT');
-    invalidatePublicDigitalMenuCache();
+    invalidatePublicDigitalMenuCache(branch.id);
     return { versions, importedCollections: keys.length };
   } catch (err: any) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1754,7 +2292,8 @@ export interface StagedCollectionChunkInput {
 export async function stageImportChunksInPg(
   actor: AuthUserLike,
   importId: string,
-  chunks: StagedCollectionChunkInput[]
+  chunks: StagedCollectionChunkInput[],
+  branchId?: string
 ): Promise<{ stagedCount: number }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
   if (!isAdminUser(actor)) {
@@ -1768,7 +2307,8 @@ export async function stageImportChunksInPg(
     return { stagedCount: 0 };
   }
 
-  const client = await pool.connect();
+  const { targetPool } = await getBranchContext(branchId);
+  const client = await targetPool.connect();
   try {
     await client.query('BEGIN');
     // Clean expired staging entries older than 3 hours
@@ -1811,7 +2351,8 @@ export async function commitStagedImportInPg(
   source: string,
   users?: unknown,
   ipAddress?: string,
-  roles?: unknown
+  roles?: unknown,
+  branchId?: string
 ): Promise<{ versions: Record<string, number>; importedCollections: number }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
   if (!isAdminUser(actor)) {
@@ -1822,12 +2363,21 @@ export async function commitStagedImportInPg(
     throw new Error('شناسه عملیات انتقال (importId) نامعتبر است.');
   }
 
-  const client = await pool.connect();
+  const { targetPool, branch } = await getBranchContext(branchId);
+  const isCentralSameAsBranch = targetPool === pool;
+
+  if (!isCentralSameAsBranch) {
+    await upsertUsersAndRolesCentrally(users, roles);
+  }
+
+  const client = await targetPool.connect();
   try {
     await client.query('BEGIN');
 
-    await upsertImportedRolesInTx(client, roles);
-    await upsertImportedUsersInTx(client, users);
+    if (isCentralSameAsBranch) {
+      await upsertImportedRolesInTx(client, roles);
+      await upsertImportedUsersInTx(client, users);
+    }
 
     const { rows: stagedKeys } = await client.query<{
       collection_key: string;
@@ -1908,12 +2458,12 @@ export async function commitStagedImportInPg(
       'IMPORT',
       '*',
       stagedKeys.length,
-      { source, chunked: true },
+      { source, chunked: true, branchId: branch.id },
       ipAddress
     );
 
     await client.query('COMMIT');
-    invalidatePublicDigitalMenuCache();
+    invalidatePublicDigitalMenuCache(branch.id);
     return { versions, importedCollections: stagedKeys.length };
   } catch (err: any) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1923,10 +2473,11 @@ export async function commitStagedImportInPg(
   }
 }
 
-export async function getAuditLogsFromPg(limit = 100): Promise<AuditLogEntry[]> {
+export async function getAuditLogsFromPg(limit = 100, branchId?: string): Promise<AuditLogEntry[]> {
   if (!pool) return [];
+  const { targetPool } = await getBranchContext(branchId);
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
-  const { rows } = await pool.query(
+  const { rows } = await targetPool.query(
     `SELECT id, user_id, username, action, collection_key, record_count, details, ip_address, created_at
      FROM app_audit_logs
      ORDER BY id DESC
@@ -1948,10 +2499,11 @@ export async function getAuditLogsFromPg(limit = 100): Promise<AuditLogEntry[]> 
 }
 
 async function readSpecificCollectionsRaw(
+  targetPool: Pool,
   keys: string[]
 ): Promise<Record<string, unknown>> {
-  if (!pool || keys.length === 0) return {};
-  const { rows } = await pool.query(
+  if (!targetPool || keys.length === 0) return {};
+  const { rows } = await targetPool.query(
     'SELECT collection_key, data, is_chunked FROM app_collections WHERE collection_key = ANY($1::text[])',
     [keys]
   );
@@ -1974,7 +2526,7 @@ async function readSpecificCollectionsRaw(
   }
 
   if (recordStoreKeys.length > 0) {
-    const { rows: recRows } = await pool.query<{ collection_key: string; data: unknown }>(
+    const { rows: recRows } = await targetPool.query<{ collection_key: string; data: unknown }>(
       `SELECT collection_key, data
        FROM app_collection_records
        WHERE collection_key = ANY($1::text[])
@@ -1988,7 +2540,7 @@ async function readSpecificCollectionsRaw(
   }
 
   if (chunkedKeys.length > 0) {
-    const { rows: chunkRows } = await pool.query<{ collection_key: string; data: unknown[] }>(
+    const { rows: chunkRows } = await targetPool.query<{ collection_key: string; data: unknown[] }>(
       `SELECT collection_key, data
        FROM app_collection_chunks
        WHERE collection_key = ANY($1::text[])
@@ -2009,20 +2561,28 @@ async function readSpecificCollectionsRaw(
 }
 
 /**
- * Strictly read-only, sanitized public digital menu projection from PostgreSQL with in-memory caching.
+ * Strictly read-only, sanitized public digital menu projection from PostgreSQL with per-branch caching.
  * Never reads or exposes sensitive ERP tables (users, suppliers, payroll, COGS, internal notes).
  */
-export async function getPublicDigitalMenuFromPg(): Promise<PublicDigitalMenuPayload> {
+export async function getPublicDigitalMenuFromPg(
+  branchIdOrSlug?: string
+): Promise<PublicDigitalMenuPayload & { branch?: { id: string; slug: string; name: string } }> {
   if (!pool) {
     return buildPublicDigitalMenuPayload({});
   }
 
+  const { targetPool, branch } = await getBranchContext(branchIdOrSlug);
+  const cacheKey = branch.id;
   const now = Date.now();
-  if (cachedPublicMenu && cachedPublicMenu.expiresAt > now) {
-    return cachedPublicMenu.payload;
+  const cached = cachedPublicMenus.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return {
+      ...cached.payload,
+      branch: { id: branch.id, slug: branch.slug, name: branch.name },
+    };
   }
 
-  const raw = await readSpecificCollectionsRaw([
+  const raw = await readSpecificCollectionsRaw(targetPool, [
     'periods',
     'productCategories',
     'products',
@@ -2038,22 +2598,26 @@ export async function getPublicDigitalMenuFromPg(): Promise<PublicDigitalMenuPay
     digitalMenu: (raw.digitalMenu as DigitalMenuConfig) || DEFAULT_DIGITAL_MENU_CONFIG,
   });
 
-  cachedPublicMenu = {
+  cachedPublicMenus.set(cacheKey, {
     payload,
     expiresAt: now + PUBLIC_MENU_CACHE_TTL_MS,
-  };
+  });
 
-  return payload;
+  return {
+    ...payload,
+    branch: { id: branch.id, slug: branch.slug, name: branch.name },
+  };
 }
 
-export async function getDigitalMenuConfigAdminFromPg(): Promise<{
+export async function getDigitalMenuConfigAdminFromPg(branchId?: string): Promise<{
   config: DigitalMenuConfig;
   version: number;
 }> {
   if (!pool) {
     return { config: sanitizeDigitalMenuConfig(DEFAULT_DIGITAL_MENU_CONFIG), version: 0 };
   }
-  const { rows } = await pool.query<{ data: unknown; version: string }>(
+  const { targetPool } = await getBranchContext(branchId);
+  const { rows } = await targetPool.query<{ data: unknown; version: string }>(
     "SELECT data, version::text AS version FROM app_collections WHERE collection_key = 'digitalMenu' LIMIT 1"
   );
   if (!rows[0]) {
@@ -2068,16 +2632,18 @@ export async function getDigitalMenuConfigAdminFromPg(): Promise<{
 export async function saveDigitalMenuConfigInPg(
   actor: AuthUserLike,
   rawConfig: unknown,
-  ipAddress?: string
+  ipAddress?: string,
+  branchId?: string
 ): Promise<{ config: DigitalMenuConfig; version: number }> {
   if (!pool) throw new Error('PostgreSQL متصل نیست.');
+  const { targetPool, branch } = await getBranchContext(branchId);
 
   const sanitized = sanitizeDigitalMenuConfig({
     ...(rawConfig && typeof rawConfig === 'object' ? (rawConfig as Record<string, unknown>) : {}),
     updatedAt: new Date().toISOString(),
   });
 
-  const client = await pool.connect();
+  const client = await targetPool.connect();
   try {
     await client.query('BEGIN');
     const version = await saveCollectionInTx(
@@ -2098,11 +2664,12 @@ export async function saveDigitalMenuConfigInPg(
         menuCategoriesCount: sanitized.menuCategories.length,
         productsConfigured: Object.keys(sanitized.products).length,
         version,
+        branchId: branch.id,
       },
       ipAddress
     );
     await client.query('COMMIT');
-    invalidatePublicDigitalMenuCache();
+    invalidatePublicDigitalMenuCache(branch.id);
     return { config: sanitized, version };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

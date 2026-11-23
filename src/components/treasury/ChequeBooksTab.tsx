@@ -17,6 +17,7 @@ import {
   getTodayJalali, getJalaliDaysDifference, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate,
   numberToWordsPersian, isValidJalaliDate
 } from '../../utils/persianUtils';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
 
 interface ChequeBooksTabProps {
   db: AppDatabase;
@@ -75,12 +76,12 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
   const [issueCategory, setIssueCategory] = useState('تسویه فاکتور خرید');
   const [issueDescription, setIssueDescription] = useState('');
 
-  const bankAccounts = useMemo(() => db.bankAccounts || [], [db.bankAccounts]);
-  const chequeBooks = useMemo(() => db.chequeBooks || [], [db.chequeBooks]);
-  const chequeLeaves = useMemo(() => db.chequeLeaves || [], [db.chequeLeaves]);
-  const suppliers = useMemo(() => db.suppliers || [], [db.suppliers]);
-  const personnelList = useMemo(() => db.personnel || [], [db.personnel]);
-  const payments = useMemo(() => db.treasuryPayments || [], [db.treasuryPayments]);
+  const bankAccounts = useMemo(() => (db.bankAccounts || []).filter(b => b.periodId === activePeriodId), [db.bankAccounts, activePeriodId]);
+  const chequeBooks = useMemo(() => (db.chequeBooks || []).filter(b => b.periodId === activePeriodId), [db.chequeBooks, activePeriodId]);
+  const chequeLeaves = useMemo(() => (db.chequeLeaves || []).filter(l => l.periodId === activePeriodId), [db.chequeLeaves, activePeriodId]);
+  const suppliers = useMemo(() => (db.suppliers || []).filter(s => s.periodId === activePeriodId), [db.suppliers, activePeriodId]);
+  const personnelList = useMemo(() => (db.personnel || []).filter(p => p.periodId === activePeriodId), [db.personnel, activePeriodId]);
+  const payments = useMemo(() => (db.treasuryPayments || []).filter(p => p.periodId === activePeriodId), [db.treasuryPayments, activePeriodId]);
 
   const bankMap = useMemo(() => {
     const map = new Map<string, BankAccount>();
@@ -228,8 +229,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
     const endNumber = Number(bookStartNumber) + Number(bookTotalLeaves) - 1;
 
     if (editingBook) {
-      // Update existing book
-      const updatedBooks = chequeBooks.map(b => {
+      // Update existing book while preserving all other periods
+      const updatedBooks = (db.chequeBooks || []).map(b => {
         if (b.id === editingBook.id) {
           return {
             ...b,
@@ -253,8 +254,9 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       });
       setIsBookModalOpen(false);
     } else {
-      // Create new book and generate leaves
-      const newBookId = `chk_book_${Date.now()}`;
+      // Create new book and generate leaves with simple sequential IDs
+      const newBookId = nextSimpleId(db.chequeBooks || [], getPrefixForCollection('chequeBooks'));
+      const nextLeafId = createSimpleIdGenerator(db.chequeLeaves || [], getPrefixForCollection('chequeLeaves'));
       const newBook: ChequeBook = {
         id: newBookId,
         periodId: activePeriodId,
@@ -277,7 +279,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
         const sayadSerial = (leafNo).toString().padStart(6, '0');
         const sayadNo = `${bookSayadPrefix || '2105'}${sayadSerial}${(1000 + i).toString().padStart(6, '0')}`;
         newLeaves.push({
-          id: `leaf_${newBookId}_${leafNo}`,
+          id: nextLeafId(),
+          periodId: activePeriodId,
           chequeBookId: newBookId,
           bankAccountId: bookBankAccountId,
           leafNumber: leafNo,
@@ -289,8 +292,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
 
       onUpdateDb({
         ...db,
-        chequeBooks: [...chequeBooks, newBook],
-        chequeLeaves: [...chequeLeaves, ...newLeaves]
+        chequeBooks: [...(db.chequeBooks || []), newBook],
+        chequeLeaves: [...(db.chequeLeaves || []), ...newLeaves]
       });
       setIsBookModalOpen(false);
     }
@@ -309,8 +312,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       'حذف دسته چک',
       `آیا از حذف دسته چک با سری ${book.series} و کلیه برگه‌های سفید آن اطمینان دارید؟`,
       () => {
-        const updatedBooks = chequeBooks.filter(b => b.id !== book.id);
-        const updatedLeaves = chequeLeaves.filter(l => l.chequeBookId !== book.id);
+        const updatedBooks = (db.chequeBooks || []).filter(b => b.id !== book.id);
+        const updatedLeaves = (db.chequeLeaves || []).filter(l => l.chequeBookId !== book.id);
         onUpdateDb({
           ...db,
           chequeBooks: updatedBooks,
@@ -326,8 +329,9 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
     
     // If no cheque books exist at all, auto-create a default active book and leaves so the user is never blocked
     if (currentBooks.length === 0) {
-      const defaultBankId = bankAccounts[0]?.id || 'bank-1';
-      const newBookId = `chk-bk-${Date.now()}`;
+      const defaultBankId = bankAccounts[0]?.id || '';
+      const newBookId = nextSimpleId(db.chequeBooks || [], getPrefixForCollection('chequeBooks'));
+      const nextLeafId = createSimpleIdGenerator(db.chequeLeaves || [], getPrefixForCollection('chequeLeaves'));
       const newBook: ChequeBook = {
         id: newBookId,
         periodId: activePeriodId,
@@ -347,7 +351,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
         const leafNum = 1001 + i;
         const sayad = `210514050100${leafNum}`;
         return {
-          id: `leaf-${Date.now()}-${leafNum}`,
+          id: nextLeafId(),
+          periodId: activePeriodId,
           chequeBookId: newBookId,
           bankAccountId: defaultBankId,
           leafNumber: leafNum,
@@ -357,8 +362,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
         };
       });
 
-      const updatedBooks = [...chequeBooks, newBook];
-      const updatedLeaves = [...chequeLeaves, ...newLeaves];
+      const updatedBooks = [...(db.chequeBooks || []), newBook];
+      const updatedLeaves = [...(db.chequeLeaves || []), ...newLeaves];
       onUpdateDb({
         ...db,
         chequeBooks: updatedBooks,
@@ -447,7 +452,7 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
     const bank = bankMap.get(leaf.bankAccountId);
 
     const paymentNo = `PAY-CHK-${leaf.leafNumber}`;
-    const newPaymentId = `pay_${Date.now()}`;
+    const newPaymentId = nextSimpleId(db.treasuryPayments || [], getPrefixForCollection('treasuryPayments'));
 
     // Create Payment Record
     const newPayment: TreasuryPayment = {
@@ -479,8 +484,8 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       createdAt: new Date().toISOString()
     };
 
-    // Update Leaf Record
-    const updatedLeaves = chequeLeaves.map(l => {
+    // Update Leaf Record while preserving all other periods
+    const updatedLeaves = (db.chequeLeaves || []).map(l => {
       if (l.id === leaf.id) {
         return {
           ...l,
@@ -534,7 +539,7 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
         alert('لطفاً نام ذینفع و مبلغ معتبر را وارد نمایید.');
         return;
       }
-      const updatedLeaves = chequeLeaves.map(leaf => {
+      const updatedLeaves = (db.chequeLeaves || []).map(leaf => {
         if (leaf.id === actionLeaf.id) {
           return {
             ...leaf,
@@ -557,7 +562,7 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       return;
     }
 
-    const updatedLeaves = chequeLeaves.map(leaf => {
+    const updatedLeaves = (db.chequeLeaves || []).map(leaf => {
       if (leaf.id === actionLeaf.id) {
         if (leafActionType === 'clear') {
           return {
@@ -610,11 +615,12 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       'بازنشانی وضعیت برگه چک',
       `آیا از تغییر وضعیت برگه چک شماره ${leaf.leafNumber} به «${targetStatus === 'blank' ? 'سفید و آزاد' : 'صادر شده'}» اطمینان دارید؟`,
       () => {
-        const updatedLeaves = chequeLeaves.map(l => {
+        const updatedLeaves = (db.chequeLeaves || []).map(l => {
           if (l.id === leaf.id) {
             if (targetStatus === 'blank') {
               return {
                 id: l.id,
+                periodId: l.periodId || activePeriodId,
                 chequeBookId: l.chequeBookId,
                 bankAccountId: l.bankAccountId,
                 leafNumber: l.leafNumber,

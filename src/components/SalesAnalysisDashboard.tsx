@@ -6,8 +6,9 @@
 import React, { useState, useMemo } from 'react';
 import { AppDatabase, Product, ProductSale } from '../types';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, printElement, getTodayJalali, normalizePersianString, getFiscalYearFromPeriod 
+  toPersianDigits, formatWithCommas, parseNumber, printElement, getTodayJalali, normalizePersianString, getFiscalYearFromPeriod, getDefaultYearMonthFromPeriod 
 } from '../utils/persianUtils';
+import { createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
 import { 
   FileSpreadsheet, Upload, AlertCircle, AlertTriangle, Info, BarChart3, PieChart, 
   Clock, Calendar, Sparkles, TrendingUp, HelpCircle, Check, 
@@ -860,9 +861,10 @@ export default function SalesAnalysisDashboard({
         categories.forEach(c => { catMap[c.id] = c.name; });
 
         const parsedTxs: SalesTransaction[] = [];
+        const nextTxId = createSimpleIdGenerator(db.salesTransactions || [], getPrefixForCollection('salesTransactions'));
         let unmappedCount = 0;
 
-        rawJson.forEach((row: any, rIdx: number) => {
+        rawJson.forEach((row: any) => {
           let rawInvoiceNumber = '';
           let rawCustomer = '';
           let rawCode = '';
@@ -946,7 +948,7 @@ export default function SalesAnalysisDashboard({
           }
 
           parsedTxs.push({
-            id: `imported-${rIdx}-${Math.random().toString(36).substr(2, 4)}`,
+            id: nextTxId(),
             invoiceNumber: rawInvoiceNumber || undefined,
             customerName: rawCustomer || 'مشتری عمومی',
             productId: prodId,
@@ -995,9 +997,9 @@ export default function SalesAnalysisDashboard({
   // Submit to actual system Monthly Period ProductSale array
   const handleApplyToSystemMonthlyRecords = () => {
     try {
-      const parts = (activePeriodId || '').split('-');
-      const defaultYear = parts.length >= 1 ? parseInt(parts[0], 10) || 1403 : 1403;
-      const defaultMonth = (activeMonth !== undefined && activeMonth !== 'ALL') ? Number(activeMonth) : (parts.length >= 2 ? parseInt(parts[1], 10) || 1 : 1);
+      const defaultYm = getDefaultYearMonthFromPeriod(db.periods.find(p => p.id === activePeriodId), activePeriodId);
+      const defaultYear = defaultYm.year;
+      const defaultMonth = (activeMonth !== undefined && activeMonth !== 'ALL') ? Number(activeMonth) : defaultYm.month;
 
       const aggByProdMonth: Record<string, { productId: string; year: number; month: number; qty: number; amount: number }> = {};
       transactions.forEach(tx => {
@@ -1025,14 +1027,15 @@ export default function SalesAnalysisDashboard({
         return !affectedYearMonths.has(`${sYear}_${sMonth}`);
       });
 
-      const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item, idx) => {
+      const nextSaleId = createSimpleIdGenerator(db.productSales || [], getPrefixForCollection('productSales'));
+      const newPeriodSales: ProductSale[] = Object.values(aggByProdMonth).map((item) => {
         const prod = products.find(p => p.id === item.productId);
         const qty = item.qty;
         const netAmount = item.amount;
         const preAmount = qty * (prod?.salePrice || 0);
 
         return {
-          id: `ps-${activePeriodId}-${item.year}-${item.month}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
+          id: nextSaleId(),
           salesPeriodId: activePeriodId,
           periodId: activePeriodId,
           productId: item.productId,

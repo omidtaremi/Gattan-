@@ -12,6 +12,11 @@ import {
   generateSampleDibalBarcode, 
   ParsedBarcodeResult 
 } from '../utils/barcodeParser';
+import { getPeriodBarcodeSettings, setPeriodBarcodeSettings } from '../utils/periodIsolation';
+import { nextSimpleId } from '../utils/simpleId';
+import { ModuleHeader, ModuleSubTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
+import { useErpFeedback } from './ui/ToastContext';
 import { 
   Barcode, 
   Scale, 
@@ -39,16 +44,18 @@ import {
 interface BarcodeManagementProps {
   db: DatabaseSchema;
   onUpdateDb: (updatedDb: DatabaseSchema) => void;
+  activePeriodId?: string;
 }
 
-export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpdateDb }) => {
-  const currentSettings: BarcodeSettings = db.barcodeSettings || DEFAULT_BARCODE_SETTINGS;
-  const profiles: BarcodeProfile[] = currentSettings.profiles?.length > 0 
-    ? currentSettings.profiles 
-    : DEFAULT_BARCODE_PROFILES;
+export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpdateDb, activePeriodId }) => {
+  const { toast } = useErpFeedback();
+  const resolvedPeriodId = activePeriodId || db.selectedPeriodId || db.periods?.[0]?.id || 'p-1';
+  const currentSettings: BarcodeSettings = getPeriodBarcodeSettings(db, resolvedPeriodId) || DEFAULT_BARCODE_SETTINGS;
+  const profiles: BarcodeProfile[] = currentSettings.profiles || [];
 
-  // State for tabs
+  // State for tabs & copy modal
   const [activeSubTab, setActiveSubTab] = useState<'profiles' | 'tester' | 'guide'>('profiles');
+  const [showCopyModal, setShowCopyModal] = useState(false);
 
   // State for editing or creating profile
   const [editingProfile, setEditingProfile] = useState<BarcodeProfile | null>(null);
@@ -59,6 +66,13 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
   const [defaultCountPrefix, setDefaultCountPrefix] = useState(currentSettings.defaultCountPrefix || '22');
   const [autoParseOnScan, setAutoParseOnScan] = useState(currentSettings.autoParseOnScan ?? true);
   const [enableSoundOnScan, setEnableSoundOnScan] = useState(currentSettings.enableSoundOnScan ?? true);
+
+  React.useEffect(() => {
+    setDefaultWeightedPrefix(currentSettings.defaultWeightedPrefix || '20');
+    setDefaultCountPrefix(currentSettings.defaultCountPrefix || '22');
+    setAutoParseOnScan(currentSettings.autoParseOnScan ?? true);
+    setEnableSoundOnScan(currentSettings.enableSoundOnScan ?? true);
+  }, [resolvedPeriodId, currentSettings.defaultWeightedPrefix, currentSettings.defaultCountPrefix, currentSettings.autoParseOnScan, currentSettings.enableSoundOnScan]);
 
   // Profile Form state
   const [profileName, setProfileName] = useState('');
@@ -81,7 +95,7 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
   const [genType, setGenType] = useState<'weighted' | 'count'>('weighted');
   const [generatedBarcode, setGeneratedBarcode] = useState('');
 
-  // Save General Settings
+  // Save General Settings (period-isolated)
   const handleSaveGeneralSettings = () => {
     const updatedSettings: BarcodeSettings = {
       ...currentSettings,
@@ -91,8 +105,8 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
       enableSoundOnScan,
       profiles: profiles
     };
-    onUpdateDb({ ...db, barcodeSettings: updatedSettings });
-    alert('تنظیمات پایه و پیش‌کدهای استاندارد با موفقیت ذخیره شد.');
+    onUpdateDb(setPeriodBarcodeSettings(db, resolvedPeriodId, updatedSettings));
+    toast('تنظیمات پایه و پیش‌کدهای بارکد این دوره ذخیره شد.', 'success');
   };
 
   // Start edit profile
@@ -132,7 +146,7 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
     }
 
     const newProfileObj: BarcodeProfile = {
-      id: editingProfile ? editingProfile.id : `prof-${Date.now()}`,
+      id: editingProfile ? editingProfile.id : nextSimpleId(profiles, 'bp'),
       name: profileName,
       type: profileType,
       symbology: profileSymbology,
@@ -159,34 +173,31 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
       profiles: updatedProfiles
     };
 
-    onUpdateDb({ ...db, barcodeSettings: updatedSettings });
+    onUpdateDb(setPeriodBarcodeSettings(db, resolvedPeriodId, updatedSettings));
     setEditingProfile(null);
     setIsCreatingNew(false);
-    alert('پروفایل بارکد با موفقیت ذخیره شد.');
+    toast('پروفایل بارکد با موفقیت ذخیره شد.', 'success');
   };
 
   // Delete Profile
   const handleDeleteProfile = (id: string) => {
-    if (confirm('آیا از حذف این پروفایل بارکد اطمینان دارید؟')) {
-      const updatedProfiles = profiles.filter(p => p.id !== id);
-      onUpdateDb({
-        ...db,
-        barcodeSettings: {
-          ...currentSettings,
-          profiles: updatedProfiles
-        }
-      });
-    }
+    const updatedProfiles = profiles.filter(p => p.id !== id);
+    onUpdateDb(setPeriodBarcodeSettings(db, resolvedPeriodId, {
+      ...currentSettings,
+      profiles: updatedProfiles
+    }));
+    toast('پروفایل بارکد حذف شد.', 'info');
   };
 
-  // Test Barcode Parsing
+  // Test Barcode Parsing (strictly scoped to active period products)
   const handleRunTest = (code: string) => {
     setTestInputBarcode(code);
     if (!code.trim()) {
       setTestResult(null);
       return;
     }
-    const result = parseScannedBarcode(code, db.products || [], currentSettings);
+    const periodProducts = (db.products || []).filter(p => p.periodId === resolvedPeriodId);
+    const result = parseScannedBarcode(code, periodProducts, currentSettings);
     setTestResult(result);
   };
 
@@ -201,65 +212,36 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
 
   return (
     <div className="space-y-6 text-right" dir="rtl">
-      {/* HEADER BANNER */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-5">
-          <div className="flex items-center gap-4">
-            <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-2xl shadow-inner">
-              <Barcode className="h-8 w-8" />
+      {/* UNIFIED HEADER & SUB-TABS */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5">
+        <ModuleHeader
+          icon={<Barcode className="h-5 w-5" />}
+          title="تعریف و پیکربندی بارکدها"
+          subtitle="تنظیم ساختار بارکدهای وزنی و تعدادی (سازگار با ترازو Dibal 500-SW) و قوانین دیکودر فروش"
+          periodName={db.periods?.find(p => p.id === resolvedPeriodId)?.name}
+          recordCount={profiles.length}
+          recordLabel="پروفایل"
+          actions={
+            <div className="flex items-center gap-2">
+              <ErpButton variant="secondary" size="sm" onClick={() => setShowCopyModal(true)}>
+                {ERP_BUTTON_LABELS.copyFromPeriod}
+              </ErpButton>
+              <ErpButton variant="primary" size="sm" icon={<Plus className="h-4 w-4" />} onClick={() => { setActiveSubTab('profiles'); handleStartNew(); }}>
+                {ERP_BUTTON_LABELS.add}
+              </ErpButton>
             </div>
-            <div>
-              <div className="flex items-center gap-2.5">
-                <h1 className="text-xl font-black text-slate-100">
-                  تعریف، مدیریت و پیکربندی تخصصی بارکدها
-                </h1>
-                <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                  سازگار با ترازو Dibal 500-SW
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                تنظیم ساختار بارکدهای متغیر (وزن خالص و تعداد)، پیش‌کدهای استاندارد، و قوانین دیکودر هوشمند فاکتور فروش
-              </p>
-            </div>
-          </div>
+          }
+        />
 
-          {/* Sub Navigation Buttons */}
-          <div className="flex items-center gap-2 bg-slate-950/80 p-1.5 rounded-2xl border border-slate-800/80">
-            <button
-              onClick={() => setActiveSubTab('profiles')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeSubTab === 'profiles'
-                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <Layers className="h-4 w-4" />
-              پروفایل‌ها و ساختار بارکد
-            </button>
-            <button
-              onClick={() => setActiveSubTab('tester')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeSubTab === 'tester'
-                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <Scan className="h-4 w-4" />
-              تست و دیکودر زنده بارکدخوان
-            </button>
-            <button
-              onClick={() => setActiveSubTab('guide')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeSubTab === 'guide'
-                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <HelpCircle className="h-4 w-4" />
-              راهنمای فنی استاندارد EAN-13
-            </button>
-          </div>
-        </div>
+        <ModuleSubTabs
+          activeId={activeSubTab}
+          onChange={(id) => setActiveSubTab(id as typeof activeSubTab)}
+          tabs={[
+            { id: 'profiles', label: 'پروفایل‌ها و ساختار بارکد', icon: <Layers className="h-3.5 w-3.5" />, count: profiles.length },
+            { id: 'tester', label: 'تست و دیکودر زنده', icon: <Scan className="h-3.5 w-3.5" /> },
+            { id: 'guide', label: 'راهنمای EAN-13', icon: <HelpCircle className="h-3.5 w-3.5" /> },
+          ]}
+        />
       </div>
 
       {/* ========================================================================= */}
@@ -975,6 +957,14 @@ export const BarcodeManagement: React.FC<BarcodeManagementProps> = ({ db, onUpda
           </div>
         </div>
       )}
+      <CopyFromPeriodModal
+        open={showCopyModal}
+        onClose={() => setShowCopyModal(false)}
+        db={db}
+        targetPeriodId={resolvedPeriodId}
+        section="barcodeSettings"
+        onUpdateDb={onUpdateDb}
+      />
     </div>
   );
 };

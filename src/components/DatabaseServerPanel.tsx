@@ -7,13 +7,24 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { AppDatabase, User, UserRoleDefinition } from '../types';
 import {
   Server, Database, RefreshCw, Upload, Download, Users, Shield, Plus,
-  Edit3, Trash2, CheckCircle, AlertTriangle, HardDrive, Link, Activity, Lock, ChevronDown, ChevronUp, KeyRound
+  Edit3, Trash2, CheckCircle, AlertTriangle, HardDrive, Link, Activity, Lock, ChevronDown, ChevronUp, KeyRound,
+  Building2, Copy, QrCode, ArrowLeftRight
 } from 'lucide-react';
 import { toPersianDigits } from '../utils/persianUtils';
+import { nextSimpleId } from '../utils/simpleId';
 import { DEFAULT_USER_ROLES, SYSTEM_TABS, isAdminUser, isFullAccessRole, normalizePermissions } from '../shared/rbac';
+import { DEFAULT_BRANCHES, DEFAULT_BRANCH_ID, normalizeAllowedBranches } from '../shared/branches';
+import {
+  createLocalBranch,
+  updateLocalBranch,
+  deleteLocalBranch,
+  getLocalBranches,
+  saveSharedLocalAuth,
+} from '../db';
 import {
   type ServerDbStatus,
   type AuditLogItem,
+  type BranchStatusItem,
   fetchAdminUsers,
   createAdminUser,
   updateAdminUser,
@@ -23,6 +34,10 @@ import {
   updateAdminRole,
   deleteAdminRole,
   fetchAuditLogs,
+  fetchBranches,
+  createAdminBranch,
+  updateAdminBranch,
+  deleteAdminBranch,
 } from '../services/postgresSyncService';
 
 interface DatabaseServerPanelProps {
@@ -31,6 +46,11 @@ interface DatabaseServerPanelProps {
   serverStatus: ServerDbStatus | null;
   pgSyncState: 'synced' | 'syncing' | 'error' | 'offline';
   lastPgSyncTime: string;
+  branches?: BranchStatusItem[];
+  activeBranchId?: string;
+  onSwitchBranch?: (branchId: string) => Promise<void> | void;
+  onBranchesChanged?: (branches: BranchStatusItem[]) => void;
+  onOpenCopyFromBranch?: () => void;
   onRefreshStatusAndPull: () => Promise<void>;
   onMigrateLocalToPostgres: () => Promise<void>;
   onUpdateDb: (nextDb: AppDatabase) => void;
@@ -84,6 +104,11 @@ export default function DatabaseServerPanel({
   serverStatus,
   pgSyncState,
   lastPgSyncTime,
+  branches,
+  activeBranchId = DEFAULT_BRANCH_ID,
+  onSwitchBranch,
+  onBranchesChanged,
+  onOpenCopyFromBranch,
   onRefreshStatusAndPull,
   onMigrateLocalToPostgres,
   onUpdateDb,
@@ -108,8 +133,22 @@ export default function DatabaseServerPanel({
   const [isBusy, setIsBusy] = useState(false);
   const [usersList, setUsersList] = useState<User[]>(db.users || []);
   const [rolesList, setRolesList] = useState<UserRoleDefinition[]>(() => getEffectiveLocalRoles(db));
+  const [branchList, setBranchList] = useState<BranchStatusItem[]>(() =>
+    branches && branches.length > 0 ? branches : getLocalBranches()
+  );
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const [showLegacySql, setShowLegacySql] = useState(false);
+
+  // Branch Add/Edit modal state
+  const [isBranchModalOpen, setIsBranchModalOpen] = useState(false);
+  const [editingBranch, setEditingBranch] = useState<BranchStatusItem | null>(null);
+  const [branchNameInput, setBranchNameInput] = useState('');
+  const [branchSlugInput, setBranchSlugInput] = useState('');
+  const [branchDbNameInput, setBranchDbNameInput] = useState('');
+  const [branchAddressInput, setBranchAddressInput] = useState('');
+  const [branchPhoneInput, setBranchPhoneInput] = useState('');
+  const [branchIsActiveInput, setBranchIsActiveInput] = useState(true);
+  const [branchFormError, setBranchFormError] = useState('');
 
   // User Add/Edit modal state
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -119,6 +158,7 @@ export default function DatabaseServerPanel({
   const [formRole, setFormRole] = useState<string>('حسابدار');
   const [formPassword, setFormPassword] = useState('');
   const [formPermissions, setFormPermissions] = useState<string[]>(['items', 'sales']);
+  const [formAllowedBranches, setFormAllowedBranches] = useState<string[]>(['*']);
   const [formIs2FA, setFormIs2FA] = useState(false);
   const [formSecretCode, setFormSecretCode] = useState('123456');
   const [formIsActive, setFormIsActive] = useState(true);
@@ -134,27 +174,39 @@ export default function DatabaseServerPanel({
   const [applyRolePermsToUsers, setApplyRolePermsToUsers] = useState(true);
   const [roleFormError, setRoleFormError] = useState('');
 
+  useEffect(() => {
+    if (branches && branches.length > 0) {
+      setBranchList(branches);
+    }
+  }, [branches]);
+
   const loadPgAdminData = async () => {
     if (!isPgConnected || !isAdmin) {
       setUsersList(db.users || []);
       setRolesList(getEffectiveLocalRoles(db));
+      setBranchList(branches && branches.length > 0 ? branches : getLocalBranches());
       return;
     }
-    const [uRes, rRes, logsRes] = await Promise.all([
+    const [uRes, rRes, bRes, logsRes] = await Promise.all([
       fetchAdminUsers(),
       fetchAdminRoles(),
+      fetchBranches(),
       fetchAuditLogs(40),
     ]);
     if (uRes.ok) setUsersList(uRes.users);
     if (rRes.ok && rRes.roles.length > 0) {
       setRolesList(rRes.roles);
     }
+    if (bRes.ok && bRes.branches.length > 0) {
+      setBranchList(bRes.branches);
+      onBranchesChanged?.(bRes.branches);
+    }
     setAuditLogs(logsRes);
   };
 
   useEffect(() => {
     loadPgAdminData();
-  }, [isPgConnected, isAdmin, db.users, db.roles]);
+  }, [isPgConnected, isAdmin, db.users, db.roles, activeBranchId]);
 
   const rolePermissionsMap = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -192,6 +244,7 @@ export default function DatabaseServerPanel({
     setFormRole(defaultRoleName);
     setFormPassword('');
     setFormPermissions(getPresetForRole(defaultRoleName));
+    setFormAllowedBranches(['*']);
     setFormIs2FA(false);
     setFormSecretCode('123456');
     setFormIsActive(true);
@@ -206,6 +259,7 @@ export default function DatabaseServerPanel({
     setFormRole(String(u.role || 'کاربر انبار'));
     setFormPassword('');
     setFormPermissions(Array.isArray(u.permissions) ? u.permissions : []);
+    setFormAllowedBranches(normalizeAllowedBranches(u.allowedBranches));
     setFormIs2FA(Boolean(u.is2FA));
     setFormSecretCode(u.secretCode || '123456');
     setFormIsActive(u.isActive !== false);
@@ -217,6 +271,9 @@ export default function DatabaseServerPanel({
     setFormRole(nextRole);
     if (!editingUser || editingUser.role !== nextRole) {
       setFormPermissions(getPresetForRole(nextRole));
+    }
+    if (nextRole === 'مدیر ارشد') {
+      setFormAllowedBranches(['*']);
     }
   };
 
@@ -230,6 +287,162 @@ export default function DatabaseServerPanel({
       setFormPermissions(cleaned.filter((p) => p !== tabId));
     } else {
       setFormPermissions([...cleaned, tabId]);
+    }
+  };
+
+  const toggleAllowedBranch = (branchId: string) => {
+    if (branchId === '*') {
+      if (formAllowedBranches.includes('*')) {
+        setFormAllowedBranches([activeBranchId || DEFAULT_BRANCH_ID]);
+      } else {
+        setFormAllowedBranches(['*']);
+      }
+      return;
+    }
+    const cleaned = formAllowedBranches.filter((b) => b !== '*');
+    if (cleaned.includes(branchId)) {
+      setFormAllowedBranches(cleaned.filter((b) => b !== branchId));
+    } else {
+      setFormAllowedBranches([...cleaned, branchId]);
+    }
+  };
+
+  // Branch Modal Handlers
+  const openCreateBranchModal = () => {
+    setEditingBranch(null);
+    setBranchNameInput('');
+    setBranchSlugInput('');
+    setBranchDbNameInput('');
+    setBranchAddressInput('');
+    setBranchPhoneInput('');
+    setBranchIsActiveInput(true);
+    setBranchFormError('');
+    setIsBranchModalOpen(true);
+  };
+
+  const openEditBranchModal = (b: BranchStatusItem) => {
+    setEditingBranch(b);
+    setBranchNameInput(b.name || '');
+    setBranchSlugInput(b.slug || '');
+    setBranchDbNameInput(b.dbName || '');
+    setBranchAddressInput(b.address || '');
+    setBranchPhoneInput(b.phone || '');
+    setBranchIsActiveInput(b.isActive !== false);
+    setBranchFormError('');
+    setIsBranchModalOpen(true);
+  };
+
+  const handleSaveBranch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBranchFormError('');
+    const cleanName = branchNameInput.trim();
+    if (!cleanName) {
+      setBranchFormError('وارد کردن نام شعبه الزامی است.');
+      return;
+    }
+
+    if (isPgConnected) {
+      setIsBusy(true);
+      try {
+        if (editingBranch) {
+          const res = await updateAdminBranch(editingBranch.id, {
+            name: cleanName,
+            address: branchAddressInput.trim(),
+            phone: branchPhoneInput.trim(),
+            isActive: editingBranch.isDefault ? true : branchIsActiveInput,
+          });
+          if (!res.ok) {
+            setBranchFormError(res.error || 'خطا در ویرایش شعبه');
+            return;
+          }
+        } else {
+          const res = await createAdminBranch({
+            name: cleanName,
+            slug: branchSlugInput.trim() || undefined,
+            dbName: branchDbNameInput.trim() || undefined,
+            address: branchAddressInput.trim() || undefined,
+            phone: branchPhoneInput.trim() || undefined,
+          });
+          if (!res.ok) {
+            setBranchFormError(res.error || 'خطا در ایجاد شعبه جدید و پایگاه داده مجزا');
+            return;
+          }
+        }
+        const bRes = await fetchBranches();
+        if (bRes.ok) {
+          setBranchList(bRes.branches);
+          onBranchesChanged?.(bRes.branches);
+        }
+        setIsBranchModalOpen(false);
+      } finally {
+        setIsBusy(false);
+      }
+    } else {
+      try {
+        if (editingBranch) {
+          updateLocalBranch(editingBranch.id, {
+            name: cleanName,
+            address: branchAddressInput.trim(),
+            phone: branchPhoneInput.trim(),
+            isActive: editingBranch.isDefault ? true : branchIsActiveInput,
+          });
+        } else {
+          createLocalBranch({
+            name: cleanName,
+            slug: branchSlugInput.trim() || undefined,
+            dbName: branchDbNameInput.trim() || undefined,
+            address: branchAddressInput.trim() || undefined,
+            phone: branchPhoneInput.trim() || undefined,
+          });
+        }
+        const nextLocalBranches = getLocalBranches();
+        setBranchList(nextLocalBranches);
+        onBranchesChanged?.(nextLocalBranches);
+        setIsBranchModalOpen(false);
+      } catch (err: any) {
+        setBranchFormError(err?.message || 'خطا در ذخیره اطلاعات شعبه');
+      }
+    }
+  };
+
+  const handleDeleteBranch = async (b: BranchStatusItem) => {
+    if (b.isDefault || b.id === DEFAULT_BRANCH_ID) {
+      alert('شعبه اصلی (پیش‌فرض) قابل حذف نیست.');
+      return;
+    }
+    if (b.id === activeBranchId) {
+      alert('ابتدا به شعبه دیگری وارد شوید و سپس این شعبه را حذف کنید.');
+      return;
+    }
+    if (!window.confirm(`آیا از حذف شعبه «${b.name}» از فهرست شعبه‌ها اطمینان دارید؟`)) {
+      return;
+    }
+
+    if (isPgConnected) {
+      setIsBusy(true);
+      try {
+        const res = await deleteAdminBranch(b.id);
+        if (!res.ok) {
+          alert(res.error || 'خطا در حذف شعبه');
+          return;
+        }
+        const bRes = await fetchBranches();
+        if (bRes.ok) {
+          setBranchList(bRes.branches);
+          onBranchesChanged?.(bRes.branches);
+        }
+      } finally {
+        setIsBusy(false);
+      }
+    } else {
+      try {
+        await deleteLocalBranch(b.id);
+        const nextLocalBranches = getLocalBranches();
+        setBranchList(nextLocalBranches);
+        onBranchesChanged?.(nextLocalBranches);
+      } catch (err: any) {
+        alert(err?.message || 'خطا در حذف شعبه');
+      }
     }
   };
 
@@ -356,7 +569,7 @@ export default function DatabaseServerPanel({
         }
       } else {
         const newRole: UserRoleDefinition = {
-          id: `role-${Date.now()}`,
+          id: nextSimpleId(currentRoles, 'role'),
           name: cleanName,
           description: roleDescInput.trim(),
           permissions: finalPerms,
@@ -365,6 +578,7 @@ export default function DatabaseServerPanel({
         nextRoles = [...currentRoles, newRole];
       }
 
+      saveSharedLocalAuth(nextUsers, nextRoles);
       onUpdateDb({ ...db, roles: nextRoles, users: nextUsers });
       setIsRoleModalOpen(false);
     }
@@ -398,6 +612,7 @@ export default function DatabaseServerPanel({
       }
     } else {
       const nextRoles = getEffectiveLocalRoles(db).filter((r) => r.id !== role.id);
+      saveSharedLocalAuth(db.users || [], nextRoles);
       onUpdateDb({ ...db, roles: nextRoles });
     }
   };
@@ -419,6 +634,16 @@ export default function DatabaseServerPanel({
       ? ['*']
       : formPermissions;
 
+    const finalAllowedBranches =
+      formRole === 'مدیر ارشد' || formAllowedBranches.includes('*')
+        ? ['*']
+        : formAllowedBranches.filter(Boolean);
+
+    if (finalAllowedBranches.length === 0) {
+      setUserFormError('حداقل یک شعبه مجاز برای کاربر انتخاب کنید یا دسترسی به همه شعبه‌ها را فعال نمایید.');
+      return;
+    }
+
     if (isPgConnected) {
       setIsBusy(true);
       try {
@@ -428,6 +653,7 @@ export default function DatabaseServerPanel({
             fullName: formFullName.trim() || formUsername.trim(),
             role: formRole,
             permissions: finalPerms,
+            allowedBranches: finalAllowedBranches,
             password: formPassword.trim() ? formPassword.trim() : undefined,
             is2FA: formIs2FA,
             secretCode: formSecretCode.trim() || '123456',
@@ -443,6 +669,7 @@ export default function DatabaseServerPanel({
             fullName: formFullName.trim() || formUsername.trim(),
             role: formRole,
             permissions: finalPerms,
+            allowedBranches: finalAllowedBranches,
             password: formPassword.trim(),
             is2FA: formIs2FA,
             secretCode: formSecretCode.trim() || '123456',
@@ -470,12 +697,14 @@ export default function DatabaseServerPanel({
                 fullName: formFullName.trim() || formUsername.trim(),
                 role: formRole,
                 permissions: finalPerms,
+                allowedBranches: finalAllowedBranches,
                 password: formPassword.trim() ? formPassword.trim() : u.password,
                 is2FA: formIs2FA,
                 secretCode: formSecretCode.trim() || '123456',
               }
             : u
         );
+        saveSharedLocalAuth(updatedUsers, getEffectiveLocalRoles(db));
         onUpdateDb({ ...db, users: updatedUsers });
       } else {
         if (currentUsers.some((u) => u.username === formUsername.trim())) {
@@ -483,16 +712,19 @@ export default function DatabaseServerPanel({
           return;
         }
         const newUser: User = {
-          id: `usr-${Date.now()}`,
+          id: nextSimpleId(currentUsers, 'usr'),
           username: formUsername.trim(),
           fullName: formFullName.trim() || formUsername.trim(),
           role: formRole,
           permissions: finalPerms,
+          allowedBranches: finalAllowedBranches,
           password: formPassword.trim(),
           is2FA: formIs2FA,
           secretCode: formSecretCode.trim() || '123456',
         };
-        onUpdateDb({ ...db, users: [...currentUsers, newUser] });
+        const updatedUsers = [...currentUsers, newUser];
+        saveSharedLocalAuth(updatedUsers, getEffectiveLocalRoles(db));
+        onUpdateDb({ ...db, users: updatedUsers });
       }
       setIsUserModalOpen(false);
     }
@@ -519,9 +751,11 @@ export default function DatabaseServerPanel({
         setIsBusy(false);
       }
     } else {
+      const remaining = (db.users || []).filter((item) => item.id !== u.id);
+      saveSharedLocalAuth(remaining, getEffectiveLocalRoles(db));
       onUpdateDb({
         ...db,
-        users: (db.users || []).filter((item) => item.id !== u.id),
+        users: remaining,
       });
     }
   };
@@ -644,6 +878,146 @@ export default function DatabaseServerPanel({
         </div>
       </div>
 
+      {/* Multi-Branch Management Section (Admin Only) */}
+      {isAdmin && (
+        <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800 pb-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Building2 className="h-4.5 w-4.5 text-emerald-400" />
+                مدیریت شعبه‌ها و دیتابیس‌های مجزا ({toPersianDigits(branchList.length)} شعبه)
+              </h3>
+              <p className="text-[11px] text-zinc-400 mt-0.5">
+                هر شعبه دارای پایگاه داده فیزیکی مستقل (PostgreSQL / IndexedDB) و منوی QR اختصاصی است؛ کاربران به‌صورت مشترک مدیریت می‌شوند.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {branchList.length > 1 && onOpenCopyFromBranch && (
+                <button
+                  type="button"
+                  onClick={onOpenCopyFromBranch}
+                  className="bg-zinc-800 hover:bg-zinc-750 text-sky-300 border border-sky-700/40 text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all"
+                >
+                  <Copy className="h-4 w-4" /> کپی اطلاعات از شعبه دیگر
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={openCreateBranchModal}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                <Plus className="h-4 w-4" /> افزودن شعبه جدید
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {branchList.map((branch) => {
+              const isCurrent = branch.id === activeBranchId;
+              const menuPath = branch.isDefault ? '/menu' : `/menu/${branch.slug}`;
+              return (
+                <div
+                  key={branch.id}
+                  className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
+                    isCurrent
+                      ? 'bg-emerald-950/20 border-emerald-600/50'
+                      : 'bg-zinc-950/60 border-zinc-800'
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-black text-white">{branch.name}</span>
+                          {isCurrent && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-600 text-white">
+                              شعبه فعال
+                            </span>
+                          )}
+                          {branch.isDefault && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 border border-zinc-700">
+                              اصلی
+                            </span>
+                          )}
+                          {branch.isActive === false && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-950/60 text-rose-300 border border-rose-800/50">
+                              غیرفعال
+                            </span>
+                          )}
+                        </div>
+                        {(branch.address || branch.phone) && (
+                          <div className="text-[11px] text-zinc-400 mt-1 truncate">
+                            {[branch.address, branch.phone].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditBranchModal(branch)}
+                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-sky-400 rounded-lg cursor-pointer transition-colors"
+                          title="ویرایش مشخصات شعبه"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                        </button>
+                        {!branch.isDefault && branch.id !== DEFAULT_BRANCH_ID && !isCurrent && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteBranch(branch)}
+                            className="p-1.5 bg-zinc-800 hover:bg-rose-950 text-rose-400 rounded-lg cursor-pointer transition-colors"
+                            title="حذف شعبه از فهرست"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                      <div className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800/90 flex items-center justify-between gap-2">
+                        <span className="text-zinc-500">دیتابیس:</span>
+                        <span className="font-mono text-zinc-200 truncate" dir="ltr">
+                          {branch.dbName}
+                        </span>
+                      </div>
+                      <div className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800/90 flex items-center justify-between gap-2">
+                        <span className="text-zinc-500 flex items-center gap-1">
+                          <QrCode className="h-3 w-3 text-emerald-400" />
+                          منوی QR:
+                        </span>
+                        <span className="font-mono text-emerald-400 truncate" dir="ltr">
+                          {menuPath}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-800/70 text-[11px]">
+                    <span className="text-zinc-400">
+                      {isPgConnected
+                        ? branch.databaseExists
+                          ? `PostgreSQL آماده · ${formatBytes(branch.dbSizeBytes)}`
+                          : 'دیتابیس در اولین ورود ایجاد می‌شود'
+                        : 'فضای مجزای مرورگر (IndexedDB)'}
+                    </span>
+                    {!isCurrent && branch.isActive !== false && onSwitchBranch && (
+                      <button
+                        type="button"
+                        onClick={() => onSwitchBranch(branch.id)}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-emerald-600 text-zinc-200 hover:text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <ArrowLeftRight className="h-3.5 w-3.5" />
+                        ورود به این شعبه
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* RBAC User Management Section (Admin Only) */}
       {isAdmin ? (
         <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 space-y-4">
@@ -754,6 +1128,7 @@ export default function DatabaseServerPanel({
                   <th className="py-2.5 px-3">نام کاربری</th>
                   <th className="py-2.5 px-3">نام و نام خانوادگی</th>
                   <th className="py-2.5 px-3">نقش سازمانی</th>
+                  <th className="py-2.5 px-3">شعبه‌های مجاز</th>
                   <th className="py-2.5 px-3">دسترسی بخش‌ها</th>
                   <th className="py-2.5 px-3">وضعیت</th>
                   <th className="py-2.5 px-3 text-left">عملیات</th>
@@ -763,6 +1138,8 @@ export default function DatabaseServerPanel({
                 {usersList.map((u: any) => {
                   const perms: string[] = Array.isArray(u.permissions) ? u.permissions : [];
                   const hasAll = u.role === 'مدیر ارشد' || perms.includes('*');
+                  const allowedBr = normalizeAllowedBranches(u.allowedBranches);
+                  const allBranchesAllowed = u.role === 'مدیر ارشد' || allowedBr.includes('*');
                   return (
                     <tr key={u.id || u.username} className="hover:bg-zinc-850/40">
                       <td className="py-2.5 px-3 font-mono font-bold text-zinc-200">{u.username}</td>
@@ -775,6 +1152,17 @@ export default function DatabaseServerPanel({
                         }`}>
                           {u.role}
                         </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-[11px] text-zinc-300">
+                        {allBranchesAllowed ? (
+                          <span className="text-emerald-400 font-semibold">همه شعبه‌ها</span>
+                        ) : (
+                          <span>
+                            {allowedBr
+                              .map((bid) => branchList.find((b) => b.id === bid)?.name || bid)
+                              .join('، ')}
+                          </span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 text-[11px] text-zinc-400">
                         {hasAll ? (
@@ -1128,6 +1516,48 @@ export default function DatabaseServerPanel({
                 )}
               </div>
 
+              {/* Allowed Branches Selector */}
+              <div className="space-y-2 border-t border-zinc-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-300">
+                    شعبه‌های مجاز برای ورود و ثبت اطلاعات:
+                  </label>
+                  {formRole !== 'مدیر ارشد' && (
+                    <label className="flex items-center gap-1.5 text-[11px] text-emerald-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formAllowedBranches.includes('*')}
+                        onChange={() => toggleAllowedBranch('*')}
+                        className="rounded border-zinc-700 bg-zinc-950 text-emerald-500"
+                      />
+                      دسترسی به همه شعبه‌ها (*)
+                    </label>
+                  )}
+                </div>
+                {formRole === 'مدیر ارشد' || formAllowedBranches.includes('*') ? (
+                  <div className="p-2.5 rounded-xl bg-emerald-950/25 border border-emerald-800/40 text-[11px] text-emerald-300">
+                    این کاربر به تمامی شعبه‌های فعال سامانه دسترسی دارد.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                    {(branchList.length > 0 ? branchList : DEFAULT_BRANCHES).map((b) => {
+                      const checked = formAllowedBranches.includes(b.id);
+                      return (
+                        <label key={b.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleAllowedBranch(b.id)}
+                            className="rounded border-zinc-700 bg-zinc-950 text-emerald-500"
+                          />
+                          <span className="truncate">{b.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {formRole !== 'مدیر ارشد' && (
                 <div className="space-y-2 border-t border-zinc-800 pt-3">
                   <div className="flex items-center justify-between">
@@ -1325,6 +1755,139 @@ export default function DatabaseServerPanel({
                 <button
                   type="button"
                   onClick={() => setIsRoleModalOpen(false)}
+                  className="px-4 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold cursor-pointer hover:bg-zinc-800"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Branch Modal */}
+      {isBranchModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-black text-white flex items-center gap-2">
+                <Building2 className="h-4.5 w-4.5 text-emerald-400" />
+                {editingBranch ? `ویرایش شعبه: ${editingBranch.name}` : 'تعریف شعبه جدید با دیتابیس مجزا'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsBranchModalOpen(false)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveBranch} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                  نام شعبه (مثال: شعبه سوم - ولنجک)
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={branchNameInput}
+                  onChange={(e) => setBranchNameInput(e.target.value)}
+                  placeholder="نام شعبه را وارد کنید..."
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {!editingBranch && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                      شناسه آدرس منوی QR (اختیاری - انگلیسی)
+                    </label>
+                    <input
+                      type="text"
+                      value={branchSlugInput}
+                      onChange={(e) => setBranchSlugInput(e.target.value)}
+                      placeholder="خودکار (مثل branch-3)"
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-emerald-500"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                      نام دیتابیس PostgreSQL (اختیاری)
+                    </label>
+                    <input
+                      type="text"
+                      value={branchDbNameInput}
+                      onChange={(e) => setBranchDbNameInput(e.target.value)}
+                      placeholder="خودکار (مثل gatan_branch_3)"
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-emerald-500"
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-400 mb-1">تلفن شعبه (اختیاری)</label>
+                  <input
+                    type="text"
+                    value={branchPhoneInput}
+                    onChange={(e) => setBranchPhoneInput(e.target.value)}
+                    placeholder="۰۲۱-..."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-emerald-500"
+                    dir="ltr"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-400 mb-1">نشانی شعبه (اختیاری)</label>
+                  <input
+                    type="text"
+                    value={branchAddressInput}
+                    onChange={(e) => setBranchAddressInput(e.target.value)}
+                    placeholder="آدرس کوتاه شعبه..."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {editingBranch && !editingBranch.isDefault && (
+                <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={branchIsActiveInput}
+                    onChange={(e) => setBranchIsActiveInput(e.target.checked)}
+                    className="rounded border-zinc-700 bg-zinc-900 text-emerald-500"
+                  />
+                  این شعبه فعال و قابل انتخاب برای کاربران است
+                </label>
+              )}
+
+              {!editingBranch && (
+                <div className="p-3 rounded-xl bg-emerald-950/25 border border-emerald-800/40 text-[11px] text-emerald-300 leading-5">
+                  دیتابیس شعبه جدید به‌صورت کاملاً مجزا و خالی ایجاد می‌شود. پس از ساخت، می‌توانید با ابزار «کپی اطلاعات از شعبه دیگر» تعاریف پایه (کالاها، فرمول‌ها و دسته‌بندی‌ها) را به آن منتقل کنید.
+                </div>
+              )}
+
+              {branchFormError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/50 text-rose-300 text-xs">
+                  {branchFormError}
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isBusy}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-colors disabled:opacity-60"
+                >
+                  {isBusy ? 'در حال ایجاد...' : editingBranch ? 'ذخیره تغییرات شعبه' : 'ایجاد شعبه و دیتابیس'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsBranchModalOpen(false)}
                   className="px-4 py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-xl text-xs font-bold cursor-pointer hover:bg-zinc-800"
                 >
                   انصراف

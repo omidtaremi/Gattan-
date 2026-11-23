@@ -31,28 +31,31 @@ echo "[2/6] Starting and enabling PostgreSQL service..."
 systemctl enable postgresql
 systemctl start postgresql
 
-echo "[3/6] Creating PostgreSQL role '${DB_USER}' and database '${DB_NAME}' (UTF-8)..."
+echo "[3/6] Creating PostgreSQL role '${DB_USER}' (with CREATEDB) and branch databases ('${DB_NAME}', 'gatan_branch_2')..."
 su - postgres -c "psql -v ON_ERROR_STOP=1" <<SQL
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${DB_USER}') THEN
-    CREATE ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASS}';
+    CREATE ROLE ${DB_USER} WITH LOGIN CREATEDB PASSWORD '${DB_PASS}';
   ELSE
-    ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASS}';
+    ALTER ROLE ${DB_USER} WITH LOGIN CREATEDB PASSWORD '${DB_PASS}';
   END IF;
 END
 \$\$;
 SQL
 
-if ! su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'\"" | grep -q 1; then
-  su - postgres -c "createdb -O ${DB_USER} -E UTF8 -T template0 ${DB_NAME}"
-fi
+for TARGET_DB in "${DB_NAME}" "gatan_branch_2"; do
+  if ! su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'\"" | grep -q 1; then
+    su - postgres -c "createdb -O ${DB_USER} -E UTF8 -T template0 ${TARGET_DB}"
+  fi
+  su - postgres -c "psql -d ${TARGET_DB} -c \"GRANT ALL PRIVILEGES ON DATABASE ${TARGET_DB} TO ${DB_USER}; GRANT ALL ON SCHEMA public TO ${DB_USER};\""
+done
 
-su - postgres -c "psql -d ${DB_NAME} -c \"GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER}; GRANT ALL ON SCHEMA public TO ${DB_USER};\""
-
-echo "[4/6] Applying schema from db/schema.sql..."
+echo "[4/6] Applying schema from db/schema.sql to branch databases..."
 if [[ -f "${APP_DIR}/db/schema.sql" ]]; then
-  PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -U "${DB_USER}" -d "${DB_NAME}" -f "${APP_DIR}/db/schema.sql"
+  for TARGET_DB in "${DB_NAME}" "gatan_branch_2"; do
+    PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -U "${DB_USER}" -d "${TARGET_DB}" -f "${APP_DIR}/db/schema.sql"
+  done
 fi
 
 echo "[5/6] Checking Node.js 22 LTS & PM2..."

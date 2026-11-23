@@ -37,9 +37,20 @@ import {
   getPublicDigitalMenuFromPg,
   getDigitalMenuConfigAdminFromPg,
   saveDigitalMenuConfigInPg,
+  getPublicBranchesFromPg,
+  getBranchesWithStatusFromPg,
+  createBranchAdminInPg,
+  updateBranchAdminInPg,
+  deleteBranchAdminInPg,
+  loadBranchCopySourceFromPg,
   type PgUserPublic,
 } from './src/server/pgDb.ts';
 import { canAccessTab, isAdminUser } from './src/shared/rbac.ts';
+import {
+  DEFAULT_BRANCH_ID,
+  canAccessBranch,
+  isValidBranchIdentifier,
+} from './src/shared/branches.ts';
 import {
   verifyPrintAgentKey,
   getPrintStationStatus,
@@ -58,6 +69,19 @@ import {
 interface AuthenticatedRequest extends Request {
   authUser?: PgUserPublic;
   authToken?: string;
+  branchId?: string;
+}
+
+function extractBranchId(req: Request): string {
+  const fromHeader = req.headers['x-branch-id'];
+  const rawHeader = Array.isArray(fromHeader) ? fromHeader[0] : fromHeader;
+  const rawQuery = typeof req.query.branch === 'string' ? req.query.branch : '';
+  const candidate = String(rawHeader || rawQuery || '').trim();
+  if (!candidate) return DEFAULT_BRANCH_ID;
+  if (!isValidBranchIdentifier(candidate)) {
+    return DEFAULT_BRANCH_ID;
+  }
+  return candidate;
 }
 
 function extractToken(req: Request): string {
@@ -138,6 +162,23 @@ function requireAdmin(
   next();
 }
 
+function requireBranchAccess(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  const branchId = extractBranchId(req);
+  if (!req.authUser || !canAccessBranch(req.authUser, branchId)) {
+    res.status(403).json({
+      ok: false,
+      error: 'شما مجوز دسترسی به این شعبه را ندارید.',
+    });
+    return;
+  }
+  req.branchId = branchId;
+  next();
+}
+
 function requireDigitalMenuAccess(
   req: AuthenticatedRequest,
   res: Response,
@@ -160,6 +201,7 @@ async function requirePrintQueueAccess(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  req.branchId = extractBranchId(req);
   if (!isPostgresModeActive()) {
     if (isProductionEnv) {
       res.status(503).json({ ok: false, error: 'پایگاه داده PostgreSQL متصل نیست.' });
@@ -171,12 +213,15 @@ async function requirePrintQueueAccess(
   }
   await requireAuth(req, res, () => {
     const user = req.authUser;
+    if (!user || !canAccessBranch(user, req.branchId || DEFAULT_BRANCH_ID)) {
+      res.status(403).json({ ok: false, error: 'شما مجوز دسترسی به صف چاپ این شعبه را ندارید.' });
+      return;
+    }
     if (
-      !user ||
-      (!isAdminUser(user) &&
-        !canAccessTab(user, 'customers') &&
-        !canAccessTab(user, 'production_planning') &&
-        !canAccessTab(user, 'sales'))
+      !isAdminUser(user) &&
+      !canAccessTab(user, 'customers') &&
+      !canAccessTab(user, 'production_planning') &&
+      !canAccessTab(user, 'sales')
     ) {
       res.status(403).json({ ok: false, error: 'شما مجوز ارسال به صف چاپ صندوق را ندارید.' });
       return;
@@ -190,6 +235,7 @@ async function requirePrintAdminAccess(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  req.branchId = extractBranchId(req);
   if (!isPostgresModeActive()) {
     if (isProductionEnv) {
       res.status(503).json({ ok: false, error: 'پایگاه داده PostgreSQL متصل نیست.' });
@@ -204,7 +250,7 @@ async function requirePrintAdminAccess(
 }
 
 async function requirePrintAgentAuth(
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
@@ -212,6 +258,8 @@ async function requirePrintAgentAuth(
   const authHeader = String(req.headers.authorization || '').trim();
   const providedKey =
     headerKey || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '');
+  const branchId = extractBranchId(req);
+  req.branchId = branchId;
 
   if (!providedKey) {
     res.status(401).json({ ok: false, error: 'کلید احراز هویت سرویس چاپ ارسال نشده است.' });
@@ -219,7 +267,7 @@ async function requirePrintAgentAuth(
   }
 
   try {
-    const valid = await verifyPrintAgentKey(providedKey);
+    const valid = await verifyPrintAgentKey(providedKey, branchId);
     if (!valid) {
       res.status(401).json({ ok: false, error: 'کلید سرویس چاپ نامعتبر است.' });
       return;
@@ -318,9 +366,10 @@ async function startServer() {
     });
   });
 
-  app.get('/api/db/status', async (_req: Request, res: Response) => {
+  app.get('/api/db/status', async (req: Request, res: Response) => {
     try {
-      const status = await getPostgresStatus();
+      const branchId = extractBranchId(req);
+      const status = await getPostgresStatus(branchId);
       res.json(status);
     } catch (err: any) {
       res.status(500).json({
@@ -332,18 +381,33 @@ async function startServer() {
     }
   });
 
-  // 1b. Strictly Read-Only Public Digital Menu API (Zero Auth Required, Sanitized Projection Only)
-  app.get('/api/public/menu', async (_req: Request, res: Response) => {
+  // 1a. Public Branches List (for LoginScreen selector)
+  app.get('/api/branches/public', async (_req: Request, res: Response) => {
+    if (!isPostgresModeActive()) {
+      res.json({ ok: true, branches: [] });
+      return;
+    }
+    try {
+      const branches = await getPublicBranchesFromPg();
+      res.json({ ok: true, branches });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت لیست شعبه‌ها' });
+    }
+  });
+
+  // 1b. Strictly Read-Only Public Digital Menu API (Per-Branch, Zero Auth Required, Sanitized Projection Only)
+  app.get('/api/public/menu', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
     if (!isPostgresModeActive()) {
       res.json({ ok: true, mode: 'local', menu: null });
       return;
     }
     try {
-      const menu = await getPublicDigitalMenuFromPg();
+      const branchParam = extractBranchId(req);
+      const menu = await getPublicDigitalMenuFromPg(branchParam);
       res.json({ ok: true, mode: 'postgres', menu });
     } catch (err: any) {
-      res.status(500).json({ ok: false, error: err?.message || 'خطا در بارگذاری منوی دیجیتال' });
+      res.status(404).json({ ok: false, error: err?.message || 'خطا در بارگذاری منوی دیجیتال' });
     }
   });
 
@@ -359,7 +423,8 @@ async function startServer() {
         res.status(400).json({ ok: false, error: 'شناسه محصول نامعتبر است.' });
         return;
       }
-      const menu = await getPublicDigitalMenuFromPg();
+      const branchParam = extractBranchId(req);
+      const menu = await getPublicDigitalMenuFromPg(branchParam);
       if (!menu.enabled) {
         res.status(404).json({ ok: false, error: 'منوی دیجیتال در حال حاضر غیرفعال است.' });
         return;
@@ -372,6 +437,22 @@ async function startServer() {
       res.json({ ok: true, mode: 'postgres', product });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت جزئیات محصول' });
+    }
+  });
+
+  app.get('/api/public/menu/:branchSlug', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
+    if (!isPostgresModeActive()) {
+      res.json({ ok: true, mode: 'local', menu: null });
+      return;
+    }
+    try {
+      const rawSlug = String(req.params.branchSlug || '').trim();
+      const branchParam = isValidBranchIdentifier(rawSlug) ? rawSlug : DEFAULT_BRANCH_ID;
+      const menu = await getPublicDigitalMenuFromPg(branchParam);
+      res.json({ ok: true, mode: 'postgres', menu });
+    } catch (err: any) {
+      res.status(404).json({ ok: false, error: err?.message || 'منوی دیجیتال شعبه مورد نظر یافت نشد.' });
     }
   });
 
@@ -556,40 +637,113 @@ async function startServer() {
     }
   });
 
-  // 4. Shared Database Read / Delta Sync / Import Routes
-  app.get('/api/db', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // 3c. Multi-Branch Management & Cross-Branch Copy Source Routes
+  app.get('/api/branches', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const branches = await getBranchesWithStatusFromPg(req.authUser!);
+      res.json({ ok: true, branches });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت اطلاعات شعبه‌ها' });
+    }
+  });
+
+  app.post('/api/branches', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const created = await createBranchAdminInPg(
+        req.authUser!,
+        req.body || {},
+        getClientIp(req)
+      );
+      res.status(201).json({ ok: true, branch: created });
+    } catch (err: any) {
+      const msg = err?.code === '23505' ? 'شناسه، نامک یا نام دیتابیس شعبه تکراری است.' : (err?.message || 'خطا در ایجاد شعبه جدید');
+      res.status(400).json({ ok: false, error: msg });
+    }
+  });
+
+  app.put('/api/branches/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const updated = await updateBranchAdminInPg(
+        req.authUser!,
+        String(req.params.id),
+        req.body || {},
+        getClientIp(req)
+      );
+      res.json({ ok: true, branch: updated });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در ویرایش مشخصات شعبه' });
+    }
+  });
+
+  app.delete('/api/branches/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await deleteBranchAdminInPg(
+        req.authUser!,
+        String(req.params.id),
+        getClientIp(req)
+      );
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در حذف شعبه' });
+    }
+  });
+
+  app.get('/api/branches/:id/copy-source', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const sourceId = String(req.params.id || '').trim();
+      if (!isValidBranchIdentifier(sourceId)) {
+        res.status(400).json({ ok: false, error: 'شناسه شعبه مبدا نامعتبر است.' });
+        return;
+      }
+      if (!canAccessBranch(req.authUser!, sourceId)) {
+        res.status(403).json({ ok: false, error: 'شما مجوز دسترسی به شعبه مبدا را ندارید.' });
+        return;
+      }
+      const data = await loadBranchCopySourceFromPg(req.authUser!, sourceId);
+      res.json({ ok: true, ...data });
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: err?.message || 'خطا در خواندن داده‌های شعبه مبدا' });
+    }
+  });
+
+  // 4. Shared Database Read / Delta Sync / Import Routes (Branch-Scoped)
+  app.get('/api/db', requireAuth, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const keysParam = typeof req.query.keys === 'string' ? req.query.keys : '';
       const keys = keysParam
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      const data = await loadCollectionsFromPg(req.authUser!, keys.length > 0 ? keys : undefined);
+      const data = await loadCollectionsFromPg(
+        req.authUser!,
+        keys.length > 0 ? keys : undefined,
+        req.branchId
+      );
       res.json({ ok: true, ...data });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در خواندن پایگاه داده' });
     }
   });
 
-  app.get('/api/db/backup', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  app.get('/api/db/backup', requireAuth, requireAdmin, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const backup = await exportFullDatabaseFromPg(req.authUser!, getClientIp(req));
+      const backup = await exportFullDatabaseFromPg(req.authUser!, getClientIp(req), req.branchId);
       res.json({ ok: true, mode: 'postgres', ...backup });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در تهیه نسخه پشتیبان کامل از PostgreSQL' });
     }
   });
 
-  app.get('/api/db/versions', requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
+  app.get('/api/db/versions', requireAuth, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const versions = await getCollectionVersionsFromPg();
+      const versions = await getCollectionVersionsFromPg(req.branchId);
       res.json({ ok: true, versions });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در بررسی نسخه‌ها' });
     }
   });
 
-  app.post('/api/db/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/db/sync', requireAuth, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { changes, recordPatches, baseVersions } = req.body || {};
       const result = await syncCollectionsDeltaToPg(
@@ -597,7 +751,8 @@ async function startServer() {
         changes && typeof changes === 'object' ? changes : {},
         baseVersions && typeof baseVersions === 'object' ? baseVersions : {},
         getClientIp(req),
-        recordPatches && typeof recordPatches === 'object' ? recordPatches : undefined
+        recordPatches && typeof recordPatches === 'object' ? recordPatches : undefined,
+        req.branchId
       );
       if (result.forbiddenKeys && result.forbiddenKeys.length > 0) {
         res.status(403).json(result);
@@ -613,7 +768,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/db/import', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/db/import', requireAuth, requireAdmin, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { database, source } = req.body || {};
       if (!database || typeof database !== 'object') {
@@ -624,7 +779,8 @@ async function startServer() {
         req.authUser!,
         database as Record<string, unknown>,
         String(source || 'manual_import'),
-        getClientIp(req)
+        getClientIp(req),
+        req.branchId
       );
       res.json({ ok: true, ...result });
     } catch (err: any) {
@@ -632,13 +788,14 @@ async function startServer() {
     }
   });
 
-  app.post('/api/db/import/stage', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/db/import/stage', requireAuth, requireAdmin, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { importId, chunks } = req.body || {};
       const result = await stageImportChunksInPg(
         req.authUser!,
         String(importId || ''),
-        Array.isArray(chunks) ? chunks : []
+        Array.isArray(chunks) ? chunks : [],
+        req.branchId
       );
       res.json({ ok: true, ...result });
     } catch (err: any) {
@@ -646,7 +803,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/db/import/commit', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/db/import/commit', requireAuth, requireAdmin, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { importId, source, users, roles } = req.body || {};
       const result = await commitStagedImportInPg(
@@ -655,7 +812,8 @@ async function startServer() {
         String(source || 'chunked_import'),
         users,
         getClientIp(req),
-        roles
+        roles,
+        req.branchId
       );
       res.json({ ok: true, ...result });
     } catch (err: any) {
@@ -663,45 +821,48 @@ async function startServer() {
     }
   });
 
-  app.get('/api/audit-logs', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  app.get('/api/audit-logs', requireAuth, requireAdmin, requireBranchAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const limit = Number(req.query.limit || 100);
-      const logs = await getAuditLogsFromPg(limit);
+      const logs = await getAuditLogsFromPg(limit, req.branchId);
       res.json({ ok: true, logs });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت گزارش وقایع' });
     }
   });
 
-  // 4b. ERP Admin Digital Menu Configuration Routes (RBAC-Protected)
-  app.get('/api/digital-menu/config', requireAuth, requireDigitalMenuAccess, async (_req: AuthenticatedRequest, res: Response) => {
+  // 4b. ERP Admin Digital Menu Configuration Routes (RBAC + Branch Protected)
+  app.get('/api/digital-menu/config', requireAuth, requireBranchAccess, requireDigitalMenuAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const data = await getDigitalMenuConfigAdminFromPg();
+      const data = await getDigitalMenuConfigAdminFromPg(req.branchId);
       res.json({ ok: true, ...data });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت تنظیمات منوی دیجیتال' });
     }
   });
 
-  app.put('/api/digital-menu/config', requireAuth, requireDigitalMenuAccess, async (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/digital-menu/config', requireAuth, requireBranchAccess, requireDigitalMenuAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const payload = req.body?.config !== undefined ? req.body.config : req.body;
       if (!payload || typeof payload !== 'object') {
         res.status(400).json({ ok: false, error: 'ساختار تنظیمات منوی دیجیتال نامعتبر است.' });
         return;
       }
-      const saved = await saveDigitalMenuConfigInPg(req.authUser!, payload, getClientIp(req));
+      const saved = await saveDigitalMenuConfigInPg(req.authUser!, payload, getClientIp(req), req.branchId);
       res.json({ ok: true, ...saved });
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'خطا در ذخیره تنظیمات منوی دیجیتال' });
     }
   });
 
-  // 4c. POS Print Queue & Windows 10 Print Agent Routes
+  // 4c. POS Print Queue & Windows 10 Print Agent Routes (Branch-Isolated)
   app.get('/api/print-jobs', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const limit = Number(req.query.limit || 50);
-      const [jobs, station] = await Promise.all([listPrintJobs(limit), getPrintStationStatus()]);
+      const [jobs, station] = await Promise.all([
+        listPrintJobs(limit, req.branchId),
+        getPrintStationStatus(req.branchId),
+      ]);
       res.json({ ok: true, jobs, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت صف چاپ صندوق' });
@@ -712,18 +873,21 @@ async function startServer() {
     try {
       const body = req.body || {};
       const requestedBy = req.authUser?.fullName || String(body.requestedBy || 'کاربر سامانه');
-      const job = await enqueuePrintJob({
-        jobType: String(body.jobType || 'customer_receipt'),
-        title: String(body.title || 'فیش چاپی'),
-        orderId: body.orderId ? String(body.orderId) : undefined,
-        orderNumber: body.orderNumber ? String(body.orderNumber) : undefined,
-        departmentName: body.departmentName ? String(body.departmentName) : undefined,
-        paperWidthMm: Number(body.paperWidthMm || 72),
-        copies: Number(body.copies || 1),
-        htmlContent: String(body.htmlContent || ''),
-        requestedBy,
-      });
-      const station = await getPrintStationStatus();
+      const job = await enqueuePrintJob(
+        {
+          jobType: String(body.jobType || 'customer_receipt'),
+          title: String(body.title || 'فیش چاپی'),
+          orderId: body.orderId ? String(body.orderId) : undefined,
+          orderNumber: body.orderNumber ? String(body.orderNumber) : undefined,
+          departmentName: body.departmentName ? String(body.departmentName) : undefined,
+          paperWidthMm: Number(body.paperWidthMm || 72),
+          copies: Number(body.copies || 1),
+          htmlContent: String(body.htmlContent || ''),
+          requestedBy,
+        },
+        req.branchId
+      );
+      const station = await getPrintStationStatus(req.branchId);
       res.status(201).json({ ok: true, job, station });
     } catch (err: any) {
       res.status(400).json({ ok: false, error: err?.message || 'خطا در ثبت فیش در صف چاپ' });
@@ -733,25 +897,28 @@ async function startServer() {
   app.post('/api/print-jobs/test', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const requestedBy = req.authUser?.fullName || 'تست چاپگر';
-      const job = await enqueuePrintJob({
-        jobType: 'test_print',
-        title: 'تست اتصال فیش‌پرینتر Sewoo 100',
-        paperWidthMm: 72,
-        copies: 1,
-        htmlContent: buildTestPrintHtml(),
-        requestedBy,
-      });
-      const station = await getPrintStationStatus();
+      const job = await enqueuePrintJob(
+        {
+          jobType: 'test_print',
+          title: 'تست اتصال فیش‌پرینتر Sewoo 100',
+          paperWidthMm: 72,
+          copies: 1,
+          htmlContent: buildTestPrintHtml(),
+          requestedBy,
+        },
+        req.branchId
+      );
+      const station = await getPrintStationStatus(req.branchId);
       res.status(201).json({ ok: true, job, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در ثبت فیش تست' });
     }
   });
 
-  app.post('/api/print-jobs/clear-finished', requirePrintQueueAccess, async (_req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/print-jobs/clear-finished', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const deletedCount = await clearFinishedPrintJobs();
-      const station = await getPrintStationStatus();
+      const deletedCount = await clearFinishedPrintJobs(req.branchId);
+      const station = await getPrintStationStatus(req.branchId);
       res.json({ ok: true, deletedCount, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در پاک‌سازی صف چاپ' });
@@ -760,12 +927,12 @@ async function startServer() {
 
   app.post('/api/print-jobs/:id/retry', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const job = await retryPrintJob(String(req.params.id || ''));
+      const job = await retryPrintJob(String(req.params.id || ''), req.branchId);
       if (!job) {
         res.status(404).json({ ok: false, error: 'فیش مورد نظر یافت نشد.' });
         return;
       }
-      const station = await getPrintStationStatus();
+      const station = await getPrintStationStatus(req.branchId);
       res.json({ ok: true, job, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در ارسال مجدد فیش' });
@@ -774,12 +941,12 @@ async function startServer() {
 
   app.delete('/api/print-jobs/:id', requirePrintQueueAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const removed = await cancelPrintJob(String(req.params.id || ''));
+      const removed = await cancelPrintJob(String(req.params.id || ''), req.branchId);
       if (!removed) {
         res.status(404).json({ ok: false, error: 'فیش مورد نظر یافت نشد.' });
         return;
       }
-      const station = await getPrintStationStatus();
+      const station = await getPrintStationStatus(req.branchId);
       res.json({ ok: true, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در حذف فیش از صف چاپ' });
@@ -789,7 +956,7 @@ async function startServer() {
   app.post('/api/print-agent/rotate-key', requirePrintAdminAccess, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const stationName = req.body?.stationName ? String(req.body.stationName) : undefined;
-      const result = await rotatePrintAgentKey(stationName);
+      const result = await rotatePrintAgentKey(stationName, req.branchId);
       res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'خطا در تولید کلید جدید سرویس چاپ' });
@@ -822,39 +989,46 @@ async function startServer() {
   });
 
   // Windows 10 Print Agent machine endpoints (authenticated via X-Print-Agent-Key)
-  app.post('/api/print-agent/heartbeat', requirePrintAgentAuth, async (req: Request, res: Response) => {
+  app.post('/api/print-agent/heartbeat', requirePrintAgentAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const body = req.body || {};
-      const station = await recordAgentHeartbeat({
-        hostname: body.hostname ? String(body.hostname) : undefined,
-        printerName: body.printerName ? String(body.printerName) : undefined,
-        availablePrinters: Array.isArray(body.availablePrinters) ? body.availablePrinters : undefined,
-        agentVersion: body.agentVersion ? String(body.agentVersion) : undefined,
-        ipAddress: getClientIp(req),
-      });
+      const station = await recordAgentHeartbeat(
+        {
+          hostname: body.hostname ? String(body.hostname) : undefined,
+          printerName: body.printerName ? String(body.printerName) : undefined,
+          availablePrinters: Array.isArray(body.availablePrinters) ? body.availablePrinters : undefined,
+          agentVersion: body.agentVersion ? String(body.agentVersion) : undefined,
+          ipAddress: getClientIp(req),
+        },
+        req.branchId
+      );
       res.json({ ok: true, station });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Heartbeat error' });
     }
   });
 
-  app.post('/api/print-agent/claim-next', requirePrintAgentAuth, async (req: Request, res: Response) => {
+  app.post('/api/print-agent/claim-next', requirePrintAgentAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const stationId = req.body?.stationId ? String(req.body.stationId) : undefined;
-      const job = await claimNextPrintJob(stationId);
+      const job = await claimNextPrintJob(stationId, req.branchId);
       res.json({ ok: true, job });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Claim job error' });
     }
   });
 
-  app.post('/api/print-agent/jobs/:id/complete', requirePrintAgentAuth, async (req: Request, res: Response) => {
+  app.post('/api/print-agent/jobs/:id/complete', requirePrintAgentAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const body = req.body || {};
-      const job = await completePrintJob(String(req.params.id || ''), {
-        ok: Boolean(body.ok),
-        errorMessage: body.errorMessage ? String(body.errorMessage) : undefined,
-      });
+      const job = await completePrintJob(
+        String(req.params.id || ''),
+        {
+          ok: Boolean(body.ok),
+          errorMessage: body.errorMessage ? String(body.errorMessage) : undefined,
+        },
+        req.branchId
+      );
       if (!job) {
         res.status(404).json({ ok: false, error: 'Print job not found' });
         return;

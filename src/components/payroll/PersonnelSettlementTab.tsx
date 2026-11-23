@@ -14,8 +14,9 @@ import {
   toPersianDigits, toEnglishDigits, formatWithCommas, parseNumber, 
   downloadCSV, printElement, matchPersianString, getTodayJalali, 
   numberToWordsPersian, isValidJalaliDate, normalizeJalaliDate,
-  parseEffectiveDepartureLastWorkYM
+  parseEffectiveDepartureLastWorkYM, getFiscalYearFromPeriod
 } from '../../utils/persianUtils';
+import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
 import { 
   Calculator, FileText, Printer, Download, Plus, Search, Trash2, 
   Edit3, CheckCircle2, AlertCircle, Calendar, DollarSign, Users, 
@@ -856,7 +857,7 @@ export default function PersonnelSettlementTab({
 
       const firstAtt = findFirstAttendanceDateForCode(
         db.attendanceRecords,
-        emp.attendanceCode || emp.employeeCode,
+        emp.attendanceCode,
         activePeriodId
       );
       const firstAttParsed = parseJalali(firstAtt);
@@ -2130,9 +2131,11 @@ export default function PersonnelSettlementTab({
     }
 
     const currentList = db.personnelSettlements || [];
+    const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
     const cleanSettlementDate = normalizeJalaliDate(toEnglishDigits(formSettlementDate)) || toEnglishDigits(formSettlementDate) || getTodayJalali();
-    const yearPrefix = cleanSettlementDate.split('/')[0] || activePeriodId.split('-')[0] || '1405';
-    const autoNumber = `SET-${yearPrefix}-${String(currentList.length + 1).padStart(3, '0')}`;
+    const yearPrefix = cleanSettlementDate.split('/')[0] || String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId));
+    const periodSettlementCount = currentList.filter(s => s.periodId === activePeriodId).length;
+    const autoNumber = `SET-${yearPrefix}-${String(periodSettlementCount + 1).padStart(3, '0')}`;
     const normalizedStartDate = normalizeJalaliDate(toEnglishDigits(formStartDate)) || toEnglishDigits(formStartDate);
     const rawNormalizedEndDate = normalizeJalaliDate(toEnglishDigits(formEndDate)) || toEnglishDigits(formEndDate);
     const normalizedEndDate =
@@ -2144,7 +2147,7 @@ export default function PersonnelSettlementTab({
     const effectiveReason: SettlementReason = formSettlementType === 'without_departure' ? 'contract_end' : formReason;
 
     const newRecord: PersonnelSettlement = {
-      id: editingId || `settle-${Date.now()}`,
+      id: editingId || nextSimpleId(currentList, getPrefixForCollection('personnelSettlements')),
       periodId: activePeriodId,
       settlementNo: editingId ? (currentList.find(s => s.id === editingId)?.settlementNo || autoNumber) : autoNumber,
       employeeCode: formEmployeeCode,
@@ -2212,7 +2215,7 @@ export default function PersonnelSettlementTab({
       updatedPersonnel = updatedPersonnel.map(p => {
         if (
           p.employeeCode === formEmployeeCode &&
-          (!p.periodId || p.periodId === activePeriodId)
+          p.periodId === activePeriodId
         ) {
           return {
             ...p,
@@ -2368,8 +2371,10 @@ export default function PersonnelSettlementTab({
       return;
     }
     const currentList = db.personnelSettlements || [];
-    const yearPrefix = formSettlementDate.split('/')[0] || activePeriodId.split('-')[0] || '1405';
-    const autoNumber = `SET-${yearPrefix}-${String(currentList.length + 1).padStart(3, '0')}`;
+    const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
+    const yearPrefix = formSettlementDate.split('/')[0] || String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId));
+    const periodSettlementCount = currentList.filter(s => s.periodId === activePeriodId).length;
+    const autoNumber = `SET-${yearPrefix}-${String(periodSettlementCount + 1).padStart(3, '0')}`;
 
     const draftRecord: PersonnelSettlement = {
       id: editingId || `settle-draft-preview`,

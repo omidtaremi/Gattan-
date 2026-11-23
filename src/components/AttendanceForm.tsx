@@ -6,6 +6,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppDatabase, Personnel, AttendanceRecord, PayrollCalculationRules, ShiftAssignment } from '../types';
 import { toPersianDigits, toEnglishDigits, formatWithCommas, parseNumber, getTodayJalali, isEmployeeEligibleForMonth, isEmployeeDepartedInMonth, getDefaultYearMonthFromPeriod, isShiftAssignmentInMonth } from '../utils/persianUtils';
+import { getPeriodPayrollRules, getPeriodPersonnelCapabilities } from '../utils/periodIsolation';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
 import { 
   Calendar, Upload, AlertTriangle, CheckCircle, Plus, Trash2, Edit3, Save, Download, RefreshCw, Users, Clock, AlertCircle, Info, Check, X, FileSpreadsheet, Search, ArrowLeftRight, RotateCcw, Sparkles, Briefcase,
   Radio, Wifi, Smartphone, Cpu, Printer, ArrowRight
@@ -364,6 +366,7 @@ function normalizeDateStr(dateStr: string): string {
 }
 
 // Robust helper to check if an attendance record belongs to an employee
+// STRICTLY matches by attendanceCode (کد پرسنل حضور و غیاب) ONLY — NEVER employeeCode!
 export function isRecordForEmployee(rec: any, empObj: any): boolean {
   if (!rec || !empObj) return false;
   const clean = (c: any) => {
@@ -372,28 +375,18 @@ export function isRecordForEmployee(rec: any, empObj: any): boolean {
     return noZeros === '' && s !== '' ? '0' : noZeros;
   };
   const recCode = clean(rec.attendanceCode);
-  const empAttCode = clean(empObj.attendanceCode);
-  const empCode = clean(empObj.employeeCode);
+  const rawEmpAtt = toEnglishDigits(String(empObj.attendanceCode ?? empObj.personnel?.attendanceCode ?? '')).trim();
+  const empAttTokens = rawEmpAtt
+    ? rawEmpAtt.split(/[\s,،;|/\\]+/).map(t => clean(t)).filter(Boolean)
+    : [];
 
-  // 1. If personnel has a specified attendance code (کد حضور و غیاب مشخص):
-  // It MUST strictly match the record's traffic code (recCode === empAttCode).
-  // A personnel with a specified attendance code must NEVER match a different traffic code,
-  // even if their employeeCode happens to match the traffic code!
-  if (empAttCode) {
-    if (recCode) {
-      return recCode === empAttCode;
-    }
-    // If record has no attendance code at all, fallback to employeeId
-    return Boolean(rec.employeeId && rec.employeeId === empObj.id);
-  }
-
-  // 2. If personnel does NOT have an attendance code set:
+  // 1. When the attendance record has a punch code (recCode), match STRICTLY against personnel.attendanceCode ONLY.
+  // Never fall back to employeeCode!
   if (recCode) {
-    if (empCode && recCode === empCode) return true;
-    return false;
+    return empAttTokens.includes(recCode);
   }
 
-  // 3. Fallback to employeeId only if record has NO attendance code
+  // 2. Fallback to employeeId ONLY when the record has NO attendanceCode at all (e.g. manual entry without punch code)
   if (rec.employeeId && rec.employeeId === empObj.id) {
     return true;
   }
@@ -546,52 +539,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
   const { db, onUpdateDb, activePeriodId, isMonthLocked } = props;
 
   // Parse active period to default year and month
-  const defaultYear = useMemo(() => {
-    // 1. Try to find active period from db.periods
-    const currentPeriod = db.periods?.find(p => p.id === activePeriodId);
-    if (currentPeriod && currentPeriod.startDate) {
-      const cleanDate = toEnglishDigits(currentPeriod.startDate).trim();
-      const parts = cleanDate.split('/');
-      if (parts.length > 0) {
-        const y = parseInt(parts[0], 10);
-        if (!isNaN(y) && y > 1300 && y < 1500) return y;
-      }
-    }
-    // 2. Try parsing activePeriodId directly if it's like "1405-01"
-    if (activePeriodId && activePeriodId.includes('-')) {
-      const parts = activePeriodId.split('-');
-      const y = parseInt(toEnglishDigits(parts[0]), 10);
-      if (!isNaN(y) && y > 1300 && y < 1500) return y;
-      const mY = parseInt(toEnglishDigits(parts[1]), 10);
-      if (!isNaN(mY) && mY > 1300 && mY < 1500) return mY;
-    }
-    return 1403;
-  }, [activePeriodId, db.periods]);
-
-  const defaultMonth = useMemo(() => {
-    // 1. Try to find active period from db.periods
-    const currentPeriod = db.periods?.find(p => p.id === activePeriodId);
-    if (currentPeriod && currentPeriod.startDate) {
-      const cleanDate = toEnglishDigits(currentPeriod.startDate).trim();
-      const parts = cleanDate.split('/');
-      if (parts.length > 1) {
-        const m = parseInt(parts[1], 10);
-        if (!isNaN(m) && m >= 1 && m <= 12) return m;
-      }
-    }
-    // 2. Try parsing activePeriodId directly if it's like "1405-01"
-    if (activePeriodId && activePeriodId.includes('-')) {
-      const parts = activePeriodId.split('-');
-      const m = parseInt(toEnglishDigits(parts[1]), 10);
-      if (!isNaN(m) && m >= 1 && m <= 12) return m;
-    }
-    return 1;
-  }, [activePeriodId, db.periods]);
-
   const fallbackShiftYearMonth = useMemo(
-    () => getDefaultYearMonthFromPeriod(db.periods.find(p => p.id === activePeriodId), activePeriodId),
+    () => getDefaultYearMonthFromPeriod(db.periods?.find(p => p.id === activePeriodId), activePeriodId),
     [db.periods, activePeriodId]
   );
+
+  const defaultYear = fallbackShiftYearMonth.year;
+  const defaultMonth = fallbackShiftYearMonth.month;
 
   const [localYear, setLocalYear] = useState<number>(defaultYear);
   const [localMonth, setLocalMonth] = useState<number>(defaultMonth);
@@ -699,14 +653,10 @@ export default function AttendanceForm(props: AttendanceFormProps) {
   const hasRecordWithTimesForEmployee = React.useCallback((empObj: any) => {
     if (!empObj) return false;
     const attTokens = splitAttCodes(getEmpAttCode(empObj));
-    if (attTokens.length > 0) {
-      return (
-        attTokens.some(tok => recordsWithTimesIndex.codes.has(stripLeadingZeros(tok))) ||
-        Boolean(empObj.id && recordsWithTimesIndex.empIdsNoCode.has(empObj.id))
-      );
+    if (attTokens.length > 0 && attTokens.some(tok => recordsWithTimesIndex.codes.has(stripLeadingZeros(tok)))) {
+      return true;
     }
-    const empCode = recordsWithTimesIndex.clean(getEmpCode(empObj));
-    return (Boolean(empCode) && recordsWithTimesIndex.codes.has(empCode)) || Boolean(empObj.id && recordsWithTimesIndex.empIdsNoCode.has(empObj.id));
+    return Boolean(empObj.id && recordsWithTimesIndex.empIdsNoCode.has(empObj.id));
   }, [recordsWithTimesIndex]);
 
   const hasAnyRecordOrPayrollForEmployee = React.useCallback((empObj: any) => {
@@ -716,21 +666,15 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       return true;
     }
     const attTokens = splitAttCodes(getEmpAttCode(empObj));
-    if (attTokens.length > 0) {
-      return (
-        attTokens.some(tok => recordsWithTimesIndex.allMonthCodes.has(stripLeadingZeros(tok))) ||
-        Boolean(empObj.id && recordsWithTimesIndex.allMonthEmpIdsNoCode.has(empObj.id))
-      );
+    if (attTokens.length > 0 && attTokens.some(tok => recordsWithTimesIndex.allMonthCodes.has(stripLeadingZeros(tok)))) {
+      return true;
     }
-    const empCode = recordsWithTimesIndex.clean(getEmpCode(empObj));
-    return (Boolean(empCode) && recordsWithTimesIndex.allMonthCodes.has(empCode)) || Boolean(empObj.id && recordsWithTimesIndex.allMonthEmpIdsNoCode.has(empObj.id));
+    return Boolean(empObj.id && recordsWithTimesIndex.allMonthEmpIdsNoCode.has(empObj.id));
   }, [recordsWithTimesIndex]);
 
-  // All personnel belonging to activePeriodId (or global with missing periodId), prioritizing exact periodId
+  // All personnel strictly belonging to activePeriodId
   const allPeriodPersonnel = useMemo(() => {
-    return (db.personnel || [])
-      .filter(p => !p.periodId || p.periodId === activePeriodId)
-      .sort((a, b) => (a.periodId === activePeriodId ? 0 : 1) - (b.periodId === activePeriodId ? 0 : 1));
+    return (db.personnel || []).filter(p => p.periodId === activePeriodId);
   }, [db.personnel, activePeriodId]);
 
   // All genuine (non-dummy) personnel defined in the active period
@@ -769,21 +713,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
     allPeriodPersonnel.forEach(p => {
       if (p.id && !knownById.has(p.id)) knownById.set(p.id, p);
+      // Strictly collect ONLY attendanceCode (کد پرسنل حضور و غیاب) — never employeeCode
       const attTokens = splitAttCodes(getEmpAttCode(p));
       if (attTokens.length > 0) {
         attTokens.forEach(tok => {
           validCodesSet.add(tok);
           validCodesSet.add(stripLeadingZeros(tok));
         });
-      } else {
-        const empCode = getEmpCode(p);
-        if (empCode) {
-          const c = normalizeAttCode(empCode);
-          if (c) {
-            validCodesSet.add(c);
-            validCodesSet.add(stripLeadingZeros(c));
-          }
-        }
       }
     });
 
@@ -809,17 +745,17 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       const cleanCode = normalizeAttCode(rec.attendanceCode);
       const cleanWithoutZeros = stripLeadingZeros(cleanCode);
 
-      // Check if record's attendance code matches any personnel defined in this period
+      // Check if record's attendance code matches any personnel's attendanceCode defined in this period
       if (cleanCode && (validCodesSet.has(cleanCode) || (cleanWithoutZeros && validCodesSet.has(cleanWithoutZeros)))) {
         return;
       }
 
-      // Check if record is already linked to a defined personnel without a conflicting attendance code
+      // Check if record is already linked to a defined personnel whose attendanceCode matches this record's punch code
       if (rec.employeeId) {
         const linkedEmp = knownById.get(rec.employeeId);
         if (linkedEmp) {
           const empAttTokens = splitAttCodes(getEmpAttCode(linkedEmp)).map(stripLeadingZeros);
-          if (empAttTokens.length === 0 || (cleanWithoutZeros && empAttTokens.includes(cleanWithoutZeros))) {
+          if (!cleanWithoutZeros || (empAttTokens.length > 0 && empAttTokens.includes(cleanWithoutZeros))) {
             return;
           }
         }
@@ -872,11 +808,36 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     }
   }, [db.approvedMismatches]);
 
+  const periodProductionSections = useMemo(
+    () => (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+    [db.productionSections, activePeriodId]
+  );
+  const periodShifts = useMemo(
+    () => (db.shifts || []).filter(s => s.periodId === activePeriodId),
+    [db.shifts, activePeriodId]
+  );
+  const periodOfficialHolidays = useMemo(
+    () => (db.officialHolidays || []).filter(h => h.periodId === activePeriodId),
+    [db.officialHolidays, activePeriodId]
+  );
+  const periodMonthlyWorkdaySettings = useMemo(
+    () => (db.monthlyWorkdaySettings || []).filter(s => s.periodId === activePeriodId),
+    [db.monthlyWorkdaySettings, activePeriodId]
+  );
+  const periodRules = useMemo(
+    () => getPeriodPayrollRules(db, activePeriodId),
+    [db, activePeriodId]
+  );
+  const periodCapabilities = useMemo(
+    () => getPeriodPersonnelCapabilities(db, activePeriodId),
+    [db, activePeriodId]
+  );
+
   React.useEffect(() => {
-    if (db.productionSections && db.productionSections.length > 0 && !fallbackSectionId) {
-      setFallbackSectionId(db.productionSections[0].id);
+    if (periodProductionSections.length > 0 && !fallbackSectionId) {
+      setFallbackSectionId(periodProductionSections[0].id);
     }
-  }, [db.productionSections, fallbackSectionId]);
+  }, [periodProductionSections, fallbackSectionId]);
 
   const [inspectEmployeeId, setInspectEmployeeId] = useState<string>('');
   const [editingDayNum, setEditingDayNum] = useState<number | null>(null);
@@ -890,19 +851,19 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
   const getAuthorizedCapabilitiesForEmployee = (emp: Personnel | undefined | null): string[] => {
     if (!emp) return [];
-    const realEmp = (db.personnel || []).find(p => p.id === emp.id || (p.employeeCode && emp.employeeCode && p.employeeCode === emp.employeeCode && p.periodId === activePeriodId)) || emp;
+    const realEmp = (db.personnel || []).find(p => p.periodId === activePeriodId && (p.id === emp.id || (p.employeeCode && emp.employeeCode && p.employeeCode === emp.employeeCode))) || emp;
     const isDeparted = (realEmp as any).isDeparted === true || !!realEmp.departureDate || realEmp.isActive === false;
     const capsSet = new Set<string>();
     if (realEmp.capabilities && Array.isArray(realEmp.capabilities)) {
       realEmp.capabilities.forEach(c => capsSet.add(c));
     }
     if (isDeparted && capsSet.size === 0 && realEmp.employeeCode) {
-      const dbCaps = db.personnelCapabilities?.[realEmp.employeeCode];
+      const dbCaps = periodCapabilities?.[realEmp.employeeCode];
       if (dbCaps && Array.isArray(dbCaps)) {
         dbCaps.forEach(c => capsSet.add(c));
       }
       if (db.shiftSchemes) {
-        db.shiftSchemes.forEach(scheme => {
+        db.shiftSchemes.filter(scheme => scheme.periodId === activePeriodId).forEach(scheme => {
           const schemeCaps = scheme.personnelCapabilities?.[realEmp.employeeCode];
           if (schemeCaps && Array.isArray(schemeCaps)) {
             schemeCaps.forEach(c => capsSet.add(c));
@@ -915,9 +876,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
   const resolveShiftDisplayName = (shiftId: string): string => {
     if (!shiftId || shiftId === 'none') return 'بدون شیفت';
-    const sec = (db.productionSections || []).find(s => s.id === shiftId || s.departmentCategoryId === shiftId);
+    const sec = periodProductionSections.find(s => s.id === shiftId || s.departmentCategoryId === shiftId);
     if (sec) return `${sec.name}${sec.startTime && sec.endTime ? ` (${sec.startTime} - ${sec.endTime})` : ''}`;
-    const sh = (db.shifts || []).find(s => s.id === shiftId);
+    const sh = periodShifts.find(s => s.id === shiftId);
     if (sh) return `${sh.name}${sh.startTime && sh.endTime ? ` (${sh.startTime} - ${sh.endTime})` : ''}`;
     return shiftId;
   };
@@ -1030,16 +991,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
   }, [selectedYear, selectedMonth]);
 
   const shiftsList = useMemo(() => {
-    return db.shifts || [
-      { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-      { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-      { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-    ];
-  }, [db.shifts]);
+    return periodShifts;
+  }, [periodShifts]);
 
   const getEmployeeShiftAssignmentForWeekday = (empObj: any, weekdayName: string, dateStr?: string) => {
     if (dateStr) {
       const dateMatch = (db.shiftAssignments || []).find(a => 
+        a.periodId === activePeriodId &&
         a.date && normalizeDateStr(a.date) === normalizeDateStr(dateStr) &&
         isShiftAssignmentForEmployee(a, empObj)
       );
@@ -1074,7 +1032,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       return;
     }
 
-    const candidateShiftsPool = buildCandidateShiftsPool(db.productionSections, db.shifts);
+    const candidateShiftsPool = buildCandidateShiftsPool(periodProductionSections, periodShifts);
 
     const getRawTimesForDay = (emp: Personnel, dateStr: string): string[] => {
       const normDate = normalizeDateStr(dateStr);
@@ -1096,7 +1054,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       candidateShiftsPool,
       getAuthorizedCapabilities: (emp) => getAuthorizedCapabilitiesForEmployee(emp),
       getRawTimesForDay,
-      rules: db.payrollCalculationRules
+      rules: periodRules
     });
 
     if (candidates.length === 0) {
@@ -1124,6 +1082,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     }
 
     let updatedAssignments = [...(db.shiftAssignments || [])];
+    const genSaId = createSimpleIdGenerator(updatedAssignments, getPrefixForCollection('shiftAssignments'));
     let updatedAttendanceRecords = [...(db.attendanceRecords || [])];
     const newApproved = [...approvedMismatches];
 
@@ -1148,6 +1107,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       const cleanDate = normalizeDateStr(mismatch.dateStr);
 
       const existingAssign = updatedAssignments.find(a =>
+        a.periodId === activePeriodId &&
         a.date && normalizeDateStr(a.date) === cleanDate &&
         isShiftAssignmentForEmployee(a, mismatch.employee)
       );
@@ -1169,7 +1129,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         );
       } else {
         const newAssign = {
-          id: `sh-assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: genSaId(),
           periodId: activePeriodId,
           year: Number(selectedYear),
           month: Number(selectedMonth),
@@ -1261,7 +1221,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         );
       } else {
         const newAssign = {
-          id: `sh-assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: nextSimpleId(updatedAssignments, getPrefixForCollection('shiftAssignments')),
           periodId: activePeriodId,
           year: Number(selectedYear),
           month: Number(selectedMonth),
@@ -1303,7 +1263,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           );
         } else {
           const newAssign = {
-            id: `sh-assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            id: nextSimpleId(updatedAssignments, getPrefixForCollection('shiftAssignments')),
             periodId: activePeriodId,
             year: targetYear,
             month: targetMonth,
@@ -1334,7 +1294,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           );
         } else {
           const newAssign = {
-            id: `sh-assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            id: nextSimpleId(updatedAssignments, getPrefixForCollection('shiftAssignments')),
             periodId: activePeriodId,
             year: targetYear,
             month: targetMonth,
@@ -1426,9 +1386,9 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       const recordMonth = dateParts[1] ? parseInt(dateParts[1], 10) : Number(selectedMonth);
 
       const newRecord = {
-        id: `rec-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: nextSimpleId(updatedRecords, getPrefixForCollection('attendanceRecords')),
         employeeId: mismatch.employee.id,
-        attendanceCode: mismatch.employee.attendanceCode || mismatch.employee.employeeCode || '',
+        attendanceCode: mismatch.employee.attendanceCode || '',
         employeeName: mismatch.employee.fullName,
         date: mismatch.dateStr,
         times: cleanTimes,
@@ -1585,7 +1545,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       };
     };
 
-    const rawRules = (db.payrollCalculationRules || {}) as PayrollCalculationRules;
+    const rawRules = periodRules;
     const rulesObj = {
       calculateEarlyOvertime: rawRules.calculateEarlyOvertime ?? true,
       calculateLateOvertime: rawRules.calculateLateOvertime ?? true,
@@ -1655,7 +1615,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       }
 
       const isFriday = normalizeWeekday(day.weekday) === normalizeWeekday('جمعه');
-      const isHoliday = (db.officialHolidays || []).some(
+      const isHoliday = periodOfficialHolidays.some(
         h => toEnglishDigits(h.date).replace(/[-\/]/g, '/') === toEnglishDigits(day.dateStr).replace(/[-\/]/g, '/')
       );
 
@@ -1785,10 +1745,10 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       };
     });
 
-    const monthlySetting = (db.monthlyWorkdaySettings || []).find(
+    const monthlySetting = periodMonthlyWorkdaySettings.find(
       s => Number(s.year) === Number(selectedYear) && Number(s.month) === Number(selectedMonth)
     );
-    const targetSetting = (db.payrollSettings || []).find(s => s.periodId === activePeriodId) || (db.payrollSettings || [])[0];
+    const targetSetting = (db.payrollSettings || []).find(s => s.periodId === activePeriodId);
     const targetWorkingDays = targetSetting ? Number(targetSetting.workingDaysCount) : 26;
     const requiredHours = monthlySetting
       ? Number(monthlySetting.requiredWorkHours)
@@ -1837,9 +1797,10 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     } else if (prevSnap) {
       prevLeaveMinutes = Number(prevSnap.finalLeaveMinutes || 0);
     } else {
-      const prevSetting = (db.monthlyWorkdaySettings || []).find(s => Number(s.year) === prevY && Number(s.month) === prevM);
+      const prevSetting = periodMonthlyWorkdaySettings.find(s => Number(s.year) === prevY && Number(s.month) === prevM);
       const prevReqMins = (prevSetting ? Number(prevSetting.requiredWorkHours) : 192) * 60;
       const prevEmpRecs = (db.attendanceRecords || []).filter(rec => {
+        if (rec.periodId !== activePeriodId) return false;
         if (!isRecordForEmployeeHelper(rec, emp)) return false;
         const dStr = normalizeDateStr(rec.date);
         const parts = dStr.split('/');
@@ -1878,7 +1839,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           pPresence += pAdjusted;
           const pWeekday = getPersianWeekdayOfDate(pDateStr);
           const pIsFri = normalizeWeekday(pWeekday) === normalizeWeekday('جمعه');
-          const pIsHol = (db.officialHolidays || []).some(h => toEnglishDigits(h.date).replace(/[-\/]/g, '/') === toEnglishDigits(pDateStr).replace(/[-\/]/g, '/'));
+          const pIsHol = periodOfficialHolidays.some(h => toEnglishDigits(h.date).replace(/[-\/]/g, '/') === toEnglishDigits(pDateStr).replace(/[-\/]/g, '/'));
           const pStdCap = 480 - pBreak;
           if (pIsHol && !pIsFri) {
             if (rulesObj.calculateHolidayWork) {
@@ -2117,19 +2078,15 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     const mismatchesList: any[] = [];
     const anomaliesList: any[] = [];
 
-    const rawRules = (db.payrollCalculationRules || {}) as PayrollCalculationRules;
+    const rawRules = periodRules;
     const calcEarlyOt = rawRules.calculateEarlyOvertime ?? true;
     const calcLateOt = rawRules.calculateLateOvertime ?? true;
 
-    const shiftsArr = db.shifts || [
-      { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-      { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-      { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-    ];
+    const shiftsArr = periodShifts;
     const shiftById = new Map<string, any>();
     shiftsArr.forEach(sh => shiftById.set(sh.id, sh));
 
-    const prodSectionsArr = db.productionSections || [];
+    const prodSectionsArr = periodProductionSections;
     const sectionById = new Map<string, any>();
     const sectionByDeptCat = new Map<string, any>();
     prodSectionsArr.forEach(sec => {
@@ -2166,7 +2123,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
     (db.shiftAssignments || []).forEach(a => {
       if (a.date) {
-        if (!a.periodId || a.periodId === activePeriodId) {
+        if (a.periodId === activePeriodId) {
           const dKey = normalizeDateStr(a.date);
           let arr = dateAssignmentsByDate.get(dKey);
           if (!arr) { arr = []; dateAssignmentsByDate.set(dKey, arr); }
@@ -2277,14 +2234,26 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
     activePersonnel.forEach(emp => {
       empById.set(emp.id, emp);
-      const empAttCode = cleanRecCode(emp.attendanceCode);
-      const empCode = cleanRecCode(emp.employeeCode);
-      const empRecords = empAttCode
-        ? (recordsByCode.get(empAttCode) || (emp.id ? (recordsByEmpIdNoCode.get(emp.id) || []) : []))
-        : [
-            ...(empCode ? (recordsByCode.get(empCode) || []) : []),
-            ...(emp.id ? (recordsByEmpIdNoCode.get(emp.id) || []) : [])
-          ];
+      const empAttTokens = splitAttCodes(getEmpAttCode(emp)).map(t => cleanRecCode(t)).filter(Boolean);
+      const matchedByAttCode: AttendanceRecord[] = [];
+      const seenRecIds = new Set<string>();
+      empAttTokens.forEach(tok => {
+        const list = recordsByCode.get(tok) || [];
+        list.forEach(r => {
+          if (!seenRecIds.has(r.id)) {
+            seenRecIds.add(r.id);
+            matchedByAttCode.push(r);
+          }
+        });
+      });
+      const noCodeRecs = emp.id ? (recordsByEmpIdNoCode.get(emp.id) || []) : [];
+      noCodeRecs.forEach(r => {
+        if (!seenRecIds.has(r.id)) {
+          seenRecIds.add(r.id);
+          matchedByAttCode.push(r);
+        }
+      });
+      const empRecords = matchedByAttCode;
       if (empRecords.length === 0) return;
 
       const recordMap = new Map<string, AttendanceRecord>();
@@ -2583,7 +2552,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     { value: 12, label: 'اسفند' },
   ];
 
-  // Helper: map personnel by attendanceCode, employeeCode, and ID (strictly active period)
+  // Helper: map personnel strictly by attendanceCode and ID (never employeeCode)
   const personnelMap = useMemo(() => {
     const map = new Map<string, Personnel>();
     // Sort so dummy placeholders are set first and genuine active personnel overwrite them
@@ -2596,36 +2565,28 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
     list.forEach(p => {
       const attTokens = splitAttCodes(getEmpAttCode(p));
-      const cleanEmp = normalizeAttCode(getEmpCode(p));
       const cleanId = String(p.id || '').trim();
       if (cleanId) {
         map.set(cleanId, p);
       }
-      // If attendance code is defined, ONLY map under attendanceCode.
-      // An employee with a specific attendance code must NEVER be mapped to their employeeCode for traffic lookups!
+      // Strictly map ONLY under attendanceCode (کد پرسنل حضور و غیاب) — NEVER employeeCode!
       if (attTokens.length > 0) {
         attTokens.forEach(tok => {
           map.set(tok, p);
           const noZeros = stripLeadingZeros(tok);
           if (noZeros) map.set(noZeros, p);
         });
-      } else if (cleanEmp) {
-        map.set(cleanEmp, p);
-        const noZeros = stripLeadingZeros(cleanEmp);
-        if (noZeros) map.set(noZeros, p);
       }
     });
     return map;
   }, [allPeriodPersonnel]);
 
-  // Indexed O(1) personnel lookup following the exact 4-level priority of findPersonnel
+  // Indexed O(1) personnel lookup strictly by attendanceCode ONLY (never employeeCode)
   const personnelLookup = useMemo(() => {
     const byIdInPeriod = new Map<string, Personnel>();
     const byIdAny = new Map<string, Personnel>();
     const genuineByAtt = new Map<string, Personnel>();
-    const genuineByEmpNoAtt = new Map<string, Personnel>();
     const anyByAtt = new Map<string, Personnel>();
-    const anyByEmpNoAtt = new Map<string, Personnel>();
 
     const setKeys = (map: Map<string, Personnel>, rawCode: any, p: Personnel) => {
       const c = normalizeAttCode(rawCode);
@@ -2657,19 +2618,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           if (!dummy) setKeys(genuineByAtt, tok, p);
           setKeys(anyByAtt, tok, p);
         });
-      } else {
-        const empCode = getEmpCode(p);
-        if (empCode) {
-          if (!dummy) setKeys(genuineByEmpNoAtt, empCode, p);
-          setKeys(anyByEmpNoAtt, empCode, p);
-        }
       }
     }
 
-    return { byIdInPeriod, byIdAny, genuineByAtt, genuineByEmpNoAtt, anyByAtt, anyByEmpNoAtt };
+    return { byIdInPeriod, byIdAny, genuineByAtt, anyByAtt };
   }, [db.personnel, allPeriodPersonnel]);
 
-  // Robust O(1) personnel finder giving strict priority to active genuine personnel
+  // Robust O(1) personnel finder strictly matching attendanceCode ONLY (never employeeCode)
   const findPersonnel = React.useCallback((code: string): Personnel | undefined => {
     const clean = normalizeAttCode(code);
     if (!clean) return undefined;
@@ -2682,9 +2637,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
     return (
       lookupInMap(personnelLookup.genuineByAtt, true) ||
-      lookupInMap(personnelLookup.genuineByEmpNoAtt, true) ||
-      lookupInMap(personnelLookup.anyByAtt, false) ||
-      lookupInMap(personnelLookup.anyByEmpNoAtt, false)
+      lookupInMap(personnelLookup.anyByAtt, true)
     );
   }, [personnelLookup]);
 
@@ -2711,7 +2664,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
 
       if (filtered.length > 0) {
         const sorted = [...filtered].sort((a, b) => a.date.localeCompare(b.date) || a.attendanceCode.localeCompare(b.attendanceCode));
-        // Auto-synchronize record employeeId with genuine personnel matching attendanceCode to prevent cross-personnel display
+        // Auto-synchronize record employeeId strictly with personnel matching attendanceCode ONLY
         const synchronized = sorted.map(r => {
           if (r.attendanceCode) {
             const genuine = findPersonnel(r.attendanceCode);
@@ -2720,15 +2673,13 @@ export default function AttendanceForm(props: AttendanceFormProps) {
                 return { ...r, employeeId: genuine.id };
               }
             } else if (r.employeeId) {
-              // Check if currently linked employee has a conflicting attendanceCode
+              // Clear stale employeeId if the linked employee does not have this exact attendanceCode
               const currentEmp = personnelLookup.byIdAny.get(r.employeeId);
               const curAtt = getEmpAttCode(currentEmp);
-              if (currentEmp && curAtt) {
-                const curTokens = splitAttCodes(curAtt).map(stripLeadingZeros);
-                const cleanRec = stripLeadingZeros(normalizeAttCode(r.attendanceCode));
-                if (curTokens.length > 0 && !curTokens.includes(cleanRec)) {
-                  return { ...r, employeeId: undefined };
-                }
+              const curTokens = curAtt ? splitAttCodes(curAtt).map(stripLeadingZeros) : [];
+              const cleanRec = stripLeadingZeros(normalizeAttCode(r.attendanceCode));
+              if (!currentEmp || curTokens.length === 0 || !curTokens.includes(cleanRec)) {
+                return { ...r, employeeId: undefined };
               }
             }
           }
@@ -3168,6 +3119,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         // Build list of attendance records
         const newRecords: AttendanceRecord[] = [];
         const uniqueUnknownCodes = new Set<string>();
+        const genAttId = createSimpleIdGenerator(db.attendanceRecords || [], getPrefixForCollection('attendanceRecords'));
 
         groupedMap.forEach((val) => {
           // Sort daily logs chronologically
@@ -3182,7 +3134,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
           }
 
           newRecords.push({
-            id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            id: genAttId(),
             periodId: activePeriodId,
             year: val.year,
             month: val.month,
@@ -3361,6 +3313,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     if (unregisteredCodes.length === 0) return;
 
     let updatedPersonnel = [...(db.personnel || [])];
+    const genEmpId = createSimpleIdGenerator(updatedPersonnel, getPrefixForCollection('personnel'));
     const registeredNow: Personnel[] = [];
 
     const combinedAttendanceRecords = [...(db.attendanceRecords || []), ...records];
@@ -3374,18 +3327,15 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         return;
       }
       const alreadyHas = updatedPersonnel.some(p => {
-        if (p.periodId && p.periodId !== activePeriodId) return false;
+        if (p.periodId !== activePeriodId) return false;
         const attTokens = splitAttCodes(getEmpAttCode(p));
-        if (attTokens.length > 0) {
-          return attTokens.some(tok => tok === normalizeAttCode(cleanCode) || (normClean && stripLeadingZeros(tok) === normClean));
-        }
-        const empNorm = stripLeadingZeros(normalizeAttCode(getEmpCode(p)));
-        return Boolean(normClean && empNorm === normClean);
+        if (attTokens.length === 0) return false;
+        return attTokens.some(tok => tok === normalizeAttCode(cleanCode) || (normClean && stripLeadingZeros(tok) === normClean));
       });
       if (alreadyHas) return;
 
       const firstAttDate = findFirstAttendanceDateForCode(combinedAttendanceRecords, cleanCode, activePeriodId);
-      const newEmpId = `emp-unknown-${Date.now()}-${cleanCode}`;
+      const newEmpId = genEmpId();
       const newEmp: Personnel = {
         id: newEmpId,
         periodId: activePeriodId,
@@ -3972,11 +3922,11 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
       }
     } else if (updatedTimes.length > 0) {
       updatedRecords.push({
-        id: `rec-manual-${Date.now()}`,
+        id: nextSimpleId(db.attendanceRecords || [], getPrefixForCollection('attendanceRecords')),
         periodId: activePeriodId,
         year: Number(selectedYear),
         month: Number(selectedMonth),
-        attendanceCode: emp.attendanceCode || emp.employeeCode,
+        attendanceCode: emp.attendanceCode || '',
         employeeId: emp.id,
         date: dateStr,
         times: updatedTimes,
@@ -4461,7 +4411,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
       };
     } else {
       const newRec: AttendanceRecord = {
-        id: `att-manual-${Date.now()}`,
+        id: nextSimpleId(db.attendanceRecords || [], getPrefixForCollection('attendanceRecords')),
         periodId: activePeriodId,
         year: selectedYear,
         month: selectedMonth,
@@ -4506,9 +4456,9 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
 
     const alloc = (db.personnelAllocations || []).find(pa => 
       (pa.employeeCode === emp.employeeCode || (emp.attendanceCode && pa.employeeCode === emp.attendanceCode)) &&
-      (pa.periodId === activePeriodId || !pa.periodId)
+      pa.periodId === activePeriodId
     );
-    const deptObj = alloc ? (db.productCategories || []).find(d => d.id === alloc.departmentCategoryId) : null;
+    const deptObj = alloc ? (db.productCategories || []).find(d => d.periodId === activePeriodId && d.id === alloc.departmentCategoryId) : null;
     const empDept = deptObj ? deptObj.name : 'کارگاه تولیدی';
 
     const printHtml = `
@@ -4690,7 +4640,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
             <tbody>
               ${inspectionDetails.daysDetails.map((day) => {
                 const isFri = normalizeWeekday(day.weekday) === normalizeWeekday('جمعه');
-                const isHol = (db.officialHolidays || []).some(
+                const isHol = periodOfficialHolidays.some(
                   h => toEnglishDigits(h.date).replace(/[-\/]/g, '/') === toEnglishDigits(day.dateStr).replace(/[-\/]/g, '/')
                 );
                 const shiftText = day.shift ? (day.shift.name ? `${day.shift.name} (${toPersianDigits(day.shift.startTime)}-${toPersianDigits(day.shift.endTime)})` : `${toPersianDigits(day.shift.startTime)}-${toPersianDigits(day.shift.endTime)}`) : 'بدون شیفت';
@@ -5507,7 +5457,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                                         liveDelayMin = 0;
                                         liveUnauthMin = 0;
                                       } else if (activeResolved) {
-                                        const rRules = (db.payrollCalculationRules || {}) as PayrollCalculationRules;
+                                        const rRules = periodRules;
                                         const cEarly = rRules.calculateEarlyOvertime ?? true;
                                         const cLate = rRules.calculateLateOvertime ?? true;
                                         liveDelayMin = activeResolved.firstEntryMins > activeResolved.shiftStartMins ? activeResolved.firstEntryMins - activeResolved.shiftStartMins : 0;

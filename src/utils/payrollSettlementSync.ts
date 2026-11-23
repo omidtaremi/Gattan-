@@ -964,15 +964,18 @@ function resolveEntryExitTimesForShift(rawTimes: string[], shiftStartStr?: strin
 function isRecordForEmployee(rec: any, empObj: Personnel): boolean {
   if (!empObj || !rec) return false;
   const recCode = cleanAttCode(rec.attendanceCode);
-  const empAttCode = cleanAttCode(empObj.attendanceCode);
-  const empCode = cleanAttCode(empObj.employeeCode);
+  const rawEmpAtt = toEnglishDigits(String(empObj.attendanceCode || '')).trim();
+  const empAttTokens = rawEmpAtt
+    ? rawEmpAtt.split(/[\s,،;|/\\]+/).map(t => cleanAttCode(t)).filter(Boolean)
+    : [];
 
-  if (recCode && empAttCode) return recCode === empAttCode;
-  if (recCode && empCode && !empAttCode && recCode === empCode) return true;
-  if (rec.employeeId && rec.employeeId === empObj.id) {
-    if (!recCode || !empAttCode || recCode === empAttCode) return true;
+  // Strictly match punch code ONLY against personnel.attendanceCode (کد پرسنل حضور و غیاب) — NEVER employeeCode
+  if (recCode) {
+    return empAttTokens.includes(recCode);
   }
-  if (cleanAttCode(empObj.id) === recCode) return true;
+  if (rec.employeeId && rec.employeeId === empObj.id) {
+    return true;
+  }
   return false;
 }
 
@@ -1040,15 +1043,10 @@ export function findFirstAttendanceDateForCode(
   });
   if (matching.length === 0) return '';
 
-  const activeYearMatch = activePeriodId ? toEnglishDigits(String(activePeriodId)).match(/^(\d{4})/) : null;
-  const activeYearPrefix = activeYearMatch ? `${activeYearMatch[1]}/` : '';
-
-  const periodScoped = activePeriodId ? matching.filter(r => !r.periodId || r.periodId === activePeriodId) : [];
-  const yearScoped = activeYearPrefix
-    ? matching.filter(r => normalizeDateStr(r.date).startsWith(activeYearPrefix))
-    : [];
-
-  const pool = periodScoped.length > 0 ? periodScoped : yearScoped.length > 0 ? yearScoped : matching;
+  const pool = activePeriodId
+    ? matching.filter(r => r.periodId === activePeriodId)
+    : matching;
+  if (pool.length === 0) return '';
 
   const dates = pool
     .map(r => normalizeDateStr(r.date))
