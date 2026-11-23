@@ -2631,7 +2631,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   const filteredRates = useMemo(() => {
-    const list = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
+    // Older records were saved before period isolation added `periodId`.
+    // Keep those visible in the selected period so users can edit or migrate them.
+    const list = (db.salaryBaseRates || []).filter(r => !r.periodId || r.periodId === activePeriodId);
     const yearMap = new Map<string, SalaryBaseRate>();
     list.forEach(r => {
       const y = String(r.year || '').trim();
@@ -12480,6 +12482,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
           {employeesSubTab === 'roster' && (
           <>
+          <div className="flex justify-start">
+            <ErpButton
+              variant={isPersonnelFormOpen ? 'secondary' : 'primary'}
+              icon={isPersonnelFormOpen ? <RotateCcw className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              onClick={() => {
+                if (isPersonnelFormOpen) resetForm();
+                else {
+                  resetForm();
+                  setIsPersonnelFormOpen(true);
+                }
+              }}
+            >
+              {isPersonnelFormOpen ? 'انصراف و بازگشت' : 'افزودن پرسنل'}
+            </ErpButton>
+          </div>
           <div className={`space-y-6 ${isPersonnelFormOpen ? '' : 'hidden'}`}>
             
             <div className="space-y-6">
@@ -13756,16 +13773,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      resetForm();
-                      setIsPersonnelFormOpen(true);
-                    }}
-                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
-                  >
-                    افزودن پرسنل
-                  </button>
                   <button
                     onClick={downloadSamplePersonnelCSV}
                     className="text-[11px] bg-white text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-slate-50 shadow-xs"
@@ -16918,7 +16925,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allInsuredItems = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+                    const allInsuredItems = (db.insuredSalaryItems || []).filter((item: any) => !item.periodId || item.periodId === activePeriodId);
 
                     const getAmountForInsuredItem = (key: string, itemYear: string) => {
                       const yr = itemYear || activeFiscalYearStr;
@@ -17290,7 +17297,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allTaxableItems = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+                    const allTaxableItems = (db.taxableSalaryItems || []).filter((item: any) => !item.periodId || item.periodId === activePeriodId);
 
                     const getAmountForTaxableItem = (key: string, itemYear: string) => {
                       const yr = itemYear || activeFiscalYearStr;
