@@ -8622,6 +8622,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   // ==========================================
   const [empSearch, setEmpSearch] = useState('');
   const [editingEmp, setEditingEmp] = useState<Personnel | null>(null);
+  const [isPersonnelFormOpen, setIsPersonnelFormOpen] = useState(false);
 
   const searchedPersonnel = useMemo(() => {
     const list = db.personnel.filter(p => p.periodId === activePeriodId);
@@ -10030,6 +10031,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const resetForm = () => {
     setEditingEmp(null);
+    setIsPersonnelFormOpen(false);
     setNewCode('');
     setAccountCode('');
     setFirstName('');
@@ -10392,6 +10394,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const startEditEmployee = (emp: Personnel) => {
     setEditingEmp(emp);
+    setIsPersonnelFormOpen(true);
     setNewCode(emp.employeeCode);
     setAccountCode(emp.accountCode || '');
     setFirstName(emp.firstName || emp.fullName?.split(' ')[0] || '');
@@ -12477,7 +12480,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
           {employeesSubTab === 'roster' && (
           <>
-          <div className="space-y-6">
+          <div className={`space-y-6 ${isPersonnelFormOpen ? '' : 'hidden'}`}>
             
             <div className="space-y-6">
               
@@ -13720,15 +13723,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     <button type="submit" className="flex-grow bg-rose-600 hover:bg-rose-700 text-white text-xs font-black py-2.5 rounded-xl transition-all shadow-md shadow-rose-600/10 cursor-pointer">
                       {editingEmp ? 'ذخیره اصلاحات پرونده پرسنلی' : 'ثبت قطعی پرسنل در آرشیو خط'}
                     </button>
-                    {editingEmp && (
-                      <button
-                        type="button"
-                        onClick={() => resetForm()}
-                        className="px-4 border border-slate-350 text-slate-700 rounded-xl text-xs bg-white hover:bg-slate-100 transition-colors font-bold cursor-pointer"
-                      >
-                        لغو اصلاح
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => resetForm()}
+                      className="px-4 border border-slate-350 text-slate-700 rounded-xl text-xs bg-white hover:bg-slate-100 transition-colors font-bold cursor-pointer"
+                    >
+                      انصراف و بازگشت
+                    </button>
                   </div>
                 </form>
               </div>
@@ -13738,7 +13739,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           </div> {/* End Tab 1 Employees Wrapper */}
 
           {/* List block (Full width at bottom of page) */}
-          <div className="w-full space-y-4 mt-8">
+          <div className={`w-full space-y-4 mt-8 ${isPersonnelFormOpen ? 'hidden' : ''}`}>
             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-205">
                 <div className="relative w-full xl:w-64">
                   <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
@@ -13755,6 +13756,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetForm();
+                      setIsPersonnelFormOpen(true);
+                    }}
+                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
+                  >
+                    افزودن پرسنل
+                  </button>
                   <button
                     onClick={downloadSamplePersonnelCSV}
                     className="text-[11px] bg-white text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-slate-50 shadow-xs"

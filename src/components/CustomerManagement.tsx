@@ -543,6 +543,80 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
     printElement('customer-printable-section', 'فهرست جامع مشتریان و طرف‌های تجاری');
   };
 
+  const downloadSampleCustomersCSV = () => {
+    const headers = ['کد مشتری', 'نام و عنوان تجاری', 'نوع مشتری', 'مسئول خرید', 'تلفن همراه', 'نشانی'];
+    const rows = [
+      ['C-1001', 'شیرینی سرای صدف', 'فروشگاه', 'آقای صدف‌پور', '09121112233', 'تهران، تجریش'],
+      ['C-1002', 'کافه و فینگرفود بونو', 'حقوقی', 'خانم راد', '09223334455', 'تهران، نیاوران']
+    ];
+    downloadCSV(`Sample_Customers_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
+  const importCustomersFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const buffer = event.target?.result as ArrayBuffer;
+      if (!buffer) return;
+
+      const text = decodeFileBuffer(buffer);
+      const rows = parseCSVText(text);
+      const updatedCustomers = [...(db.customers || [])];
+      let importCount = 0;
+
+      rows.forEach((row, index) => {
+        if (index === 0 || row.length === 0) return;
+        const codeVal = row[0]?.trim() || nextCustomerCode;
+        const nameVal = row[1]?.trim();
+        if (!nameVal) return;
+
+        if (updatedCustomers.some(c => c.periodId === activePeriodId && (c.name === nameVal || c.code === codeVal))) return;
+
+        const importedCustomer: Customer = {
+          id: nextSimpleId(updatedCustomers, 'cust'),
+          periodId: activePeriodId,
+          code: codeVal,
+          accountingCode: '',
+          name: nameVal,
+          type: (row[2] as any) || 'حقیقی',
+          categoryId: categories[0]?.id,
+          contactPerson: row[3]?.trim() || '',
+          nationalId: '',
+          economicCode: '',
+          registrationNo: '',
+          phone: row[4]?.trim() || '09120000000',
+          tel: '',
+          fax: '',
+          email: '',
+          province: 'تهران',
+          city: 'تهران',
+          postalCode: '',
+          address: row[5]?.trim() || '',
+          deliveryAddress: '',
+          discountPercent: 0,
+          creditLimit: 0,
+          settlementPeriodDays: 30,
+          paymentTerms: 'نقدی',
+          salesAgent: '',
+          bankAccounts: [],
+          isActive: true,
+          status: 'active',
+          blockReason: '',
+          notes: '',
+          preferredProductIds: [],
+          createdAt: new Date().toISOString()
+        };
+
+        updatedCustomers.push(importedCustomer);
+        importCount++;
+      });
+
+      onUpdateDb({ ...db, customers: updatedCustomers });
+      toast(`${toPersianDigits(importCount)} مشتری با موفقیت از اکسل وارد شد.`, 'success');
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+
   const handlePrintProfile = () => {
     printElement('customer-card-print-target', `شناسنامه مشتری - ${viewingCustomer?.name || 'مشتری'}`);
   };
@@ -609,28 +683,18 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
               >
                 {ERP_BUTTON_LABELS.copyFromPeriod}
               </ErpButton>
-              {activeSubTab !== 'orders' && (
-                <ErpButton variant="primary" size="sm" icon={<Plus className="h-4 w-4" />} onClick={handleStartNew}>
-                  {ERP_BUTTON_LABELS.add}
-                </ErpButton>
-              )}
             </div>
           }
         />
 
         <ModulePrimaryTabs
-          activeId={activeSubTab}
+          activeId={activeSubTab === 'form' ? 'list' : activeSubTab}
           onChange={(id) => {
-            if (id === 'form') {
-              handleStartNew();
-            } else {
-              setActiveSubTab(id as typeof activeSubTab);
-            }
+            setActiveSubTab(id as typeof activeSubTab);
           }}
           tabs={[
             { id: 'orders', label: 'ثبت سفارش تولید', icon: <ChefHat className="h-4 w-4" />, count: activeCustomerOrdersCount },
-            { id: 'list', label: 'فهرست مشتریان', icon: <Users className="h-4 w-4" />, count: customers.length },
-            { id: 'form', label: editingCustomer ? 'ویرایش مشتری' : 'تعریف مشتری جدید', icon: <Plus className="h-4 w-4" /> },
+            { id: 'list', label: 'مشتریان', icon: <Users className="h-4 w-4" />, count: customers.length },
             { id: 'categories', label: 'گروه‌های مشتریان', icon: <Layers className="h-4 w-4" />, count: categories.length },
           ]}
         />
@@ -703,7 +767,9 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
                 setTypeFilter('all');
                 setStatusFilter('all');
               }}
-              onCopyFromPeriod={() => setCopySection('customers')}
+              onDownloadTemplate={downloadSampleCustomersCSV}
+              onImportExcel={importCustomersFile}
+              importAccept=".csv,.xlsx,.xls"
               onExportExcel={handleExportCustomersCSV}
               onPrint={handlePrintList}
               onAdd={handleStartNew}
