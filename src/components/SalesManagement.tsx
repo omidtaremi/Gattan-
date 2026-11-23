@@ -15,7 +15,7 @@ import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
 import { 
   Plus, Search, Edit2, Trash2, CheckCircle, AlertTriangle, FileSpreadsheet, 
   Printer, Save, TrendingUp, TrendingDown, Layers, BarChart3, PieChart, Info, DollarSign, Download,
-  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag
+  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, CheckSquare, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import SearchableSelect from './SearchableSelect';
@@ -1477,9 +1477,56 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   // TAB 1: DEFINE PRODUCTS (تعریف محصول نهایی)
   // ==========================================
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [bulkEditCategoryId, setBulkEditCategoryId] = useState<string>('__keep__');
+  const [bulkEditUnit, setBulkEditUnit] = useState<string>('__keep__');
+  const [bulkEditPackageType, setBulkEditPackageType] = useState<string>('__keep__');
+  const [bulkEditFeedback, setBulkEditFeedback] = useState<string>('');
   const [prodSearch, setProdSearch] = useState('');
   const [selectedCatFilter, setSelectedCatFilter] = useState('ALL');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  const handleApplyBulkEditProducts = () => {
+    if (selectedProductIds.length === 0) return;
+    if (
+      bulkEditCategoryId === '__keep__' &&
+      bulkEditUnit === '__keep__' &&
+      bulkEditPackageType === '__keep__'
+    ) {
+      setBulkEditFeedback('لطفاً حداقل یکی از فیلدهای گروه کالا، واحد فروش یا نوع بسته‌بندی را جهت اعمال تغییر دسته‌ای انتخاب کنید.');
+      setTimeout(() => setBulkEditFeedback(''), 4000);
+      return;
+    }
+
+    const selectedSet = new Set(selectedProductIds);
+    let updatedCount = 0;
+    const updatedProducts = db.products.map(prod => {
+      if (!selectedSet.has(prod.id)) return prod;
+      updatedCount += 1;
+      const next: Product = { ...prod };
+      if (bulkEditCategoryId !== '__keep__') {
+        next.categoryId = bulkEditCategoryId;
+      }
+      if (bulkEditUnit !== '__keep__') {
+        next.unit = bulkEditUnit as Product['unit'];
+      }
+      if (bulkEditPackageType !== '__keep__') {
+        next.packageType = bulkEditPackageType as Product['packageType'];
+      }
+      return next;
+    });
+
+    onUpdateDb({ ...db, products: updatedProducts });
+    if (editingProduct && selectedSet.has(editingProduct.id)) {
+      const refreshedEditing = updatedProducts.find(p => p.id === editingProduct.id) || null;
+      setEditingProduct(refreshedEditing);
+    }
+    setBulkEditCategoryId('__keep__');
+    setBulkEditUnit('__keep__');
+    setBulkEditPackageType('__keep__');
+    setSelectedProductIds([]);
+    setBulkEditFeedback(`تغییرات دسته‌ای با موفقیت بر روی ${toPersianDigits(updatedCount)} محصول نهایی اعمال گردید.`);
+    setTimeout(() => setBulkEditFeedback(''), 5000);
+  };
 
   const handleBatchDeleteProducts = () => {
     if (selectedProductIds.length === 0) {
@@ -3176,6 +3223,110 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             </div>
           )}
 
+          {/* Feedback Banner for Bulk Edits */}
+          {bulkEditFeedback && (
+            <div className="bg-emerald-950/40 border border-emerald-500/35 text-emerald-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                <span>{bulkEditFeedback}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBulkEditFeedback('')}
+                className="text-emerald-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Bulk Edit Panel when final products are selected */}
+          {selectedProductIds.length > 0 && (
+            <div className="bg-sky-950/30 border border-sky-500/40 p-4 rounded-2xl shadow-lg space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-500/20 pb-2.5">
+                <div className="flex items-center gap-2 text-sky-300 text-xs font-black">
+                  <CheckSquare className="h-4 w-4 text-sky-400" />
+                  <span>ویرایش دسته‌ای کالاهای انتخاب‌شده ({toPersianDigits(selectedProductIds.length)} محصول نهایی)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {filteredProducts.some(p => !selectedProductIds.includes(p.id)) && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProductIds(filteredProducts.map(p => p.id))}
+                      className="text-[11px] font-bold text-sky-300 hover:text-white bg-sky-900/40 hover:bg-sky-800/60 border border-sky-500/30 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                    >
+                      انتخاب همه نتایج فیلترشده ({toPersianDigits(filteredProducts.length)})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProductIds([])}
+                    className="text-[11px] font-bold text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-700 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                  >
+                    لغو انتخاب
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر گروه کالاهای انتخابی</label>
+                  <select
+                    value={bulkEditCategoryId}
+                    onChange={(e) => setBulkEditCategoryId(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                  >
+                    <option value="__keep__">-- بدون تغییر گروه کالا --</option>
+                    {categories.map(cat => (
+                      <option key={cat.id} value={cat.id}>{cat.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر واحد فروش کالاهای انتخابی</label>
+                  <select
+                    value={bulkEditUnit}
+                    onChange={(e) => setBulkEditUnit(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                  >
+                    <option value="__keep__">-- بدون تغییر واحد فروش --</option>
+                    <option value="عدد">عدد (واحدی)</option>
+                    <option value="کیلو">کیلوگرم</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر نوع بسته‌بندی کالاهای انتخابی</label>
+                  <select
+                    value={bulkEditPackageType}
+                    onChange={(e) => setBulkEditPackageType(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                  >
+                    <option value="__keep__">-- بدون تغییر نوع بسته‌بندی --</option>
+                    {packagingTypesList.map(pt => (
+                      <option key={pt.id} value={pt.name}>{pt.name}</option>
+                    ))}
+                    {!packagingTypesList.some(pt => pt.name === 'سلفون') && <option value="سلفون">سلفون</option>}
+                    {!packagingTypesList.some(pt => pt.name === 'شیرینک') && <option value="شیرینک">شیرینک</option>}
+                    {!packagingTypesList.some(pt => pt.name === 'جعبه') && <option value="جعبه">جعبه</option>}
+                  </select>
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleApplyBulkEditProducts}
+                    className="w-full bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold py-2.5 px-4 rounded-xl shadow-lg shadow-sky-600/20 flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Save className="h-4 w-4" />
+                    <span>اعمال تغییرات دسته‌ای</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 4. PRODUCTS TABLE (FULL WIDTH UNDER THE DEFINITION FORM) */}
           <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/40 backdrop-blur-md shadow-xl">
             <table className="min-w-full text-right text-xs">
@@ -3223,7 +3374,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   </tr>
                 ) : (
                   filteredProducts.map(p => (
-                    <tr key={p.id} className="hover:bg-slate-800/30 transition-colors">
+                    <tr key={p.id} className={`hover:bg-slate-800/30 transition-colors ${selectedProductIds.includes(p.id) ? 'bg-sky-950/20' : ''}`}>
                       <td className="px-4 py-4 text-center">
                         <input
                           type="checkbox"
