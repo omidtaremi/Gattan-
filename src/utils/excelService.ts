@@ -772,15 +772,6 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   }));
   addSheet(rolesExport, "User_Roles");
 
-  // 22. Shifts
-  const shiftsExport = (db.shifts || []).map(s => ({
-    id: s.id,
-    periodId: s.periodId || '',
-    name: s.name,
-    startTime: s.startTime,
-    endTime: s.endTime
-  }));
-  addSheet(shiftsExport, "Shifts");
 
   // 23. Shift Assignments
   const shiftAssignmentsExport = (db.shiftAssignments || []).map(a => ({
@@ -1073,8 +1064,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
             resolvedShiftName = 'بدون شیفت';
           } else {
             const sec = (db.productionSections || []).find(s => s.id === targetId || s.departmentCategoryId === targetId);
-            const sh = (db.shifts || []).find(s => s.id === targetId);
-            resolvedShiftName = sec ? `${sec.name}${sec.startTime && sec.endTime ? ` (${sec.startTime} - ${sec.endTime})` : ''}` : (sh ? `${sh.name}${sh.startTime && sh.endTime ? ` (${sh.startTime} - ${sh.endTime})` : ''}` : targetId);
+            resolvedShiftName = sec ? `${sec.name}${sec.startTime && sec.endTime ? ` (${sec.startTime} - ${sec.endTime})` : ''}` : targetId;
           }
         }
       }
@@ -2213,17 +2203,6 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
     })).filter(x => x.name);
   }
 
-  // 22. Shifts
-  const shiftsRows = getSheetData("Shifts");
-  if (shiftsRows) {
-    result.shifts = shiftsRows.map(r => ({
-      id: String(r.id || ''),
-      periodId: r.periodId ? String(r.periodId) : undefined,
-      name: String(r.name || ''),
-      startTime: String(r.startTime || ''),
-      endTime: String(r.endTime || ''),
-    })).filter(x => x.id);
-  }
 
   // 23. Shift Assignments
   const shiftAssignmentsRows = getSheetData("Shift_Assignments");
@@ -3009,14 +2988,6 @@ export function exportShiftsToExcel(
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   };
 
-  // 1. Shifts
-  const shiftsExport = (db.shifts || []).map(s => ({
-    id: s.id,
-    name: s.name,
-    startTime: s.startTime,
-    endTime: s.endTime
-  }));
-  addSheet(shiftsExport, "Shifts");
 
   // 2. Shift Assignments (scoped to requested period + year + month when provided)
   const targetAssigns = (options?.periodId && options?.year && options?.month)
@@ -3123,16 +3094,6 @@ export function importShiftsFromExcel(
     return isNaN(num) ? 0 : num;
   };
 
-  // 1. Shifts
-  const shiftsRows = getSheetData("Shifts");
-  if (shiftsRows) {
-    result.shifts = shiftsRows.map(r => ({
-      id: String(r.id || ''),
-      name: String(r.name || ''),
-      startTime: String(r.startTime || ''),
-      endTime: String(r.endTime || ''),
-    })).filter(x => x.id);
-  }
 
   // 2. Shift Assignments (preserve all other months & periods when scoped to a month)
   const shiftAssignmentsRows = getSheetData("Shift_Assignments");

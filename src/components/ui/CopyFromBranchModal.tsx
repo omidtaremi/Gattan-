@@ -77,7 +77,6 @@ const SECTION_GROUPS: Array<{ label: string; keys: CopySectionKey[] }> = [
     keys: [
       'personnelCategories',
       'personnel',
-      'shifts',
       'productionSections',
       'salaryBaseRates',
       'payrollCalculationRules',

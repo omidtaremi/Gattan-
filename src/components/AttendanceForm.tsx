@@ -814,8 +814,8 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     [db.productionSections, activePeriodId]
   );
   const periodShifts = useMemo(
-    () => (db.shifts || []).filter(s => s.periodId === activePeriodId),
-    [db.shifts, activePeriodId]
+    () => (db.productionSections || []).filter(s => s.periodId === activePeriodId),
+    [db.productionSections, activePeriodId]
   );
   const periodOfficialHolidays = useMemo(
     () => (db.officialHolidays || []).filter(h => h.periodId === activePeriodId),
@@ -1033,7 +1033,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       return;
     }
 
-    const candidateShiftsPool = buildCandidateShiftsPool(periodProductionSections, periodShifts);
+    const candidateShiftsPool = buildCandidateShiftsPool(periodProductionSections);
 
     const getRawTimesForDay = (emp: Personnel, dateStr: string): string[] => {
       const normDate = normalizeDateStr(dateStr);
@@ -1486,11 +1486,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         // If employee has a fixed shift schedule defined in profile
         if (empObj?.shiftScheduleType === 'fixed') {
           if (!empObj.fixedShiftId || empObj.fixedShiftId === 'none') return null;
-          const matchedShift = (db.shifts || [
-            { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-            { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-            { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-          ]).find(sh => sh.id === empObj.fixedShiftId);
+          const matchedShift = (db.productionSections || []).find(sh => sh.id === empObj.fixedShiftId);
 
           let section = (db.productionSections || []).find(sec => sec.id === empObj.fixedShiftId || sec.departmentCategoryId === empObj.fixedShiftId);
           const resolvedStart = section?.startTime || matchedShift?.startTime;
@@ -1512,11 +1508,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       }
       if (!assignment || assignment.deptId === 'none' || assignment.shiftId === 'none' || (assignment.isOnLeave && !assignment.substitutedEmployeeCode)) return null;
 
-      const matchedShift = (db.shifts || [
-        { id: 'sh-1', name: 'شیفت صبح', startTime: '۰۶:۰۰', endTime: '۱۴:۰۰' },
-        { id: 'sh-2', name: 'شیفت عصر', startTime: '۱۴:۰۰', endTime: '۲۲:۰۰' },
-        { id: 'sh-3', name: 'شیفت شب', startTime: '۲۲:۰۰', endTime: '۰۶:۰۰' }
-      ]).find(sh => sh.id === assignment.shiftId || sh.id === assignment.deptId);
+      const matchedShift = (db.productionSections || []).find(sh => sh.id === assignment.shiftId || sh.id === assignment.deptId);
 
       const directSection = (db.productionSections || []).find(sec => sec.id === assignment.deptId || sec.id === assignment.shiftId);
       let section = directSection || (db.productionSections || []).find(sec => sec.departmentCategoryId === assignment.deptId);
@@ -2067,7 +2059,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       shiftMismatches,
       isDepartedNoLeavePad: skipLeaveInjection
     };
-  }, [activeTab, inspectEmployeeId, records, calendarDays, db.personnel, db.productionSections, db.officialHolidays, db.shiftAssignments, db.payrollSettings, db.monthlyWorkdaySettings, db.payrollCalculationRules, db.payrollManualOverrides, db.payrollPeriods, db.attendanceRecords, db.shifts, db.personnelAllocations, db.personnelSettlements, activePeriodId, selectedYear, selectedMonth, isMonthLocked, fallbackShiftYearMonth]);
+  }, [activeTab, inspectEmployeeId, records, calendarDays, db.personnel, db.productionSections, db.officialHolidays, db.shiftAssignments, db.payrollSettings, db.monthlyWorkdaySettings, db.payrollCalculationRules, db.payrollManualOverrides, db.payrollPeriods, db.attendanceRecords, db.personnelAllocations, db.personnelSettlements, activePeriodId, selectedYear, selectedMonth, isMonthLocked, fallbackShiftYearMonth]);
 
   const approvedMismatchesSet = useMemo(() => new Set(approvedMismatches), [approvedMismatches]);
 
@@ -2496,7 +2488,7 @@ export default function AttendanceForm(props: AttendanceFormProps) {
       allAnomalies: anomaliesList,
       approvedMismatchItems: approvedList
     };
-  }, [activeTab, activePeriodPersonnel, allPeriodPersonnel, db.shiftAssignments, db.shifts, db.productionSections, db.payrollCalculationRules, records, calendarDays, activePeriodId, approvedMismatches, selectedYear, selectedMonth, fallbackShiftYearMonth]);
+  }, [activeTab, activePeriodPersonnel, allPeriodPersonnel, db.shiftAssignments, db.productionSections, db.payrollCalculationRules, records, calendarDays, activePeriodId, approvedMismatches, selectedYear, selectedMonth, fallbackShiftYearMonth]);
 
   const activeMismatchesUnfiltered = useMemo(() => {
     return allMismatches.filter(m => !approvedMismatchesSet.has(`${m.employee.id}-${m.dateStr}`));
@@ -5673,7 +5665,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                                         name: activeSec.name,
                                         startTime: toEnglishDigits(activeSec.startTime || '').trim(),
                                         endTime: toEnglishDigits(activeSec.endTime || '').trim()
-                                      } : ((db.shifts || []).find(s => s.id === activeSecId) || mismatch.shift));
+                                      } : ((db.productionSections || []).find(s => s.id === activeSecId) || mismatch.shift));
 
                                       return (
                                         <>
@@ -5704,7 +5696,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                                       const activeShiftObj = activeSecId === 'none' ? null : (activeSec ? {
                                         startTime: toEnglishDigits(activeSec.startTime || '').trim(),
                                         endTime: toEnglishDigits(activeSec.endTime || '').trim()
-                                      } : ((db.shifts || []).find(s => s.id === activeSecId) || mismatch.shift));
+                                      } : ((db.productionSections || []).find(s => s.id === activeSecId) || mismatch.shift));
 
                                       const hasPair = Boolean(mismatch.firstEntry && mismatch.lastExit);
                                       const activeResolved = activeShiftObj?.startTime && activeShiftObj?.endTime && hasPair

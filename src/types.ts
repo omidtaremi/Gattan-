@@ -387,13 +387,6 @@ export interface PersonnelContract {
   isActive?: boolean; // وضعیت فعال بودن قرارداد (همیشه آخرین قرارداد هر پرسنل فعال است)
 }
 
-export interface Shift {
-  id: string;
-  periodId?: string;
-  name: string;
-  startTime: string;
-  endTime: string;
-}
 
 export interface ShiftAssignment {
   id: string;
@@ -630,7 +623,6 @@ export interface AppDatabase {
   stockCounts: StockCount[];
   purchaseInvoices: PurchaseInvoice[];
   dailyProductionSegments?: DailyProductionSegment[];
-  shifts?: Shift[];
   shiftAssignments?: ShiftAssignment[];
   productionSections?: ProductionSection[];
   shiftSchemes?: ShiftScheme[];

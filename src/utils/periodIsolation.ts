@@ -75,7 +75,6 @@ export const ISOLATED_ARRAY_COLLECTIONS: ReadonlyArray<keyof AppDatabase> = [
   'monthlyWorkdaySettings',
   'officialHolidays',
   'payrollSettings',
-  'shifts',
   'productionSections',
   'shiftAssignments',
   'shiftSchemes',
@@ -623,7 +622,6 @@ export function migrateLegacyKeysAndPeriodIsolation(db: AppDatabase): {
     const personnelMap = getMap('personnel');
     const contractMap = getMap('personnelContracts');
     const payrollPeriodMap = getMap('payrollPeriods');
-    const shiftMap = getMap('shifts');
     const sectionMap = getMap('productionSections');
 
     // 3.1 Remap periodId across EVERY isolated collection & selectedPeriodId & period maps
@@ -1063,14 +1061,14 @@ export function migrateLegacyKeysAndPeriodIsolation(db: AppDatabase): {
       }));
     }
 
-    // 3.19 Personnel, Payroll, Attendance, Shifts & Sections
-    if ((persCatMap.size > 0 || shiftMap.size > 0 || sectionMap.size > 0) && Array.isArray(working.personnel)) {
+    // 3.19 Personnel, Payroll, Attendance & Sections
+    if ((persCatMap.size > 0 || sectionMap.size > 0) && Array.isArray(working.personnel)) {
       working.personnel = working.personnel.map((emp: any) => ({
         ...emp,
         personnelCategoryId: emp.personnelCategoryId
           ? remapVal(emp.personnelCategoryId, persCatMap)
           : emp.personnelCategoryId,
-        fixedShiftId: emp.fixedShiftId ? remapVal(emp.fixedShiftId, shiftMap) : emp.fixedShiftId,
+        fixedShiftId: emp.fixedShiftId ? remapVal(emp.fixedShiftId, sectionMap) : emp.fixedShiftId,
         capabilities: remapList(emp.capabilities, sectionMap),
       }));
     }
@@ -1097,20 +1095,20 @@ export function migrateLegacyKeysAndPeriodIsolation(db: AppDatabase): {
           : sec.departmentCategoryId,
       }));
     }
-    if ((shiftMap.size > 0 || sectionMap.size > 0 || personnelMap.size > 0) && Array.isArray(working.shiftAssignments)) {
+    if ((sectionMap.size > 0 || personnelMap.size > 0) && Array.isArray(working.shiftAssignments)) {
       working.shiftAssignments = working.shiftAssignments.map((sa: any) => ({
         ...sa,
-        shiftId: remapVal(sa.shiftId, shiftMap) || sa.shiftId,
+        shiftId: remapVal(sa.shiftId, sectionMap) || sa.shiftId,
         deptId: remapVal(sa.deptId, sectionMap) || sa.deptId,
         employeeId: sa.employeeId ? remapVal(sa.employeeId, personnelMap) : sa.employeeId,
       }));
     }
-    if ((personnelMap.size > 0 || shiftMap.size > 0 || sectionMap.size > 0) && Array.isArray(working.attendanceRecords)) {
+    if ((personnelMap.size > 0 || sectionMap.size > 0) && Array.isArray(working.attendanceRecords)) {
       working.attendanceRecords = working.attendanceRecords.map((att: any) => ({
         ...att,
         employeeId: att.employeeId ? remapVal(att.employeeId, personnelMap) : att.employeeId,
         shiftId: att.shiftId
-          ? shiftMap.get(att.shiftId) || sectionMap.get(att.shiftId) || att.shiftId
+          ? sectionMap.get(att.shiftId) || att.shiftId
           : att.shiftId,
       }));
     }

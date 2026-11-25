@@ -212,7 +212,6 @@ export const COLLECTION_WRITE_PERMISSIONS: Record<string, string[]> = {
   personnel: ['payroll', 'expenses', 'cogs'],
   payrollPeriods: ['payroll', 'expenses'],
   payrollItems: ['payroll', 'expenses', 'cogs'],
-  shifts: ['payroll', 'production_planning'],
   shiftAssignments: ['payroll', 'production_planning'],
   productionSections: ['payroll', 'production_planning'],
   shiftSchemes: ['payroll', 'production_planning'],

@@ -1289,7 +1289,7 @@ function computeAttendancePerfForMonth(
     if (h?.date) officialHolidaysSet.add(normalizeDateStr(h.date));
   });
 
-  const shiftsSource = db.shifts || [
+  const shiftsSource = db.productionSections || [
     { id: 'sh-1', name: 'شیفت صبح', startTime: '06:00', endTime: '14:00' },
     { id: 'sh-2', name: 'شیفت عصر', startTime: '14:00', endTime: '22:00' },
     { id: 'sh-3', name: 'شیفت شب', startTime: '22:00', endTime: '06:00' }

@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
-  AppDatabase, Personnel, PersonnelAllocation, PayrollItem, PayrollPeriod, PersonnelBankAccount, Shift, ShiftAssignment, SalaryBaseRate, PersonnelChild, PersonnelCategory, SeniorityRateRule, PersonnelContract, ShiftScheme, PayrollCalculationRules, AttendanceRecord, Department 
+  AppDatabase, Personnel, PersonnelAllocation, PayrollItem, PayrollPeriod, PersonnelBankAccount, ShiftAssignment, SalaryBaseRate, PersonnelChild, PersonnelCategory, SeniorityRateRule, PersonnelContract, ShiftScheme, PayrollCalculationRules, AttendanceRecord, Department 
 } from '../types';
 import { 
   toPersianDigits, toEnglishDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString, isValidNationalId, isValidPostalCode, isValidMobile, getTodayJalali, numberToWordsPersian, getFiscalYearFromPeriod, isEmployeeEligibleForMonth, isEmployeeDepartedInMonth, getDefaultYearMonthFromPeriod, isShiftAssignmentInMonth 
@@ -3209,8 +3209,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   }, [db.productionSections, activePeriodId]);
 
   const shiftsList = useMemo(() => {
-    return (db.shifts || []).filter(s => s.periodId === activePeriodId);
-  }, [db.shifts, activePeriodId]);
+    return (db.productionSections || []).filter(s => s.periodId === activePeriodId);
+  }, [db.productionSections, activePeriodId]);
 
   const shiftAssignmentsList = useMemo(() => {
     return (db.shiftAssignments || []).filter(a => a.periodId === activePeriodId && !a.date && isShiftAssignmentInActiveMonth(a));
@@ -3385,7 +3385,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ...(Array.isArray(localApprovedMismatches) ? localApprovedMismatches : [])
     ]);
 
-    const shiftsSource = (db.shifts || []).filter(sh => sh.periodId === activePeriodId);
+    const shiftsSource = (db.productionSections || []).filter(sh => sh.periodId === activePeriodId);
     const shiftsById = new Map<string, any>();
     shiftsSource.forEach(sh => {
       if (sh?.id) shiftsById.set(sh.id, sh);
@@ -4595,7 +4595,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     db.payrollManualOverrides,
     db.personnelContracts,
     db.shiftAssignments,
-    db.shifts,
     db.productionSections,
     db.personnelAllocations,
     db.approvedMismatches,
@@ -6543,25 +6542,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     e.preventDefault();
     if (!shiftName.trim()) return;
 
-    const otherPeriodShifts = (db.shifts || []).filter(s => s.periodId !== activePeriodId);
-    let updatedPeriodShifts;
+    const otherPeriodSections = (db.productionSections || []).filter(s => s.periodId !== activePeriodId);
+    let updatedPeriodSections;
     let updatedAssigns = [...shiftAssignmentsList];
     if (editingShiftId) {
-      updatedPeriodShifts = shiftsList.map(s =>
+      updatedPeriodSections = shiftsList.map(s =>
         s.id === editingShiftId
-          ? { ...s, periodId: activePeriodId, name: shiftName.trim(), startTime: shiftStart, endTime: shiftEnd }
+          ? { ...s, periodId: activePeriodId, name: shiftName.trim(), startTime: shiftStart, endTime: shiftEnd, minStaff: s.minStaff ?? 1 }
           : s
       );
-      updatedAssigns = shiftAssignmentsList.filter(a => a.shiftId !== editingShiftId);
+      updatedAssigns = shiftAssignmentsList.filter(a => a.shiftId !== editingShiftId && a.deptId !== editingShiftId);
     } else {
-      const newShift = {
-        id: nextSimpleId(db.shifts || [], getPrefixForCollection('shifts')),
+      const newSec = {
+        id: nextSimpleId(db.productionSections || [], getPrefixForCollection('productionSections')),
         periodId: activePeriodId,
         name: shiftName.trim(),
         startTime: shiftStart || '۰۰:۰۰',
-        endTime: shiftEnd || '۰۰:۰۰'
+        endTime: shiftEnd || '۰۰:۰۰',
+        minStaff: 1
       };
-      updatedPeriodShifts = [...shiftsList, newShift];
+      updatedPeriodSections = [...shiftsList, newSec];
     }
 
     const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
@@ -6573,7 +6573,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }));
     onUpdateDb({
       ...db,
-      shifts: [...otherPeriodShifts, ...updatedPeriodShifts],
+      productionSections: [...otherPeriodSections, ...updatedPeriodSections],
       shiftAssignments: [...otherMonthAssigns, ...stampedUpdated]
     });
 
@@ -6586,8 +6586,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const handleEditShiftClick = (s: typeof shiftsList[0]) => {
     setEditingShiftId(s.id);
     setShiftName(s.name);
-    setShiftStart(s.startTime);
-    setShiftEnd(s.endTime);
+    setShiftStart(s.startTime || '');
+    setShiftEnd(s.endTime || '');
   };
 
   const handleDeleteShift = (id: string) => {
@@ -6595,15 +6595,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       'حذف شیفت کاری',
       'آیا از حذف این شیفت کاری اطمینان دارید؟ تمام تخصیص پرسنلی مرتبط با این شیفت در روزهای مختلف این ماه نیز باطل خواهند شد.',
       () => {
-        const otherPeriodShifts = (db.shifts || []).filter(s => s.periodId !== activePeriodId);
-        const updatedPeriodShifts = shiftsList.filter(s => s.id !== id);
+        const otherPeriodSections = (db.productionSections || []).filter(s => s.periodId !== activePeriodId);
+        const updatedPeriodSections = shiftsList.filter(s => s.id !== id);
         const updatedAssigns = shiftAssignmentsList
-          .filter(a => a.shiftId !== id)
+          .filter(a => a.shiftId !== id && a.deptId !== id)
           .map(a => ({ ...a, periodId: activePeriodId, year: Number(calcYear), month: Number(calcMonth) }));
         const otherMonthAssigns = (db.shiftAssignments || []).filter(a => a.periodId !== activePeriodId || !!a.date || !isShiftAssignmentInActiveMonth(a));
         onUpdateDb({
           ...db,
-          shifts: [...otherPeriodShifts, ...updatedPeriodShifts],
+          productionSections: [...otherPeriodSections, ...updatedPeriodSections],
           shiftAssignments: [...otherMonthAssigns, ...updatedAssigns]
         });
       }
@@ -6616,7 +6616,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const currentCaps = p.capabilities || [];
         const newCaps = currentCaps.includes(deptId)
           ? currentCaps.filter(id => id !== deptId)
-          : [...currentCaps, deptId];
+          : [deptId, ...currentCaps];
         return { ...p, capabilities: newCaps };
       }
       return p;
@@ -12154,7 +12154,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     activeTab === 'employees'
       ? (employeesSubTab === 'departments' ? 'departments' : employeesSubTab === 'personnel_categories' ? 'personnelCategories' : 'personnel')
       : activeTab === 'payroll'
-        ? (payrollSubTab === 'shifts' ? 'shifts' : payrollSubTab === 'attendance_records' ? 'attendanceRecords' : 'payrollPeriods')
+        ? (payrollSubTab === 'shifts' ? 'productionSections' : payrollSubTab === 'attendance_records' ? 'attendanceRecords' : 'payrollPeriods')
         : activeTab === 'payrollConstants'
           ? 'salaryBaseRates'
           : activeTab === 'contracts'
@@ -12174,7 +12174,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     'insuredSalaryItems',
     'leaveBuyoutSalaryItems',
     'taxableSalaryItems',
-    'shifts',
     'productionSections',
     'shiftAssignments',
     'attendanceRecords',

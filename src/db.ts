@@ -7,7 +7,7 @@ import {
   Period, Item, ItemCategory, Supplier, Product, ProductCategory, Department,
   SalesPeriod, ProductSale, UnitConversion, ProductFormula,
   Personnel, PayrollPeriod, PayrollItem, PersonnelAllocation, PeriodOverhead, ProcurementOrder, StockCountAudit, StockCount,
-  PurchaseInvoice, Shift, ShiftAssignment, AppDatabase, ProductionSection,
+  PurchaseInvoice, ShiftAssignment, AppDatabase, ProductionSection,
   MonthlyWorkdaySetting, PayrollCalculationRules, OfficialHoliday,
   Customer, CustomerCategory, UserRoleDefinition, User, BranchDefinition
 } from './types';
@@ -256,7 +256,6 @@ export function createBlankBranchDatabase(
   for (const key of ISOLATED_ARRAY_COLLECTIONS) {
     blank[key] = [];
   }
-  blank.shifts = [];
   blank.shiftAssignments = [];
   blank.attendanceLogs = [];
   blank.attendanceDailySummary = [];
@@ -532,7 +531,6 @@ export function getInitialDatabase(): AppDatabase {
     ],
     purchaseInvoices: [],
     dailyProductionSegments: [],
-    shifts: [],
     shiftAssignments: [],
     approvedMismatches: [],
     productionSections: [

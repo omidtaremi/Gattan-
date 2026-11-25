@@ -1,4 +1,4 @@
-import { AttendanceRecord, PayrollCalculationRules, Personnel, ProductionSection, Shift } from '../types';
+import { AttendanceRecord, PayrollCalculationRules, Personnel, ProductionSection } from '../types';
 import { toEnglishDigits } from './persianUtils';
 
 export type SmartShiftSourceCategory =
@@ -146,8 +146,7 @@ export function resolveEntryExitTimesForShift(
 }
 
 export function buildCandidateShiftsPool(
-  productionSections: ProductionSection[] | undefined,
-  shifts: Shift[] | undefined
+  productionSections: ProductionSection[] | undefined
 ): CandidateShiftDef[] {
   const pool: CandidateShiftDef[] = [];
   const seenIds = new Set<string>();
@@ -164,7 +163,7 @@ export function buildCandidateShiftsPool(
     }
   });
 
-  const defaultShifts = shifts || [
+  const defaultShifts = [
     { id: 'sh-1', name: 'شیفت صبح', startTime: '06:00', endTime: '14:00' },
     { id: 'sh-2', name: 'شیفت عصر', startTime: '14:00', endTime: '22:00' },
     { id: 'sh-3', name: 'شیفت شب', startTime: '22:00', endTime: '06:00' }

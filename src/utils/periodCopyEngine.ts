@@ -54,7 +54,7 @@ export type CopySectionKey =
   | 'personnelContracts'
   | 'personnelAllocations'
   | 'salaryBaseRates'
-  | 'shifts'
+  | 'personnelCapabilities'
   | 'productionSections'
   | 'shiftAssignments'
   | 'monthlyWorkdaySettings'
@@ -134,7 +134,7 @@ export const COPY_SECTION_META: Record<CopySectionKey, CopySectionMeta> = {
   personnelContracts: { key: 'personnelContracts', title: 'قراردادهای پرسنل', description: 'قراردادهای کاری و دستمزد پرسنل' },
   personnelAllocations: { key: 'personnelAllocations', title: 'تسهیم پرسنل در دپارتمان‌ها', description: 'تخصیص سهم حقوق پرسنل به دپارتمان‌ها' },
   salaryBaseRates: { key: 'salaryBaseRates', title: 'نرخ‌ها و ثوابت حقوق پایه', description: 'مزد روزانه، بن، مسکن، اولاد، اضافه‌کاری' },
-  shifts: { key: 'shifts', title: 'شیفت‌های کاری', description: 'تعریف ساعات شروع و پایان شیفت‌ها' },
+  personnelCapabilities: { key: 'personnelCapabilities', title: 'ماتریس توانمندی پرسنل', description: 'توانمندی‌های تخصیص‌یافته به پرسنل در دپارتمان‌ها' },
   productionSections: { key: 'productionSections', title: 'بخش‌های کاری و تولید', description: 'ایستگاه‌های کاری و حداقل نیروی مورد نیاز' },
   shiftAssignments: { key: 'shiftAssignments', title: 'برنامه چیدمان شیفت‌ها', description: 'انتساب پرسنل به شیفت‌ها و بخش‌ها' },
   monthlyWorkdaySettings: { key: 'monthlyWorkdaySettings', title: 'روزهای کاری ماهانه', description: 'تعداد روز کاری و ساعات موظفی هر ماه' },
@@ -170,6 +170,9 @@ function getSourceRecords(db: AppDatabase, section: CopySectionKey, sourcePeriod
       (cfg.productAssignments?.length || 0) > 0 ||
       (cfg.racks?.length || 0) > 0;
     return hasContent ? [{ id: 'settings', ...cfg }] : [];
+  }
+  if (section === 'personnelCapabilities') {
+    return (db.personnel || []).filter(p => p.periodId === sourcePeriodId && p.capabilities && p.capabilities.length > 0);
   }
   if (section === 'payrollCalculationRules') {
     const map = db.payrollCalculationRulesByPeriod;
@@ -242,6 +245,12 @@ export function getCopyPreviewItems(
           title: r.fullName || `${r.firstName || ''} ${r.lastName || ''}`.trim() || r.employeeCode,
           subtitle: [`کد پرسنلی: ${toPersianDigits(r.employeeCode || '-')}`, r.role || r.center].filter(Boolean).join(' · '),
           meta: r.isActive === false ? 'غیرفعال' : 'فعال',
+        };
+      case 'personnelCapabilities':
+        return {
+          id: r.id,
+          title: r.fullName || `${r.firstName || ''} ${r.lastName || ''}`.trim() || r.employeeCode,
+          subtitle: `کد پرسنلی: ${toPersianDigits(r.employeeCode || '-')} · تعداد توانمندی‌ها: ${toPersianDigits(String(r.capabilities?.length || 0))}`,
         };
       case 'personnelContracts':
         return {
@@ -338,12 +347,6 @@ export function getCopyPreviewItems(
           id: r.id,
           title: `نرخ پایه سال ${toPersianDigits(r.year)}`,
           subtitle: `مزد روزانه: ${formatWithCommas(r.dailyBaseSalary)} ریال`,
-        };
-      case 'shifts':
-        return {
-          id: r.id,
-          title: r.name,
-          subtitle: `${toPersianDigits(r.startTime)} تا ${toPersianDigits(r.endTime)}`,
         };
       case 'productionSections':
         return {
@@ -466,7 +469,6 @@ function getBusinessSignature(section: CopySectionKey, rec: any): string {
     case 'packagingTypes':
     case 'customerCategories':
     case 'personnelCategories':
-    case 'shifts':
     case 'productionSections':
       return norm(rec.name);
     case 'suppliers':
@@ -579,6 +581,39 @@ export function executeCopyFromPeriod(
       copiedCount: copied,
       skippedCount: skipped,
       autoCreatedDeps,
+    };
+  }
+
+  if (section === 'personnelCapabilities') {
+    const working: any = { ...db };
+    const sourcePersonnel = (working.personnel || []).filter((p: any) => p.periodId === sourcePeriodId && selectedSet.has(p.id));
+    const targetPersonnel = Array.isArray(working.personnel) ? working.personnel : [];
+    
+    let copied = 0;
+    const targetCapsMap = working.personnelCapabilitiesByPeriod || {};
+    const targetPeriodCaps = targetCapsMap[targetPeriodId] || {};
+
+    sourcePersonnel.forEach((srcP: any) => {
+      const matchTgt = targetPersonnel.find((tp: any) => tp.periodId === targetPeriodId && tp.employeeCode === srcP.employeeCode);
+      if (matchTgt) {
+        matchTgt.capabilities = [...(srcP.capabilities || [])];
+        copied++;
+        if (srcP.employeeCode) {
+          targetPeriodCaps[srcP.employeeCode] = [...(srcP.capabilities || [])];
+        }
+      }
+    });
+
+    working.personnelCapabilitiesByPeriod = {
+      ...targetCapsMap,
+      [targetPeriodId]: targetPeriodCaps
+    };
+
+    return {
+      updatedDb: working as AppDatabase,
+      copiedCount: copied,
+      skippedCount: sourcePersonnel.length - copied,
+      autoCreatedDeps: [],
     };
   }
 
@@ -814,7 +849,7 @@ export function executeCopyFromPeriod(
         );
       }
       if (row.fixedShiftId) {
-        cloned.fixedShiftId = findTargetRef('shifts', row.fixedShiftId, (s, t) => norm(s.name) === norm(t.name));
+        cloned.fixedShiftId = findTargetRef('productionSections', row.fixedShiftId, (s, t) => norm(s.name) === norm(t.name));
       }
     } else if (section === 'personnelAllocations') {
       cloned.departmentCategoryId =
@@ -830,7 +865,7 @@ export function executeCopyFromPeriod(
         );
       }
     } else if (section === 'shiftAssignments') {
-      cloned.shiftId = findTargetRef('shifts', row.shiftId, (s, t) => norm(s.name) === norm(t.name)) || row.shiftId;
+      cloned.shiftId = findTargetRef('productionSections', row.shiftId, (s, t) => norm(s.name) === norm(t.name)) || row.shiftId;
       cloned.deptId =
         findTargetRef('productionSections', row.deptId, (s, t) => norm(s.name) === norm(t.name)) || row.deptId;
     } else if (section === 'dibalPLUs') {
