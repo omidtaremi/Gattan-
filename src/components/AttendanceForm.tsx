@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
 import AttendanceDeviceManagement from './AttendanceDeviceManagement';
+import * as XLSX from 'xlsx';
 import {
   didSettleLeaveThroughMonth,
   findFirstAttendanceDateForCode,
@@ -2926,6 +2927,238 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     document.body.removeChild(link);
   };
 
+  // Download Group Attendance Excel Template
+  const handleDownloadGroupAttendanceTemplate = () => {
+    const daysInMonth = (selectedMonth <= 6) ? 31 : (selectedMonth <= 11 ? 30 : (selectedYear % 4 === 3 ? 30 : 29));
+    const personnelList = (db.personnel || []).filter(p => !activePeriodId || p.periodId === activePeriodId);
+
+    const rows = personnelList.map(p => {
+      const fullName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || 'بدون نام';
+      const attCode = p.attendanceCode || p.employeeCode || '';
+      const rowObj: Record<string, any> = {
+        'سال': selectedYear,
+        'ماه': selectedMonth,
+        'نام پرسنل': fullName,
+        'کد تردد': attCode,
+      };
+      for (let day = 1; day <= daysInMonth; day++) {
+        rowObj[`روز ${day} - ورود`] = '';
+        rowObj[`روز ${day} - خروج`] = '';
+      }
+      return rowObj;
+    });
+
+    if (rows.length === 0) {
+      const sampleRow: Record<string, any> = {
+        'سال': selectedYear,
+        'ماه': selectedMonth,
+        'نام پرسنل': 'نمونه: علی احمدی',
+        'کد تردد': '101',
+      };
+      for (let day = 1; day <= daysInMonth; day++) {
+        sampleRow[`روز ${day} - ورود`] = day === 1 ? '08:00' : '';
+        sampleRow[`روز ${day} - خروج`] = day === 1 ? '17:00' : '';
+      }
+      rows.push(sampleRow);
+    }
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "GroupAttendance");
+    const monthName = monthsList.find(m => m.value === selectedMonth)?.label || String(selectedMonth);
+    XLSX.writeFile(wb, `Gatan_Group_Attendance_${selectedYear}_${monthName}.xlsx`);
+  };
+
+  // Upload Group Attendance Excel File
+  const handleUploadGroupAttendanceExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isMonthLocked) {
+      alert('سند حقوق و دستمزد این ماه قفل شده است و امکان بارگذاری تردد وجود ندارد.');
+      e.target.value = '';
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = new Uint8Array(event.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) {
+          alert('فایل اکسل تهی است یا برگه معتبری ندارد.');
+          return;
+        }
+        const sheet = workbook.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json<any>(sheet);
+        if (!rows || rows.length === 0) {
+          alert('فایل اکسل هیچ ردیفی ندارد.');
+          return;
+        }
+
+        const newRecordsMap = new Map<string, AttendanceRecord>();
+        const existingRecords = db.attendanceRecords || [];
+        existingRecords.forEach(r => {
+          if (r.periodId === activePeriodId) {
+            newRecordsMap.set(`${r.attendanceCode}_${r.date}`, r);
+          } else {
+            newRecordsMap.set(`${r.attendanceCode}_${r.date}`, r);
+          }
+        });
+
+        let importedCount = 0;
+        const missingCodeErrors: string[] = [];
+
+        rows.forEach((row, rowIndex) => {
+          if (!row) return;
+          const keys = Object.keys(row);
+          
+          let rowYear = selectedYear;
+          let rowMonth = selectedMonth;
+          let attCode = '';
+          let personnelName = '';
+
+          for (const k of keys) {
+            const kClean = toEnglishDigits(k).trim().replace(/\s+/g, '').replace(/\u200c/g, '').toLowerCase();
+            if (kClean.includes('سال') || kClean === 'year' || kClean === 'jy') {
+              const val = parseInt(toEnglishDigits(String(row[k] || '')), 10);
+              if (!isNaN(val) && val > 1300 && val < 1500) {
+                rowYear = val;
+              }
+            } else if (kClean.includes('ماه') || kClean === 'month' || kClean === 'jm') {
+              const val = parseInt(toEnglishDigits(String(row[k] || '')), 10);
+              if (!isNaN(val) && val >= 1 && val <= 12) {
+                rowMonth = val;
+              }
+            } else if (kClean.includes('نامپرسنل') || kClean.includes('نام') || kClean.includes('name')) {
+              personnelName = String(row[k] || '').trim();
+            } else if (kClean.includes('کدتردد') || kClean.includes('کدحضور') || kClean.includes('attcode') || kClean.includes('code') || kClean.includes('کد')) {
+              if (!attCode) {
+                attCode = toEnglishDigits(String(row[k] || '')).trim();
+              }
+            }
+          }
+
+          // Positional fallbacks
+          if (rowYear === selectedYear && keys.length >= 1) {
+            const val = parseInt(toEnglishDigits(String(row[keys[0]] || '')), 10);
+            if (!isNaN(val) && val > 1300 && val < 1500) {
+              rowYear = val;
+            }
+          }
+          if (rowMonth === selectedMonth && keys.length >= 2) {
+            const val = parseInt(toEnglishDigits(String(row[keys[1]] || '')), 10);
+            if (!isNaN(val) && val >= 1 && val <= 12) {
+              rowMonth = val;
+            }
+          }
+          if (!personnelName && keys.length >= 3) {
+            personnelName = String(row[keys[2]] || '').trim();
+          }
+          if (!attCode && keys.length >= 4) {
+            attCode = toEnglishDigits(String(row[keys[3]] || '')).trim();
+          } else if (!attCode && keys.length >= 3) {
+            attCode = toEnglishDigits(String(row[keys[2]] || '')).trim();
+          } else if (!attCode && keys.length >= 2) {
+            attCode = toEnglishDigits(String(row[keys[1]] || '')).trim();
+          }
+
+          if (!attCode) {
+            const displayName = personnelName || `ردیف شماره ${toPersianDigits(rowIndex + 2)}`;
+            missingCodeErrors.push(displayName);
+            return;
+          }
+
+          const daysInRowMonth = (rowMonth <= 6) ? 31 : (rowMonth <= 11 ? 30 : (rowYear % 4 === 3 ? 30 : 29));
+
+          for (let day = 1; day <= daysInRowMonth; day++) {
+            let entryVal = '';
+            let exitVal = '';
+
+            for (const k of keys) {
+              const kClean = toEnglishDigits(k).trim().replace(/\s+/g, '').replace(/\u200c/g, '').toLowerCase();
+              const dayStr = String(day);
+              
+              const isTargetDay = kClean.includes(`روز${dayStr}`) || kClean.includes(`day${dayStr}`) || kClean.includes(`د${dayStr}`) || (kClean.includes(dayStr) && !kClean.includes('سال') && !kClean.includes('ماه'));
+
+              if (isTargetDay) {
+                if (kClean.includes('ورود') || kClean.includes('entry') || kClean.includes('in')) {
+                  entryVal = String(row[k] || '').trim();
+                } else if (kClean.includes('خروج') || kClean.includes('exit') || kClean.includes('out')) {
+                  exitVal = String(row[k] || '').trim();
+                }
+              }
+            }
+
+            const formatExcelTime = (val: any): string => {
+              if (val === undefined || val === null || val === '') return '';
+              let s = String(val).trim();
+              const num = Number(s);
+              if (!isNaN(num) && num > 0 && num < 1) {
+                const totalMins = Math.round(num * 24 * 60);
+                const h = Math.floor(totalMins / 60);
+                const m = totalMins % 60;
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+              }
+              return toEnglishDigits(s);
+            };
+
+            const cleanEntry = formatExcelTime(entryVal);
+            const cleanExit = formatExcelTime(exitVal);
+
+            if (cleanEntry || cleanExit) {
+              const dateStr = `${rowYear}/${String(rowMonth).padStart(2, '0')}/${String(day).padStart(2, '0')}`;
+              const times: string[] = [];
+              const statuses: number[] = [];
+
+              if (cleanEntry) {
+                times.push(cleanEntry);
+                statuses.push(0);
+              }
+              if (cleanExit) {
+                times.push(cleanExit);
+                statuses.push(1);
+              }
+
+              const recordId = `att-group-${activePeriodId}-${rowYear}-${rowMonth}-${attCode}-${day}`;
+              const rec: AttendanceRecord = {
+                id: recordId,
+                periodId: activePeriodId,
+                year: rowYear,
+                month: rowMonth,
+                attendanceCode: attCode,
+                date: dateStr,
+                times,
+                statuses,
+                isSystemCorrected: true
+              };
+
+              newRecordsMap.set(`${attCode}_${dateStr}`, rec);
+              importedCount++;
+            }
+          }
+        });
+
+        const updatedAttendanceRecords = Array.from(newRecordsMap.values());
+        onUpdateDb({
+          ...db,
+          attendanceRecords: updatedAttendanceRecords
+        });
+
+        let alertMsg = `فایل تردد گروهی با موفقیت بارگذاری شد!\n\n✓ تعداد ${toPersianDigits(importedCount)} تردد روزانه برای دوره/ماه مندرج ثبت گردید.`;
+        if (missingCodeErrors.length > 0) {
+          alertMsg += `\n\n⚠️ خطا: ${toPersianDigits(missingCodeErrors.length)} ردیف به دلیل «نداشتن کد تردد» نادیده گرفته شدند:\n• ${missingCodeErrors.slice(0, 10).join('\n• ')}${missingCodeErrors.length > 10 ? '\n(... و موارد دیگر)' : ''}`;
+        }
+        alert(alertMsg);
+      } catch (err) {
+        console.error(err);
+        alert('خطا در پردازش فایل اکسل تردد گروهی. لطفاً ساختار ستون‌ها را بررسی فرمایید.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
   // Handle file upload (supporting .dat, .txt, .csv, .log formats from attendance devices)
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isMonthLocked) {
@@ -4767,13 +5000,20 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
         </div>
 
         <div className="flex flex-col gap-2 w-full md:w-auto shrink-0">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={downloadSampleDat}
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
             >
               <Download className="h-4 w-4 text-emerald-400" />
               <span>دانلود فایل نمونه DAT</span>
+            </button>
+            <button
+              onClick={handleDownloadGroupAttendanceTemplate}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 hover:text-white border border-emerald-900/50 rounded-xl text-xs font-bold transition-all cursor-pointer"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
+              <span>دانلود فایل نمونه اکسل تردد گروهی</span>
             </button>
           </div>
         </div>
@@ -4896,6 +5136,32 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                 accept=".dat,.txt,.csv,.log"
                 disabled={isMonthLocked}
                 onChange={handleFileUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {/* Group Attendance Excel Upload Card */}
+          <div className="pt-1">
+            <label 
+              htmlFor={isMonthLocked ? undefined : "group-attendance-excel-upload"}
+              className={`flex flex-col items-center justify-center p-5 border-2 border-dashed rounded-2xl transition-all group text-center ${
+                isMonthLocked
+                  ? 'border-slate-800 bg-slate-900/30 opacity-50 cursor-not-allowed'
+                  : 'border-emerald-500/40 hover:border-emerald-500 bg-emerald-950/10 hover:bg-emerald-950/20 cursor-pointer'
+              }`}
+            >
+              <FileSpreadsheet className="h-7 w-7 text-emerald-500 group-hover:text-emerald-400 transition-all mb-2 animate-bounce" />
+              <span className="text-xs font-black text-slate-200">بارگذاری فایل تردد گروهی از اکسل (XLSX)</span>
+              <span className="text-[10px] text-slate-400 mt-1 leading-normal text-justify">
+                ستون اول: نام پرسنل | ستون دوم: کد تردد | ستون‌های بعدی: ورود و خروج روزهای ۱ تا ۳۱ ماه
+              </span>
+              <input 
+                id="group-attendance-excel-upload"
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                disabled={isMonthLocked}
+                onChange={handleUploadGroupAttendanceExcel}
                 className="hidden"
               />
             </label>

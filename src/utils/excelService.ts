@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { AppDatabase, PersonnelSettlement, SettlementMonthlyDetail, SettlementReason } from '../types';
+import { AppDatabase, PersonnelSettlement, SettlementMonthlyDetail, SettlementReason, PayrollCalculationRules } from '../types';
 import {
   toEnglishDigits,
   matchPersianString,
@@ -685,8 +685,20 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   }
 
   // 16c. Digital Menu Configuration
-  if (db.digitalMenu) {
-    addSheet([{ configJson: JSON.stringify(db.digitalMenu) }], "Digital_Menu_Config");
+  const digitalMenuExport = [];
+  const dmMap = db.digitalMenuByPeriod || {};
+  const periodsList = db.periods || [{ id: db.selectedPeriodId || 'p-1' }];
+  periodsList.forEach(p => {
+    const cfg = dmMap[p.id] || (p.id === (db.selectedPeriodId || periodsList[0]?.id) ? db.digitalMenu : undefined);
+    if (cfg) {
+      digitalMenuExport.push({ periodId: p.id, configJson: JSON.stringify(cfg) });
+    }
+  });
+  if (digitalMenuExport.length === 0 && db.digitalMenu) {
+    digitalMenuExport.push({ periodId: db.selectedPeriodId || 'p-1', configJson: JSON.stringify(db.digitalMenu) });
+  }
+  if (digitalMenuExport.length > 0) {
+    addSheet(digitalMenuExport, "Digital_Menu_Config");
   }
 
   // 17. Stock Audits
@@ -763,6 +775,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 22. Shifts
   const shiftsExport = (db.shifts || []).map(s => ({
     id: s.id,
+    periodId: s.periodId || '',
     name: s.name,
     startTime: s.startTime,
     endTime: s.endTime
@@ -791,6 +804,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 24. Production Sections
   const productionSectionsExport = (db.productionSections || []).map(sec => ({
     id: sec.id,
+    periodId: sec.periodId || '',
     name: sec.name,
     minStaff: sec.minStaff,
     startTime: sec.startTime || '۰۶:۰۰',
@@ -803,6 +817,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 39. Shift Schemes
   const shiftSchemesExport = (db.shiftSchemes || []).map(s => ({
     id: s.id,
+    periodId: s.periodId || '',
     name: s.name,
     isActive: s.isActive,
     productionSections: JSON.stringify(s.productionSections || []),
@@ -910,6 +925,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 31. Seniority Rate Rules
   const seniorityRateRulesExport = (db.seniorityRateRules || []).map(r => ({
     id: r.id,
+    periodId: r.periodId || '',
     seniorityYears: r.seniorityYears,
     dailyRate: r.dailyRate,
     fiscalYear: r.fiscalYear
@@ -947,6 +963,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 30. Personnel Categories
   const personnelCategoriesExport = (db.personnelCategories || []).map(cat => ({
     id: cat.id,
+    periodId: cat.periodId || '',
     name: cat.name
   }));
   addSheet(personnelCategoriesExport, "Personnel_Categories");
@@ -1087,6 +1104,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 34. Monthly Workday Settings
   const monthlyWorkdaySettingsExport = (db.monthlyWorkdaySettings || []).map(m => ({
     id: m.id,
+    periodId: m.periodId || '',
     year: m.year,
     month: m.month,
     daysInMonth: m.daysInMonth,
@@ -1098,37 +1116,41 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   addSheet(monthlyWorkdaySettingsExport, "Monthly_Workday_Settings");
 
   // 35. Payroll Calculation Rules
-  const rules = db.payrollCalculationRules || {
-    calculateEarlyOvertime: true,
-    calculateLateOvertime: true,
-    calculateHolidayWork: true,
-    calculateFridayWork: true,
-    calculateEntryDelayFine: false,
-    delayFineRate: 1.0,
-    deductClothesChangingTime: false,
-    clothesChangingDuration: 15,
-    deductDailyBreakTime: false,
-    dailyBreakDurationMinutes: 40,
-    calculatePayrollTax: false
+  const rulesMap = db.payrollCalculationRulesByPeriod || {
+    [db.selectedPeriodId || 'p-1']: db.payrollCalculationRules || {
+      calculateEarlyOvertime: true,
+      calculateLateOvertime: true,
+      calculateHolidayWork: true,
+      calculateFridayWork: true,
+      calculateEntryDelayFine: false,
+      delayFineRate: 1.0,
+      deductClothesChangingTime: false,
+      clothesChangingDuration: 15,
+      deductDailyBreakTime: false,
+      dailyBreakDurationMinutes: 40,
+      calculatePayrollTax: false
+    }
   };
-  const payrollCalculationRulesExport = [{
-    calculateEarlyOvertime: rules.calculateEarlyOvertime ? 1 : 0,
-    calculateLateOvertime: rules.calculateLateOvertime ? 1 : 0,
-    calculateHolidayWork: rules.calculateHolidayWork ? 1 : 0,
-    calculateFridayWork: rules.calculateFridayWork ? 1 : 0,
-    calculateEntryDelayFine: rules.calculateEntryDelayFine ? 1 : 0,
-    delayFineRate: rules.delayFineRate,
-    deductClothesChangingTime: rules.deductClothesChangingTime ? 1 : 0,
-    clothesChangingDuration: rules.clothesChangingDuration,
-    deductDailyBreakTime: rules.deductDailyBreakTime ? 1 : 0,
-    dailyBreakDurationMinutes: rules.dailyBreakDurationMinutes ?? 40,
-    calculatePayrollTax: rules.calculatePayrollTax ? 1 : 0
-  }];
+  const payrollCalculationRulesExport = Object.entries(rulesMap).map(([pid, r]) => ({
+    periodId: pid,
+    calculateEarlyOvertime: r.calculateEarlyOvertime ? 1 : 0,
+    calculateLateOvertime: r.calculateLateOvertime ? 1 : 0,
+    calculateHolidayWork: r.calculateHolidayWork ? 1 : 0,
+    calculateFridayWork: r.calculateFridayWork ? 1 : 0,
+    calculateEntryDelayFine: r.calculateEntryDelayFine ? 1 : 0,
+    delayFineRate: r.delayFineRate,
+    deductClothesChangingTime: r.deductClothesChangingTime ? 1 : 0,
+    clothesChangingDuration: r.clothesChangingDuration,
+    deductDailyBreakTime: r.deductDailyBreakTime ? 1 : 0,
+    dailyBreakDurationMinutes: r.dailyBreakDurationMinutes ?? 40,
+    calculatePayrollTax: r.calculatePayrollTax ? 1 : 0
+  }));
   addSheet(payrollCalculationRulesExport, "Payroll_Calculation_Rules");
 
   // 36. Official Holidays
   const officialHolidaysExport = (db.officialHolidays || []).map(o => ({
     id: o.id,
+    periodId: o.periodId || '',
     year: o.year,
     date: o.date
   }));
@@ -1137,6 +1159,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 36-b. Tax Exemptions (سقف‌های معافیت مالیات حقوق سالانه)
   const taxExemptionsExport = (db.taxExemptions || []).map(t => ({
     id: t.id,
+    periodId: t.periodId || '',
     fiscalYear: t.fiscalYear,
     exemptionLimit: t.exemptionLimit
   }));
@@ -1147,6 +1170,7 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   // 36-c. Tax Brackets (پله‌های مالیاتی حقوق و دستمزد)
   const taxBracketsExport = (db.taxBrackets || []).map(b => ({
     id: b.id,
+    periodId: b.periodId || '',
     fiscalYear: b.fiscalYear,
     fromAmount: b.fromAmount,
     toAmount: b.toAmount,
@@ -1170,33 +1194,54 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   }
 
   // 37. Contract Template Settings
-  const contractTemplateExport = [{
-    text: db.contractTemplateText || '',
-    intro: db.contractIntroText || '',
-    employer: db.contractEmployerText || '',
-    location: db.contractLocationText || '',
-    hours: db.contractHoursText || '',
-    rest: db.contractRestText || '',
-    holiday: db.contractHolidayText || ''
-  }];
+  const periodsListTmpl = db.periods || [{ id: db.selectedPeriodId || 'p-1' }];
+  const contractTemplateExport = periodsListTmpl.map(p => ({
+    periodId: p.id,
+    text: (db.contractTemplatesByPeriod?.[p.id]?.text) ?? db.contractTemplateText ?? '',
+    intro: (db.contractTemplatesByPeriod?.[p.id]?.intro) ?? db.contractIntroText ?? '',
+    employer: (db.contractTemplatesByPeriod?.[p.id]?.employer) ?? db.contractEmployerText ?? '',
+    location: (db.contractTemplatesByPeriod?.[p.id]?.location) ?? db.contractLocationText ?? '',
+    hours: (db.contractTemplatesByPeriod?.[p.id]?.hours) ?? db.contractHoursText ?? '',
+    rest: (db.contractTemplatesByPeriod?.[p.id]?.rest) ?? db.contractRestText ?? '',
+    holiday: (db.contractTemplatesByPeriod?.[p.id]?.holiday) ?? db.contractHolidayText ?? '',
+    personnel: (db.contractTemplatesByPeriod?.[p.id]?.personnel) ?? db.contractPersonnelText ?? '',
+  }));
   addSheet(contractTemplateExport, "Contract_Template");
 
   // 38. Personnel Capability Evaluation Matrix
-  const capabilityMatrixExport = (db.personnel || []).map(p => {
-    const row: any = {
-      employeeCode: p.employeeCode,
-      fullName: p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || '',
-    };
-    (db.productionSections || []).forEach(sec => {
-      const caps = p.capabilities || [];
-      if (caps.includes(sec.id)) {
-        row[sec.name] = caps[0] === sec.id ? "اصلی" : "کمکی";
-      } else {
-        row[sec.name] = "";
-      }
+  const capsMap = db.personnelCapabilitiesByPeriod || {
+    [db.selectedPeriodId || 'p-1']: db.personnelCapabilities || {}
+  };
+  const capabilityMatrixExport: any[] = [];
+  const periodsListCaps = db.periods || [{ id: db.selectedPeriodId || 'p-1' }];
+  periodsListCaps.forEach(p => {
+    const pid = p.id;
+    const personnelInPeriod = (db.personnel || []).filter(item => item.periodId === pid);
+    const empCapsMap = capsMap[pid] || {};
+    personnelInPeriod.forEach(item => {
+      const caps = empCapsMap[item.employeeCode] || item.capabilities || [];
+      const row: any = {
+        periodId: pid,
+        employeeCode: item.employeeCode,
+        fullName: item.fullName || `${item.firstName || ''} ${item.lastName || ''}`.trim() || '',
+      };
+      (db.productionSections || []).forEach(sec => {
+        if (caps.includes(sec.id)) {
+          row[sec.name] = caps[0] === sec.id ? "اصلی" : "کمکی";
+        } else {
+          row[sec.name] = "";
+        }
+      });
+      capabilityMatrixExport.push(row);
     });
-    return row;
   });
+  if (capabilityMatrixExport.length === 0) {
+    capabilityMatrixExport.push({
+      periodId: db.selectedPeriodId || 'p-1',
+      employeeCode: '',
+      fullName: ''
+    });
+  }
   addSheet(capabilityMatrixExport, "Capability_Matrix");
 
   // 39. Dibal Scales Configuration
@@ -1415,23 +1460,31 @@ export function exportDatabaseToExcel(db: AppDatabase) {
   }
 
   // 56. Approved Shift Mismatches (تاییدهای مغایرت شیفت و تردد)
-  const rawApproved = Array.isArray(db.approvedMismatches) ? db.approvedMismatches : [];
-  let effectiveApprovedMismatches = [...rawApproved];
-  if (effectiveApprovedMismatches.length === 0 && typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem('approved_mismatches');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          effectiveApprovedMismatches = parsed;
-        }
-      }
-    } catch {}
+  const mismatchesMap = db.approvedMismatchesByPeriod || {
+    [db.selectedPeriodId || 'p-1']: Array.isArray(db.approvedMismatches) ? db.approvedMismatches : []
+  };
+  const approvedMismatchesExport: any[] = [];
+  Object.entries(mismatchesMap).forEach(([pid, list]) => {
+    if (Array.isArray(list)) {
+      list.forEach((mismatchKey, idx) => {
+        approvedMismatchesExport.push({
+          id: `apm-${pid}-${idx + 1}`,
+          periodId: pid,
+          mismatchKey: String(mismatchKey)
+        });
+      });
+    }
+  });
+  if (approvedMismatchesExport.length === 0) {
+    const rawApproved = Array.isArray(db.approvedMismatches) ? db.approvedMismatches : [];
+    rawApproved.forEach((mismatchKey, idx) => {
+      approvedMismatchesExport.push({
+        id: `apm-${idx + 1}`,
+        periodId: db.selectedPeriodId || 'p-1',
+        mismatchKey: String(mismatchKey)
+      });
+    });
   }
-  const approvedMismatchesExport = effectiveApprovedMismatches.map((mismatchKey, idx) => ({
-    id: `apm-${idx + 1}`,
-    mismatchKey: String(mismatchKey)
-  }));
   if (approvedMismatchesExport.length > 0) {
     addSheet(approvedMismatchesExport, "Approved_Shift_Mismatches");
   }
@@ -1443,12 +1496,22 @@ export function exportDatabaseToExcel(db: AppDatabase) {
 
   // 58. Payroll Manual Overrides (کارکرد و بیمه و کسر مدیریتی دستی)
   if (db.payrollManualOverrides && Object.keys(db.payrollManualOverrides).length > 0) {
-    const overridesExport = Object.entries(db.payrollManualOverrides).map(([overrideKey, data]) => ({
-      overrideKey,
-      workDaysJson: JSON.stringify(data?.workDays || {}),
-      insuranceDaysJson: JSON.stringify(data?.insuranceDays || {}),
-      normalMgmtDeductionsJson: JSON.stringify(data?.normalMgmtDeductions || {})
-    }));
+    const overridesExport = Object.entries(db.payrollManualOverrides).map(([overrideKey, data]) => {
+      let pid = db.selectedPeriodId || 'p-1';
+      if (overrideKey.includes('_')) {
+        const parts = overrideKey.split('_');
+        if (parts[0].startsWith('p-') || parts[0].length >= 4) {
+          pid = parts[0];
+        }
+      }
+      return {
+        periodId: pid,
+        overrideKey,
+        workDaysJson: JSON.stringify(data?.workDays || {}),
+        insuranceDaysJson: JSON.stringify(data?.insuranceDays || {}),
+        normalMgmtDeductionsJson: JSON.stringify(data?.normalMgmtDeductions || {})
+      };
+    });
     addSheet(overridesExport, "Payroll_Manual_Overrides");
   }
 
@@ -2044,11 +2107,18 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
 
   // 16c. Digital Menu Configuration
   const digitalMenuRows = getSheetData("Digital_Menu_Config");
-  if (digitalMenuRows && digitalMenuRows.length > 0 && digitalMenuRows[0].configJson) {
-    const parsedMenu = parseJSON(digitalMenuRows[0].configJson, null);
-    if (parsedMenu && typeof parsedMenu === 'object') {
-      result.digitalMenu = parsedMenu;
-    }
+  if (digitalMenuRows && digitalMenuRows.length > 0) {
+    const dmByPeriod: Record<string, any> = {};
+    digitalMenuRows.forEach(r => {
+      const pid = String(r.periodId || result.selectedPeriodId || 'p-1');
+      const parsed = parseJSON(r.configJson || r.config || '', null);
+      if (parsed && typeof parsed === 'object') {
+        dmByPeriod[pid] = parsed;
+      }
+    });
+    result.digitalMenuByPeriod = dmByPeriod;
+    const activePid = result.selectedPeriodId || 'p-1';
+    result.digitalMenu = dmByPeriod[activePid] || Object.values(dmByPeriod)[0] || parseJSON(digitalMenuRows[0].configJson || digitalMenuRows[0].config, null);
   }
 
   // 17. Stock Audits
@@ -2148,6 +2218,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (shiftsRows) {
     result.shifts = shiftsRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       name: String(r.name || ''),
       startTime: String(r.startTime || ''),
       endTime: String(r.endTime || ''),
@@ -2180,6 +2251,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (productionSectionsRows) {
     result.productionSections = productionSectionsRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       name: String(r.name || ''),
       minStaff: parseNumber(r.minStaff) || 1,
       startTime: r.startTime ? String(r.startTime) : undefined,
@@ -2325,6 +2397,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (seniorityRateRulesRows) {
     result.seniorityRateRules = seniorityRateRulesRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       seniorityYears: parseNumber(r.seniorityYears),
       dailyRate: parseNumber(r.dailyRate),
       fiscalYear: String(r.fiscalYear || ''),
@@ -2376,6 +2449,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (personnelCatRows) {
     result.personnelCategories = personnelCatRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       name: String(r.name || '')
     })).filter(x => x.id);
   } else {
@@ -2412,6 +2486,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (monthlyWorkdaySettingsRows) {
     result.monthlyWorkdaySettings = monthlyWorkdaySettingsRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       year: parseNumber(r.year),
       month: parseNumber(r.month),
       daysInMonth: parseNumber(r.daysInMonth),
@@ -2427,20 +2502,26 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 35. Payroll Calculation Rules
   const payrollCalculationRulesRows = getSheetData("Payroll_Calculation_Rules");
   if (payrollCalculationRulesRows && payrollCalculationRulesRows.length > 0) {
-    const row = payrollCalculationRulesRows[0];
-    result.payrollCalculationRules = {
-      calculateEarlyOvertime: parseBoolean(row.calculateEarlyOvertime),
-      calculateLateOvertime: parseBoolean(row.calculateLateOvertime),
-      calculateHolidayWork: parseBoolean(row.calculateHolidayWork),
-      calculateFridayWork: parseBoolean(row.calculateFridayWork),
-      calculateEntryDelayFine: parseBoolean(row.calculateEntryDelayFine),
-      delayFineRate: parseNumber(row.delayFineRate) || 1.0,
-      deductClothesChangingTime: parseBoolean(row.deductClothesChangingTime),
-      clothesChangingDuration: parseNumber(row.clothesChangingDuration) || 0,
-      deductDailyBreakTime: parseBoolean(row.deductDailyBreakTime),
-      dailyBreakDurationMinutes: row.dailyBreakDurationMinutes !== undefined ? parseNumber(row.dailyBreakDurationMinutes) : 40,
-      calculatePayrollTax: parseBoolean(row.calculatePayrollTax)
-    };
+    const rulesByPeriod: Record<string, PayrollCalculationRules> = {};
+    payrollCalculationRulesRows.forEach(row => {
+      const pid = String(row.periodId || result.selectedPeriodId || 'p-1');
+      rulesByPeriod[pid] = {
+        calculateEarlyOvertime: parseBoolean(row.calculateEarlyOvertime),
+        calculateLateOvertime: parseBoolean(row.calculateLateOvertime),
+        calculateHolidayWork: parseBoolean(row.calculateHolidayWork),
+        calculateFridayWork: parseBoolean(row.calculateFridayWork),
+        calculateEntryDelayFine: parseBoolean(row.calculateEntryDelayFine),
+        delayFineRate: parseNumber(row.delayFineRate) || 1.0,
+        deductClothesChangingTime: parseBoolean(row.deductClothesChangingTime),
+        clothesChangingDuration: parseNumber(row.clothesChangingDuration) || 0,
+        deductDailyBreakTime: parseBoolean(row.deductDailyBreakTime),
+        dailyBreakDurationMinutes: row.dailyBreakDurationMinutes !== undefined ? parseNumber(row.dailyBreakDurationMinutes) : 40,
+        calculatePayrollTax: parseBoolean(row.calculatePayrollTax)
+      };
+    });
+    result.payrollCalculationRulesByPeriod = rulesByPeriod;
+    const activePid = result.selectedPeriodId || 'p-1';
+    result.payrollCalculationRules = rulesByPeriod[activePid] || Object.values(rulesByPeriod)[0];
   } else {
     result.payrollCalculationRules = currentDb.payrollCalculationRules || {
       calculateEarlyOvertime: true,
@@ -2462,6 +2543,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (officialHolidaysRows) {
     result.officialHolidays = officialHolidaysRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       year: parseNumber(r.year),
       date: String(r.date || '')
     })).filter(x => x.id);
@@ -2474,6 +2556,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (taxExemptionsRows) {
     result.taxExemptions = taxExemptionsRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       fiscalYear: String(r.fiscalYear || ''),
       exemptionLimit: parseNumber(r.exemptionLimit)
     })).filter(x => x.id);
@@ -2486,6 +2569,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   if (taxBracketsRows) {
     result.taxBrackets = taxBracketsRows.map(r => ({
       id: String(r.id || ''),
+      periodId: r.periodId ? String(r.periodId) : undefined,
       fiscalYear: String(r.fiscalYear || ''),
       fromAmount: parseNumber(r.fromAmount),
       toAmount: parseNumber(r.toAmount),
@@ -2513,13 +2597,33 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 37. Contract Template Settings
   const contractTemplateRows = getSheetData("Contract_Template");
   if (contractTemplateRows && contractTemplateRows.length > 0) {
-    result.contractTemplateText = String(contractTemplateRows[0].text || '');
-    result.contractIntroText = String(contractTemplateRows[0].intro || '');
-    result.contractEmployerText = String(contractTemplateRows[0].employer || '');
-    result.contractLocationText = String(contractTemplateRows[0].location || '');
-    result.contractHoursText = String(contractTemplateRows[0].hours || '');
-    result.contractRestText = String(contractTemplateRows[0].rest || '');
-    result.contractHolidayText = String(contractTemplateRows[0].holiday || '');
+    const templatesByPeriod: Record<string, any> = {};
+    contractTemplateRows.forEach(row => {
+      const pid = String(row.periodId || result.selectedPeriodId || 'p-1');
+      templatesByPeriod[pid] = {
+        text: String(row.text || ''),
+        intro: String(row.intro || ''),
+        employer: String(row.employer || ''),
+        location: String(row.location || ''),
+        hours: String(row.hours || ''),
+        rest: String(row.rest || ''),
+        holiday: String(row.holiday || ''),
+        personnel: String(row.personnel || '')
+      };
+    });
+    result.contractTemplatesByPeriod = templatesByPeriod;
+    const activePid = result.selectedPeriodId || 'p-1';
+    const activeTmpl = templatesByPeriod[activePid] || Object.values(templatesByPeriod)[0];
+    if (activeTmpl) {
+      result.contractTemplateText = activeTmpl.text;
+      result.contractIntroText = activeTmpl.intro;
+      result.contractEmployerText = activeTmpl.employer;
+      result.contractLocationText = activeTmpl.location;
+      result.contractHoursText = activeTmpl.hours;
+      result.contractRestText = activeTmpl.rest;
+      result.contractHolidayText = activeTmpl.holiday;
+      result.contractPersonnelText = activeTmpl.personnel;
+    }
   } else {
     result.contractTemplateText = currentDb.contractTemplateText || '';
     result.contractIntroText = currentDb.contractIntroText || '';
@@ -2528,6 +2632,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
     result.contractHoursText = currentDb.contractHoursText || '';
     result.contractRestText = currentDb.contractRestText || '';
     result.contractHolidayText = currentDb.contractHolidayText || '';
+    result.contractPersonnelText = currentDb.contractPersonnelText || '';
   }
 
   // 38. Personnel Capability Evaluation Matrix
@@ -2817,15 +2922,18 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 56. Approved Shift Mismatches
   const approvedMismatchesRows = getSheetData("Approved_Shift_Mismatches", ["تایید مغایرت ها", "تاییدات مغایرت شیفت", "ApprovedMismatches"]);
   if (approvedMismatchesRows && approvedMismatchesRows.length > 0) {
-    const keys = approvedMismatchesRows
-      .map(r => String(r.mismatchKey || r['کلید مغایرت'] || r['شناسه مغایرت'] || (r.key && !String(r.key).startsWith('apm-') ? r.key : '')).trim())
-      .filter(Boolean);
-    result.approvedMismatches = Array.from(new Set([...(currentDb.approvedMismatches || []), ...keys]));
-    try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('approved_mismatches', JSON.stringify(result.approvedMismatches));
+    const mismatchesByPeriod: Record<string, string[]> = {};
+    approvedMismatchesRows.forEach(r => {
+      const pid = String(r.periodId || result.selectedPeriodId || 'p-1');
+      const mKey = String(r.mismatchKey || r['کلید مغایرت'] || r['شناسه مغایرت'] || (r.key && !String(r.key).startsWith('apm-') ? r.key : '')).trim();
+      if (mKey) {
+        if (!mismatchesByPeriod[pid]) mismatchesByPeriod[pid] = [];
+        if (!mismatchesByPeriod[pid].includes(mKey)) mismatchesByPeriod[pid].push(mKey);
       }
-    } catch {}
+    });
+    result.approvedMismatchesByPeriod = mismatchesByPeriod;
+    const activePid = result.selectedPeriodId || 'p-1';
+    result.approvedMismatches = mismatchesByPeriod[activePid] || Object.values(mismatchesByPeriod)[0] || [];
   } else {
     result.approvedMismatches = currentDb.approvedMismatches || [];
   }
@@ -2843,7 +2951,7 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
   // 58. Payroll Manual Overrides
   const payrollOverridesRows = getSheetData("Payroll_Manual_Overrides");
   if (payrollOverridesRows && payrollOverridesRows.length > 0) {
-    const overridesObj: Record<string, { workDays?: Record<string, number>; insuranceDays?: Record<string, number>; normalMgmtDeductions?: Record<string, number> }> = {};
+    const overridesObj: Record<string, any> = {};
     payrollOverridesRows.forEach(r => {
       const key = String(r.overrideKey || '').trim();
       if (!key) return;

@@ -2631,9 +2631,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   const filteredRates = useMemo(() => {
-    // Older records were saved before period isolation added `periodId`.
-    // Keep those visible in the selected period so users can edit or migrate them.
-    const list = (db.salaryBaseRates || []).filter(r => !r.periodId || r.periodId === activePeriodId);
+    let list = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
+    if (list.length === 0) {
+      list = db.salaryBaseRates || [];
+    }
     const yearMap = new Map<string, SalaryBaseRate>();
     list.forEach(r => {
       const y = String(r.year || '').trim();
@@ -2650,7 +2651,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   }, [db.salaryBaseRates, activePeriodId, rateSearchQuery]);
 
   const filteredSeniorityRateRules = useMemo(() => {
-    const list = (db.seniorityRateRules || []).filter(r => r.periodId === activePeriodId);
+    let list = (db.seniorityRateRules || []).filter(r => r.periodId === activePeriodId);
+    if (list.length === 0) {
+      list = db.seniorityRateRules || [];
+    }
     if (!seniorityYearFilter) return list;
     return list.filter(r => r.fiscalYear === seniorityYearFilter);
   }, [db.seniorityRateRules, activePeriodId, seniorityYearFilter]);
@@ -12481,38 +12485,228 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           )}
 
           {employeesSubTab === 'roster' && (
-          <>
-          <div className="flex justify-start">
-            <ErpButton
-              variant={isPersonnelFormOpen ? 'secondary' : 'primary'}
-              icon={isPersonnelFormOpen ? <RotateCcw className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-              onClick={() => {
-                if (isPersonnelFormOpen) resetForm();
-                else {
-                  resetForm();
-                  setIsPersonnelFormOpen(true);
-                }
-              }}
-            >
-              {isPersonnelFormOpen ? 'انصراف و بازگشت' : 'افزودن پرسنل'}
-            </ErpButton>
-          </div>
-          <div className={`space-y-6 ${isPersonnelFormOpen ? '' : 'hidden'}`}>
-            
-            <div className="space-y-6">
-              
-              <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 h-fit space-y-6 shadow-xl">
-                <h3 className="text-xs font-black text-white border-b border-slate-850 pb-3 flex items-center gap-1.5 justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <span className="p-1.5 bg-rose-950/60 rounded-lg text-rose-500 border border-rose-900/40">
-                      <Users className="h-4 w-4" />
+          <div className="space-y-6">
+            {!isPersonnelFormOpen ? (
+              <div className="w-full space-y-4">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-205" dir="rtl">
+                  <div className="flex items-center gap-3 w-full xl:w-auto">
+                    <div className="relative w-full xl:w-64">
+                      <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                        <Search className="h-4 w-4 text-slate-400" />
+                      </span>
+                      <input
+                        id="employee-search-inp"
+                        type="text"
+                        placeholder="جستجو کادر پرسنل..."
+                        className="w-full pr-10 pl-3 py-1.5 border rounded-lg text-xs bg-white text-right font-sans"
+                        value={empSearch}
+                        onChange={(e) => setEmpSearch(e.target.value)}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingEmp(null);
+                        resetForm();
+                        setIsPersonnelFormOpen(true);
+                      }}
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/10 shrink-0 transition-all font-sans"
+                    >
+                      <Plus className="h-4 w-4" /> افزودن پرسنل
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={downloadSamplePersonnelCSV}
+                      className="text-[11px] bg-white text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-slate-50 shadow-xs"
+                      title="دانلود فایل نمونه اکسل جهت وارد کردن پرسنل"
+                    >
+                      <Download className="h-3.5 w-3.5 text-slate-500" /> دانلود نمونه قالب پرسنل
+                    </button>
+
+                    <label className="text-[11px] bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 cursor-pointer hover:bg-blue-100 transition-colors shadow-xs">
+                      <Plus className="h-3.5 w-3.5" /> واردات پرسنل از اکسل
+                      <input
+                        id="personnel-raw-import-file"
+                        type="file"
+                        accept=".xlsx, .xls, .csv"
+                        onChange={importPersonnelCSV}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <button
+                      onClick={exportPersonnelToExcel}
+                      className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-100 shadow-xs cursor-pointer"
+                      title="دانلود فایل رسمی اکسل (.xlsx) کلیه پرسنل کارگاه"
+                    >
+                      <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel پرسنل (.xlsx)
+                    </button>
+
+                    <button
+                      onClick={handleCopyPersonnelFromPreviousPeriod}
+                      className="text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-indigo-100 shadow-xs"
+                      title="کپی پرونده‌های پرسنلی و تخصیص‌ها از دوره قبل"
+                    >
+                      <Copy className="h-3.5 w-3.5" /> کپی پرسنل از دوره قبل
+                    </button>
+                  </div>
+                </div>
+
+                {/* Bulk operations bar */}
+                {selectedEmpCodes.length > 0 && (
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-center justify-between animate-slide-in" dir="rtl">
+                    <span className="text-xs text-rose-900 font-bold">
+                      تعداد <strong>{selectedEmpCodes.length}</strong> پرسنل جهت عملیات دسته‌جمعی انتخاب گردیده‌اند.
                     </span>
-                    {editingEmp ? `اصلاح مشخصات پرسنلی: ${editingEmp.fullName}` : 'ثبت نام و تشکیل پرونده پرسنل'}
-                  </span>
-                  {editingEmp && (
-                    <span className="text-[10px] bg-amber-950 text-amber-200 border border-amber-800 px-2 py-0.5 rounded-full font-bold">حالت ویرایش</span>
-                  )}
-                </h3>
+                    <button
+                      type="button"
+                      onClick={handleBulkDeletePersonnel}
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold py-1.5 px-4 rounded-lg flex items-center gap-1 cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> حذف دائم کارگران برگزیده
+                    </button>
+                  </div>
+                )}
+
+                <div className="border border-slate-100 rounded-2xl overflow-hidden bg-white shadow-sm overflow-x-auto" dir="rtl">
+                  <table className="min-w-full text-right text-xs">
+                    <thead className="bg-slate-50/75 border-b border-slate-150">
+                      <tr>
+                        <th className="px-3 py-2 text-center w-10">
+                          <button
+                            type="button"
+                            onClick={handleToggleSelectAll}
+                            className="text-slate-500 hover:text-slate-800 focus:outline-none"
+                          >
+                            {searchedPersonnel.every(p => selectedEmpCodes.includes(p.employeeCode)) ? (
+                              <CheckSquare className="h-4.5 w-4.5 text-rose-600" />
+                            ) : (
+                              <Square className="h-4.5 w-4.5" />
+                            )}
+                          </button>
+                        </th>
+                        <th className="px-3 py-2.5 font-bold text-slate-500">کد پرسنلی / حسابداری</th>
+                        <th className="px-3 py-2.5 font-bold text-slate-500 text-center">کد تردد</th>
+                        <th className="px-3 py-2.5 font-bold text-slate-500">نام و فامیل پرسنل</th>
+                        <th className="px-3 py-2.5 font-bold text-slate-500">وضعیت / عائله</th>
+                        <th className="px-3 py-2.5 font-bold text-slate-500">تخصیص دپارتمان</th>
+                        <th className="px-3 py-2.5 text-center text-slate-500 w-24">عملیات</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {searchedPersonnel.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                            هیچ پرسنلی منطبق با کلمات جستجو شده یافت نشد.
+                          </td>
+                        </tr>
+                      ) : (
+                        searchedPersonnel.map(emp => {
+                          const alloc = allocMap[emp.employeeCode];
+                          const isSelected = selectedEmpCodes.includes(emp.employeeCode);
+                          return (
+                            <tr key={emp.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-rose-50/40 hover:bg-rose-50/60' : ''}`}>
+                              <td className="px-3 py-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleSelectOne(emp.employeeCode)}
+                                  className="text-slate-500 focus:outline-none"
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="h-4 w-4 text-rose-600" />
+                                  ) : (
+                                    <Square className="h-4 w-4" />
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="font-bold font-mono text-rose-600">{emp.employeeCode}</div>
+                                <span className="text-[10px] text-slate-400 font-mono">حسابداری: {emp.accountCode || 'نامشخص'}</span>
+                              </td>
+                              <td className="px-3 py-3 text-center">
+                                {emp.attendanceCode ? (
+                                  <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-mono font-bold text-xs bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
+                                    {emp.attendanceCode}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-350 font-mono text-[11px]">-</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="font-extrabold text-slate-900">{emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}</div>
+                                <span className="text-[10px] text-slate-500 font-medium">سمت: {emp.role || 'کارگر خط تولید'}</span>
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="text-[10px] space-y-1">
+                                  {emp.departureDate ? (
+                                    <div className="inline-flex flex-col items-start gap-0.5">
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-extrabold border border-rose-200">
+                                        <UserMinus className="h-3 w-3" />
+                                        ترک کار: {toPersianDigits(emp.departureDate)}
+                                      </span>
+                                      {emp.departureReason && (
+                                        <span className="text-[9px] text-slate-500 font-semibold px-1">
+                                          علت: {emp.departureReason}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className={`inline-block px-1.5 py-0.5 rounded font-bold ${emp.isActive ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}>
+                                      {emp.isActive ? 'فعال خط' : 'غیرفعال'}
+                                    </span>
+                                  )}
+                                  <div className="text-slate-500">
+                                    {emp.isMarried ? `متأهل | ${emp.childrenCount || 0} فرزند` : 'مجرد'}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                  (!alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4')) ? 'bg-slate-100 text-slate-700' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                                }`}>
+                                  {alloc ? (departmentNameMap[alloc.departmentCategoryId] || 'بخش مشترک / سربار کارگاه') : 'بخش مشترک / سربار کارگاه'}
+                                </span>
+                              </td>
+                              <td className="px-3 py-3 text-center">
+                                <div className="flex justify-center gap-1">
+                                  <button onClick={() => startEditEmployee(emp)} className="text-[10px] bg-slate-105 border px-1.5 py-0.5 rounded-lg text-slate-700 hover:bg-slate-200 font-bold cursor-pointer">اصلاح</button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setContractModalEmployee(emp)}
+                                    className="text-[10px] text-teal-700 bg-teal-50 border border-teal-100 px-1.5 py-0.5 rounded-lg hover:bg-teal-100 font-bold transition-all cursor-pointer"
+                                    title="چاپ قرارداد پرسنلی"
+                                  >
+                                    قرارداد
+                                  </button>
+                                  <button onClick={() => deleteEmployee(emp.employeeCode)} className="text-[10px] text-rose-600 border border-rose-100 px-1.5 py-0.5 rounded-lg hover:bg-rose-50 font-bold cursor-pointer">حذف</button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="w-full space-y-6">
+                <div className="flex items-center justify-between bg-slate-900 p-4 rounded-xl border border-slate-800 text-white shadow-md" dir="rtl">
+                  <div className="font-extrabold text-xs flex items-center gap-2">
+                    <Users className="h-4.5 w-4.5 text-rose-500" />
+                    {editingEmp ? `اصلاح پرونده پرسنلی: ${editingEmp.fullName}` : 'ثبت نام و تشکیل پرونده پرسنل جدید'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => resetForm()}
+                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-md shadow-rose-600/10 font-sans"
+                  >
+                    <RotateCcw className="h-4 w-4" /> انصراف / بازگشت به لیست پرسنل
+                  </button>
+                </div>
 
                 <form onSubmit={handleSaveEmployee} className="space-y-6 text-right font-sans" dir="rtl">
                   {/* Status toggle at the top for prominent management */}
@@ -13740,216 +13934,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     <button type="submit" className="flex-grow bg-rose-600 hover:bg-rose-700 text-white text-xs font-black py-2.5 rounded-xl transition-all shadow-md shadow-rose-600/10 cursor-pointer">
                       {editingEmp ? 'ذخیره اصلاحات پرونده پرسنلی' : 'ثبت قطعی پرسنل در آرشیو خط'}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => resetForm()}
-                      className="px-4 border border-slate-350 text-slate-700 rounded-xl text-xs bg-white hover:bg-slate-100 transition-colors font-bold cursor-pointer"
-                    >
-                      انصراف و بازگشت
-                    </button>
+                    {editingEmp && (
+                      <button
+                        type="button"
+                        onClick={() => resetForm()}
+                        className="px-4 border border-slate-350 text-slate-700 rounded-xl text-xs bg-white hover:bg-slate-100 transition-colors font-bold cursor-pointer"
+                      >
+                        لغو اصلاح
+                      </button>
+                    )}
                   </div>
                 </form>
               </div>
-
-            </div> {/* End registration form parent */}
-
-          </div> {/* End Tab 1 Employees Wrapper */}
-
-          {/* List block (Full width at bottom of page) */}
-          <div className={`w-full space-y-4 mt-8 ${isPersonnelFormOpen ? 'hidden' : ''}`}>
-            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-205">
-                <div className="relative w-full xl:w-64">
-                  <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-slate-400" />
-                  </span>
-                  <input
-                    id="employee-search-inp"
-                    type="text"
-                    placeholder="جستجو کادر پرسنل..."
-                    className="w-full pr-10 pl-3 py-1.5 border rounded-lg text-xs bg-white"
-                    value={empSearch}
-                    onChange={(e) => setEmpSearch(e.target.value)}
-                  />
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={downloadSamplePersonnelCSV}
-                    className="text-[11px] bg-white text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-slate-50 shadow-xs"
-                    title="دانلود فایل نمونه اکسل جهت وارد کردن پرسنل"
-                  >
-                    <Download className="h-3.5 w-3.5 text-slate-500" /> دانلود نمونه قالب پرسنل
-                  </button>
-
-                  <label className="text-[11px] bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 cursor-pointer hover:bg-blue-100 transition-colors shadow-xs">
-                    <Plus className="h-3.5 w-3.5" /> واردات پرسنل از اکسل
-                    <input
-                      id="personnel-raw-import-file"
-                      type="file"
-                      accept=".xlsx, .xls, .csv"
-                      onChange={importPersonnelCSV}
-                      className="hidden"
-                    />
-                  </label>
-
-                  <button
-                    onClick={exportPersonnelToExcel}
-                    className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-100 shadow-xs cursor-pointer"
-                    title="دانلود فایل رسمی اکسل (.xlsx) کلیه پرسنل کارگاه"
-                  >
-                    <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel پرسنل (.xlsx)
-                  </button>
-
-                  <button
-                    onClick={handleCopyPersonnelFromPreviousPeriod}
-                    className="text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-indigo-100 shadow-xs"
-                    title="کپی پرونده‌های پرسنلی و تخصیص‌ها از دوره قبل"
-                  >
-                    <Copy className="h-3.5 w-3.5" /> کپی پرسنل از دوره قبل
-                  </button>
-                </div>
-              </div>
-
-              {/* Bulk operations bar */}
-              {selectedEmpCodes.length > 0 && (
-                <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-center justify-between animate-slide-in">
-                  <span className="text-xs text-rose-900 font-bold">
-                    تعداد <strong>{selectedEmpCodes.length}</strong> پرسنل جهت عملیات دسته‌جمعی انتخاب گردیده‌اند.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleBulkDeletePersonnel}
-                    className="bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold py-1.5 px-4 rounded-lg flex items-center gap-1 cursor-pointer"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" /> حذف دائم کارگران برگزیده
-                  </button>
-                </div>
-              )}
-
-              <div className="border border-slate-100 rounded-2xl overflow-hidden bg-white shadow-sm overflow-x-auto">
-                <table className="min-w-full text-right text-xs">
-                  <thead className="bg-slate-50/75 border-b border-slate-150">
-                    <tr>
-                      <th className="px-3 py-2 text-center w-10">
-                        <button
-                          type="button"
-                          onClick={handleToggleSelectAll}
-                          className="text-slate-500 hover:text-slate-800 focus:outline-none"
-                        >
-                          {searchedPersonnel.every(p => selectedEmpCodes.includes(p.employeeCode)) ? (
-                            <CheckSquare className="h-4.5 w-4.5 text-rose-600" />
-                          ) : (
-                            <Square className="h-4.5 w-4.5" />
-                          )}
-                        </button>
-                      </th>
-                      <th className="px-3 py-2.5 font-bold text-slate-500">کد پرسنلی / حسابداری</th>
-                      <th className="px-3 py-2.5 font-bold text-slate-500 text-center">کد تردد</th>
-                      <th className="px-3 py-2.5 font-bold text-slate-500">نام و فامیل پرسنل</th>
-                      <th className="px-3 py-2.5 font-bold text-slate-500">وضعیت / عائله</th>
-                      <th className="px-3 py-2.5 font-bold text-slate-500">تخصیص دپارتمان</th>
-                      <th className="px-3 py-2.5 text-center text-slate-500 w-24">عملیات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {searchedPersonnel.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                          هیچ پرسنلی منطبق با کلمات جستجو شده یافت نشد.
-                        </td>
-                      </tr>
-                    ) : (
-                      searchedPersonnel.map(emp => {
-                        const alloc = allocMap[emp.employeeCode];
-                        const isSelected = selectedEmpCodes.includes(emp.employeeCode);
-                        return (
-                          <tr key={emp.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-rose-50/40 hover:bg-rose-50/60' : ''}`}>
-                            <td className="px-3 py-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleSelectOne(emp.employeeCode)}
-                                className="text-slate-500 focus:outline-none"
-                              >
-                                {isSelected ? (
-                                  <CheckSquare className="h-4 w-4 text-rose-600" />
-                                ) : (
-                                  <Square className="h-4 w-4" />
-                                )}
-                              </button>
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="font-bold font-mono text-rose-600">{emp.employeeCode}</div>
-                              <span className="text-[10px] text-slate-400 font-mono">حسابداری: {emp.accountCode || 'نامشخص'}</span>
-                            </td>
-                            <td className="px-3 py-3 text-center">
-                              {emp.attendanceCode ? (
-                                <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-mono font-bold text-xs bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
-                                  {emp.attendanceCode}
-                                </span>
-                              ) : (
-                                <span className="text-slate-350 font-mono text-[11px]">-</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="font-extrabold text-slate-900">{emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}</div>
-                              <span className="text-[10px] text-slate-500 font-medium">سمت: {emp.role || 'کارگر خط تولید'}</span>
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="text-[10px] space-y-1">
-                                {emp.departureDate ? (
-                                  <div className="inline-flex flex-col items-start gap-0.5">
-                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-extrabold border border-rose-200">
-                                      <UserMinus className="h-3 w-3" />
-                                      ترک کار: {toPersianDigits(emp.departureDate)}
-                                    </span>
-                                    {emp.departureReason && (
-                                      <span className="text-[9px] text-slate-500 font-semibold px-1">
-                                        علت: {emp.departureReason}
-                                      </span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <span className={`inline-block px-1.5 py-0.5 rounded font-bold ${emp.isActive ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}>
-                                    {emp.isActive ? 'فعال خط' : 'غیرفعال'}
-                                  </span>
-                                )}
-                                <div className="text-slate-500">
-                                  {emp.isMarried ? `متأهل | ${emp.childrenCount || 0} فرزند` : 'مجرد'}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3">
-                              <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                (!alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4')) ? 'bg-slate-100 text-slate-700' : 'bg-rose-50 text-rose-700 border border-rose-100'
-                              }`}>
-                                {alloc ? (departmentNameMap[alloc.departmentCategoryId] || 'بخش مشترک / سربار کارگاه') : 'بخش مشترک / سربار کارگاه'}
-                              </span>
-                            </td>
-                            <td className="px-3 py-3 text-center">
-                              <div className="flex justify-center gap-1">
-                                <button onClick={() => startEditEmployee(emp)} className="text-[10px] bg-slate-105 border px-1.5 py-0.5 rounded-lg text-slate-700 hover:bg-slate-200 font-bold">اصلاح</button>
-                                <button
-                                  type="button"
-                                  onClick={() => setContractModalEmployee(emp)}
-                                  className="text-[10px] text-teal-700 bg-teal-50 border border-teal-100 px-1.5 py-0.5 rounded-lg hover:bg-teal-100 font-bold transition-all"
-                                  title="چاپ قرارداد پرسنلی"
-                                >
-                                  قرارداد
-                                </button>
-                                <button onClick={() => deleteEmployee(emp.employeeCode)} className="text-[10px] text-rose-600 border border-rose-100 px-1.5 py-0.5 rounded-lg hover:bg-rose-50 font-bold">حذف</button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
+            )}
+          </div>
           )}
-
         </div>
       )}
 
@@ -16925,7 +16924,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allInsuredItems = (db.insuredSalaryItems || []).filter((item: any) => !item.periodId || item.periodId === activePeriodId);
+                    const scopedInsured = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+                    const allInsuredItems = scopedInsured.length > 0 ? scopedInsured : (db.insuredSalaryItems || []);
 
                     const getAmountForInsuredItem = (key: string, itemYear: string) => {
                       const yr = itemYear || activeFiscalYearStr;
@@ -17297,7 +17297,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {(() => {
-                    const allTaxableItems = (db.taxableSalaryItems || []).filter((item: any) => !item.periodId || item.periodId === activePeriodId);
+                    const scopedTaxable = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+                    const allTaxableItems = scopedTaxable.length > 0 ? scopedTaxable : (db.taxableSalaryItems || []);
 
                     const getAmountForTaxableItem = (key: string, itemYear: string) => {
                       const yr = itemYear || activeFiscalYearStr;

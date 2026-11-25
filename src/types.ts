@@ -730,12 +730,15 @@ export interface AppDatabase {
   attendanceDeviceConfig?: AttendanceDeviceConfig;
   sqlServerConfig?: SqlServerConfig;
   approvedMismatches?: string[];
+  approvedMismatchesByPeriod?: Record<string, string[]>;
   payrollManualOverrides?: Record<string, {
     workDays?: Record<string, number>;
     insuranceDays?: Record<string, number>;
     normalMgmtDeductions?: Record<string, number>;
   }>;
   digitalMenu?: import('./shared/digitalMenu').DigitalMenuConfig;
+  digitalMenuByPeriod?: Record<string, any>;
+  contractTemplatesByPeriod?: Record<string, any>;
 }
 
 export interface SqlServerConfig {

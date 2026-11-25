@@ -849,7 +849,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           name: p.name,
           categoryName: p.categoryName,
           categoryId: matchedCatId,
-          weight: '', // prompt user
+          weight: '1', // default 1 gram
           salePrice: p.salePrice
         };
       });

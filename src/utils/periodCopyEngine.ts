@@ -177,7 +177,16 @@ function getSourceRecords(db: AppDatabase, section: CopySectionKey, sourcePeriod
   }
   const arr = (db as any)[section];
   if (!Array.isArray(arr)) return [];
-  return arr.filter((r: any) => r && r.periodId === sourcePeriodId);
+  const firstPeriodId = db.periods?.[0]?.id || 'p-1';
+  let filtered = arr.filter((r: any) => {
+    if (!r) return false;
+    const itemPeriodId = r.periodId ? String(r.periodId) : firstPeriodId;
+    return itemPeriodId === sourcePeriodId;
+  });
+  if (filtered.length === 0 && arr.length > 0) {
+    filtered = arr;
+  }
+  return filtered;
 }
 
 export function getCopyPreviewItems(
@@ -611,9 +620,12 @@ export function executeCopyFromPeriod(
   // Standard isolated array collection copy
   const working: any = { ...db };
   const allCollection: any[] = Array.isArray(working[section]) ? [...working[section]] : [];
-  const sourceRows = allCollection.filter(
-    (r) => r && r.periodId === sourcePeriodId && selectedSet.has(r.id)
-  );
+  const firstPeriodId = working.periods?.[0]?.id || 'p-1';
+  const sourceRows = allCollection.filter((r) => {
+    if (!r || !selectedSet.has(r.id)) return false;
+    const itemPeriodId = r.periodId ? String(r.periodId) : firstPeriodId;
+    return itemPeriodId === sourcePeriodId;
+  });
 
   if (sourceRows.length === 0) {
     return { updatedDb: db, copiedCount: 0, skippedCount: 0, autoCreatedDeps };
