@@ -519,11 +519,18 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
           const rawYear = getRowVal(row, ['سال', 'year', 'yr']);
           const rawDate = getRowVal(row, ['تاریخ', 'date', 'dt']);
 
-          const year = parseInt(toEnglishDigits(rawYear !== undefined && rawYear !== null ? rawYear.toString() : '')) || 0;
+          const explicitYear = parseInt(toEnglishDigits(rawYear !== undefined && rawYear !== null ? rawYear.toString() : '')) || 0;
           let dateStr = toEnglishDigits(rawDate !== undefined && rawDate !== null ? rawDate.toString() : '').trim();
 
-          // Let's also normalize dates that use hyphens instead of slashes, e.g. 1405-01-01 -> 1405/01/01
-          dateStr = dateStr.replace(/-/g, '/');
+          dateStr = dateStr.replace(/[-\.]/g, '/');
+          const parts = dateStr.split('/');
+          if (parts.length === 3) {
+            const y = parts[0].padStart(4, '0');
+            const m = parts[1].padStart(2, '0');
+            const d = parts[2].padStart(2, '0');
+            dateStr = `${y}/${m}/${d}`;
+          }
+          const year = explicitYear || (parts.length === 3 ? parseInt(parts[0], 10) : 0);
 
           if (year && dateStr && /^\d{4}\/\d{2}\/\d{2}$/.test(dateStr)) {
             imported.push({
