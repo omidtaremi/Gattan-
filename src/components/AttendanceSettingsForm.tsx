@@ -347,7 +347,21 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
 
   // EXCEL EXPORTS (period-isolated)
   const handleExportWorkdaysExcel = () => {
-    const list = (db.monthlyWorkdaySettings || []).filter(item => item.periodId === effectivePeriodId);
+    let list = (db.monthlyWorkdaySettings || []).filter(item => item.periodId === effectivePeriodId);
+    if (list.length === 0) {
+      const defYear = Number(defaultFiscalYearStr) || 1404;
+      list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => ({
+        id: `def-${m}`,
+        periodId: effectivePeriodId,
+        year: defYear,
+        month: m,
+        daysInMonth: m <= 6 ? 31 : (m <= 11 ? 30 : 29),
+        fridaysCount: 4,
+        nonFridayHolidays: m === 1 ? 4 : (m === 12 ? 2 : 0),
+        workingDaysCount: 26,
+        requiredWorkHours: 176
+      }));
+    }
     const formatted = list.map(item => ({
       'سال': item.year,
       'ماه': item.month,
@@ -415,16 +429,37 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
           return undefined;
         };
 
+        const persianMonthsMap: Record<string, number> = {
+          'فروردین': 1, 'اردیبهشت': 2, 'خرداد': 3, 'تیر': 4, 'مرداد': 5, 'شهریور': 6,
+          'مهر': 7, 'آبان': 8, 'آذر': 9, 'دی': 10, 'بهمن': 11, 'اسفند': 12,
+          'farvardin': 1, 'ordibehesht': 2, 'khordad': 3, 'tir': 4, 'mordad': 5, 'shahrivar': 6,
+          'mehr': 7, 'aban': 8, 'azar': 9, 'dey': 10, 'bahman': 11, 'esfand': 12
+        };
+
         for (const row of rows) {
           if (!row) continue;
 
-          const rawYear = getRowVal(row, ['سال', 'year', 'yr']);
-          const rawMonth = getRowVal(row, ['ماه', 'month', 'm']);
+          const rawYear = getRowVal(row, ['سال', 'year', 'yr', 'سال مالی']);
+          const rawMonth = getRowVal(row, ['ماه', 'month', 'm', 'نام ماه', 'ماه سال']);
 
-          const year = parseInt(toEnglishDigits(rawYear !== undefined && rawYear !== null ? rawYear.toString() : '')) || 0;
-          const month = parseInt(toEnglishDigits(rawMonth !== undefined && rawMonth !== null ? rawMonth.toString() : '')) || 0;
+          let year = parseInt(toEnglishDigits(rawYear !== undefined && rawYear !== null ? rawYear.toString() : '')) || 0;
+          if (!year) {
+            year = Number(defaultFiscalYearStr) || 1404;
+          }
 
-          if (year && month) {
+          let monthVal = rawMonth !== undefined && rawMonth !== null ? rawMonth.toString().trim() : '';
+          let month = parseInt(toEnglishDigits(monthVal)) || 0;
+          if (!month && monthVal) {
+            const cleanM = monthVal.replace(/\s+/g, '').toLowerCase();
+            for (const [mName, mNum] of Object.entries(persianMonthsMap)) {
+              if (cleanM.includes(mName)) {
+                month = mNum;
+                break;
+              }
+            }
+          }
+
+          if (month) {
             const rawDaysInMonth = getRowVal(row, ['روزهای ماه', 'daysInMonth', 'days_in_month', 'روزها']);
             const rawFridaysCount = getRowVal(row, ['تعداد جمعه', 'fridaysCount', 'fridays_count', 'جمعه‌ها', 'جمعه ها']);
             const rawNonFridayHolidays = getRowVal(row, ['تعطیل غیر جمعه', 'nonFridayHolidays', 'non_friday_holidays', 'تعطیلات غیر جمعه']);
@@ -436,7 +471,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
               periodId: effectivePeriodId,
               year,
               month,
-              daysInMonth: parseInt(toEnglishDigits(rawDaysInMonth !== undefined && rawDaysInMonth !== null ? rawDaysInMonth.toString() : '')) || 30,
+              daysInMonth: parseInt(toEnglishDigits(rawDaysInMonth !== undefined && rawDaysInMonth !== null ? rawDaysInMonth.toString() : '')) || (month <= 6 ? 31 : (month <= 11 ? 30 : 29)),
               fridaysCount: parseInt(toEnglishDigits(rawFridaysCount !== undefined && rawFridaysCount !== null ? rawFridaysCount.toString() : '')) || 4,
               nonFridayHolidays: parseInt(toEnglishDigits(rawNonFridayHolidays !== undefined && rawNonFridayHolidays !== null ? rawNonFridayHolidays.toString() : '')) || 0,
               workingDaysCount: parseInt(toEnglishDigits(rawWorkingDaysCount !== undefined && rawWorkingDaysCount !== null ? rawWorkingDaysCount.toString() : '')) || 26,
