@@ -1515,9 +1515,7 @@ export function sanitizeAndMergeDatabaseWithMeta(raw: any): { db: AppDatabase; m
     }
   }
 
-  // Lossless legacy primary-key & period-isolation migration (idempotent no-op once clean)
-  const { db: finalDb, migrated } = migrateLegacyKeysAndPeriodIsolation(merged as AppDatabase);
-  return { db: finalDb, migrated };
+  return { db: merged as AppDatabase, migrated: false };
 }
 
 export function sanitizeAndMergeDatabase(raw: any): AppDatabase {

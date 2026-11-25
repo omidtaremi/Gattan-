@@ -220,7 +220,10 @@ export async function pickBackupDirectory(): Promise<{
     if (err?.name === 'AbortError') {
       return { ok: false, cancelled: true };
     }
-    return { ok: false, error: err?.message || 'خطا در انتخاب پوشه پشتیبان‌گیری' };
+    return {
+      ok: false,
+      error: 'مرورگر در این محیط امنیتی (iframe پیش‌نمایش) اجازه انتخاب پوشه محلی را نمی‌دهد (Cross-origin error). لطفاً از قابلیت «دانلود فایل پشتیبان (JSON)» یا «پشتیبان‌گیری روی سرور (VPS)» استفاده کنید.',
+    };
   }
 }
 
@@ -638,3 +641,66 @@ export async function performDatabaseBackup(params: {
   });
   return backupExecutionInFlight;
 }
+
+export interface ServerBackupItem {
+  filename: string;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchServerBackups(): Promise<ServerBackupItem[]> {
+  try {
+    const token = localStorage.getItem('gatan_token') || '';
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch('/api/server-backups', { headers });
+    const data = await res.json();
+    if (data.ok && Array.isArray(data.backups)) {
+      return data.backups;
+    }
+  } catch (err) {
+    console.error('Error fetching server backups', err);
+  }
+  return [];
+}
+
+export async function createServerBackup(): Promise<{ ok: boolean; error?: string; backup?: ServerBackupItem }> {
+  try {
+    const token = localStorage.getItem('gatan_token') || '';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch('/api/server-backups', { method: 'POST', headers });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'خطا در ارتباط با سرور' };
+  }
+}
+
+export async function restoreServerBackup(filename: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const token = localStorage.getItem('gatan_token') || '';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`/api/server-backups/restore/${encodeURIComponent(filename)}`, { method: 'POST', headers });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'خطا در ارتباط با سرور' };
+  }
+}
+
+export async function deleteServerBackup(filename: string): Promise<boolean> {
+  try {
+    const token = localStorage.getItem('gatan_token') || '';
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`/api/server-backups/${encodeURIComponent(filename)}`, { method: 'DELETE', headers });
+    const data = await res.json();
+    return data.ok;
+  } catch {
+    return false;
+  }
+}
+

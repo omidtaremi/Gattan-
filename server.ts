@@ -1039,6 +1039,142 @@ async function startServer() {
     }
   });
 
+  // Server-side database backup management
+  const BACKUPS_DIR = path.join(process.cwd(), 'backups');
+  if (!fs.existsSync(BACKUPS_DIR)) {
+    try {
+      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    } catch (err) {
+      console.error('Failed to create backups directory', err);
+    }
+  }
+
+  app.get('/api/server-backups', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!fs.existsSync(BACKUPS_DIR)) {
+        res.json({ ok: true, backups: [] });
+        return;
+      }
+      const files = fs.readdirSync(BACKUPS_DIR);
+      const backups = files
+        .filter(f => f.endsWith('.json'))
+        .map(filename => {
+          const filePath = path.join(BACKUPS_DIR, filename);
+          const stat = fs.statSync(filePath);
+          return {
+            filename,
+            sizeBytes: stat.size,
+            createdAt: stat.birthtime.toISOString(),
+            updatedAt: stat.mtime.toISOString(),
+          };
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      res.json({ ok: true, backups });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در لیست کردن پشتیبان‌های سرور' });
+    }
+  });
+
+  app.post('/api/server-backups', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!isPostgresModeActive()) {
+        res.status(400).json({ ok: false, error: 'پشتیبان‌گیری روی سرور نیازمند فعال بودن حالت PostgreSQL است.' });
+        return;
+      }
+      const actor = req.authUser || { id: 'admin', username: 'admin', fullName: 'Admin' };
+      const ip = getClientIp(req);
+      const branchId = req.branchId || DEFAULT_BRANCH_ID;
+
+      const dbData = await exportFullDatabaseFromPg(actor, ip, branchId);
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      const timeStr = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+      const filename = `Gatan_Server_Backup_${dateStr}_${timeStr}.json`;
+      const filePath = path.join(BACKUPS_DIR, filename);
+
+      const envelope = {
+        format: 'gatan-db-backup',
+        version: '2.5',
+        createdAt: now.toISOString(),
+        createdBy: actor.username || 'admin',
+        database: dbData,
+      };
+
+      fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2), 'utf-8');
+      const stat = fs.statSync(filePath);
+
+      res.json({
+        ok: true,
+        message: 'نسخه پشتیبان سرور با موفقیت ایجاد شد.',
+        backup: {
+          filename,
+          sizeBytes: stat.size,
+          createdAt: now.toISOString(),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در ایجاد پشتیبان روی سرور' });
+    }
+  });
+
+  app.post('/api/server-backups/restore/:filename', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!isPostgresModeActive()) {
+        res.status(400).json({ ok: false, error: 'بازیابی روی سرور نیازمند فعال بودن حالت PostgreSQL است.' });
+        return;
+      }
+      const filename = path.basename(req.params.filename || '');
+      const filePath = path.join(BACKUPS_DIR, filename);
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ ok: false, error: 'فایل پشتیبان مورد نظر در سرور یافت نشد.' });
+        return;
+      }
+
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const targetDb = parsed.database || parsed;
+
+      const actor = req.authUser || { id: 'admin', username: 'admin', fullName: 'Admin' };
+      const ip = getClientIp(req);
+      const branchId = req.branchId || DEFAULT_BRANCH_ID;
+
+      await importFullDatabaseToPg(actor, targetDb, `بازیابی از سرور: ${filename}`, ip, branchId);
+
+      res.json({ ok: true, message: `دیتابیس سرور با موفقیت از فایل ${filename} بازیابی شد.` });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در بازیابی پشتیبان سرور' });
+    }
+  });
+
+  app.delete('/api/server-backups/:filename', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const filename = path.basename(req.params.filename || '');
+      const filePath = path.join(BACKUPS_DIR, filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      res.json({ ok: true, message: 'فایل پشتیبان سرور حذف شد.' });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در حذف پشتیبان سرور' });
+    }
+  });
+
+  app.get('/api/server-backups/download/:filename', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const filename = path.basename(req.params.filename || '');
+      const filePath = path.join(BACKUPS_DIR, filename);
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ ok: false, error: 'فایل یافت نشد.' });
+        return;
+      }
+      res.download(filePath, filename);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'خطا در دانلود فایل' });
+    }
+  });
+
   // Unknown API endpoints return JSON 404
   app.use('/api', (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: 'مسیر API یافت نشد.' });
@@ -1060,6 +1196,40 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
+
+  // Automated daily server-side backup runner
+  const runAutoServerBackup = async () => {
+    try {
+      if (!isPostgresModeActive()) return;
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      
+      const files = fs.existsSync(BACKUPS_DIR) ? fs.readdirSync(BACKUPS_DIR) : [];
+      const hasTodayBackup = files.some(f => f.includes(dateStr) && f.startsWith('Gatan_Server_Backup_'));
+      if (!hasTodayBackup) {
+        const actor = { id: 'system', username: 'system_auto_backup', fullName: 'System Scheduler' };
+        const dbData = await exportFullDatabaseFromPg(actor, '127.0.0.1', DEFAULT_BRANCH_ID);
+        const timeStr = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        const filename = `Gatan_Server_Backup_${dateStr}_${timeStr}.json`;
+        const filePath = path.join(BACKUPS_DIR, filename);
+        const envelope = {
+          format: 'gatan-db-backup',
+          version: '2.5',
+          createdAt: now.toISOString(),
+          createdBy: 'system_auto_backup',
+          database: dbData,
+        };
+        fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2), 'utf-8');
+        console.log(`[Server] Automated daily backup created: ${filename}`);
+      }
+    } catch (err) {
+      console.error('[Server] Automated backup error:', err);
+    }
+  };
+
+  setTimeout(runAutoServerBackup, 15000);
+  setInterval(runAutoServerBackup, 12 * 60 * 60 * 1000);
 
   const port = Number(process.env.PORT || 3000);
   app.listen(port, '0.0.0.0', () => {
