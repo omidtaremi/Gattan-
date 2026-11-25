@@ -655,6 +655,10 @@ export async function fetchServerBackups(): Promise<ServerBackupItem[]> {
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch('/api/server-backups', { headers });
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return [];
+    }
     const data = await res.json();
     if (data.ok && Array.isArray(data.backups)) {
       return data.backups;
@@ -671,6 +675,10 @@ export async function createServerBackup(): Promise<{ ok: boolean; error?: strin
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch('/api/server-backups', { method: 'POST', headers });
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return { ok: false, error: 'سرور پاسخ معتبری نگفت (پشتیبان‌گیری روی سرور نیازمند حالت PostgreSQL است).' };
+    }
     const data = await res.json();
     return data;
   } catch (err: any) {
@@ -684,6 +692,10 @@ export async function restoreServerBackup(filename: string): Promise<{ ok: boole
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch(`/api/server-backups/restore/${encodeURIComponent(filename)}`, { method: 'POST', headers });
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return { ok: false, error: 'سرور پاسخ معتبری نگفت (بازیابی نیازمند حالت PostgreSQL است).' };
+    }
     const data = await res.json();
     return data;
   } catch (err: any) {
@@ -697,6 +709,10 @@ export async function deleteServerBackup(filename: string): Promise<boolean> {
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const res = await fetch(`/api/server-backups/${encodeURIComponent(filename)}`, { method: 'DELETE', headers });
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return false;
+    }
     const data = await res.json();
     return data.ok;
   } catch {
