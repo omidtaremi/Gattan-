@@ -282,6 +282,15 @@ export default function SalesAnalysisDashboard({
     'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
   ];
 
+  // Clamp any decimal number in this dashboard to at most 2 decimal places (integers stay integer)
+  const roundMax2 = (num: number | undefined | null): number => {
+    const n = Number(num);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+  };
+  const formatMax2 = (num: number | undefined | null): string => formatWithCommas(roundMax2(num));
+  const formatDec2 = (num: number | undefined | null): string => toPersianDigits(roundMax2(num));
+
   const UNASSIGNED_DEPT_ID = '__UNASSIGNED__';
   const UNASSIGNED_DEPT_NAME = 'تخصیص‌نیافته (نیازمند تعیین دپارتمان)';
 
@@ -558,6 +567,7 @@ export default function SalesAnalysisDashboard({
   const [activeAnalysisTab, setActiveAnalysisTab] = useState<'overview' | 'daily' | 'weekly' | 'hourly' | 'heatmap' | 'peakHours' | 'transactionsList'>('overview');
   const [selectedDailyDay, setSelectedDailyDay] = useState<number | null>(null);
   const [selectedHourlyHour, setSelectedHourlyHour] = useState<number | null>(null);
+  const [hourlyChartMetric, setHourlyChartMetric] = useState<'qty' | 'invoiceCount' | 'amount'>('qty');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('ALL');
   const [selectedProductIdFilter, setSelectedProductIdFilter] = useState<string>('ALL');
 
@@ -1159,14 +1169,14 @@ export default function SalesAnalysisDashboard({
        uniqueDays.add(tx.dateStr);
      });
      const invoiceCount = invoiceKeys.size;
-     const averageInvoiceVal = invoiceCount > 0 ? Math.round(revenue / invoiceCount) : 0;
+     const averageInvoiceVal = invoiceCount > 0 ? roundMax2(revenue / invoiceCount) : 0;
      const uniqueDaysCount = uniqueDays.size || 1;
-     const avgDailyRevenue = Math.round(revenue / uniqueDaysCount);
-     const avgDailyInvoices = Math.round(invoiceCount / uniqueDaysCount);
+     const avgDailyRevenue = roundMax2(revenue / uniqueDaysCount);
+     const avgDailyInvoices = roundMax2(invoiceCount / uniqueDaysCount);
 
      return {
-       revenue, // فروش ماه جاری
-       volume,
+       revenue: roundMax2(revenue), // فروش ماه جاری
+       volume: roundMax2(volume),
        invoiceCount, // تعداد فاکتور
        averageInvoiceVal, // میانگین فاکتور
        peakHour,
@@ -1257,7 +1267,9 @@ export default function SalesAnalysisDashboard({
     const result = Object.values(summary);
     if (grandRevenue > 0) {
       result.forEach(item => {
-        item.percentage = parseFloat(((item.amount / grandRevenue) * 100).toFixed(1));
+        item.percentage = roundMax2((item.amount / grandRevenue) * 100);
+        item.amount = roundMax2(item.amount);
+        item.qty = roundMax2(item.qty);
       });
     }
 
@@ -1355,11 +1367,13 @@ export default function SalesAnalysisDashboard({
     return listWithPercentage.sort((a, b) => b.amount - a.amount);
   }, [periodTransactions]);
 
-  // Hourly Chart Aggregator (فروش بر حسب ساعت)
+  // Hourly Chart Aggregator (فروش بر حسب ساعت: تعداد کالا، تعداد فاکتور یکتا، مبلغ فروش)
   const hourlyChartData = useMemo(() => {
-    const arr: { hour: number; amount: number; qty: number; txCount: number }[] = [];
+    const arr: { hour: number; amount: number; qty: number; txCount: number; invoiceCount: number }[] = [];
+    const hourInvoiceSets: Set<string>[] = [];
     for (let h = 0; h < 24; h++) {
-      arr.push({ hour: h, amount: 0, qty: 0, txCount: 0 });
+      arr.push({ hour: h, amount: 0, qty: 0, txCount: 0, invoiceCount: 0 });
+      hourInvoiceSets.push(new Set<string>());
     }
 
     periodTransactions.forEach(tx => {
@@ -1372,9 +1386,18 @@ export default function SalesAnalysisDashboard({
           arr[hourIdx].amount += tx.salesAmount;
           arr[hourIdx].qty += tx.qtySold;
           arr[hourIdx].txCount += 1;
+          const cleanInv = getCleanInvoiceNumber(tx.invoiceNumber);
+          const invKey = cleanInv ? cleanInv.toLowerCase() : `fallback-${tx.dateStr}-${tx.hour}-${(tx.customerName || '').trim()}`;
+          hourInvoiceSets[hourIdx].add(invKey);
         }
       }
     });
+
+    for (let h = 0; h < 24; h++) {
+      arr[h].amount = roundMax2(arr[h].amount);
+      arr[h].qty = roundMax2(arr[h].qty);
+      arr[h].invoiceCount = hourInvoiceSets[h].size;
+    }
 
     return arr;
   }, [periodTransactions, selectedCategoryFilter, selectedProductIdFilter, resolveTxDepartment]);
@@ -1680,20 +1703,20 @@ export default function SalesAnalysisDashboard({
         <div class="grid">
           <div class="card">
             <div class="card-title">فروش کل ماه جاری</div>
-            <div class="card-value">${formatWithCommas(stats.revenue)} ریال</div>
+            <div class="card-value">${formatMax2(stats.revenue)} ریال</div>
           </div>
           <div class="card">
             <div class="card-title">تعداد کل فاکتورها</div>
-            <div class="card-value">${toPersianDigits(stats.invoiceCount)} عدد</div>
+            <div class="card-value">${formatDec2(stats.invoiceCount)} عدد</div>
           </div>
           <div class="card">
             <div class="card-title">میانگین ارزش فاکتور</div>
-            <div class="card-value">${formatWithCommas(stats.averageInvoiceVal)} ریال</div>
+            <div class="card-value">${formatMax2(stats.averageInvoiceVal)} ریال</div>
           </div>
           <div class="card">
             <div class="card-title">میانگین فروش روز</div>
-            <div class="card-value">${formatWithCommas(stats.avgDailyRevenue)} ریال</div>
-            <div style="font-size: 9px; color: #64748b; margin-top: 4px;">میانگین فاکتور روزانه: ${toPersianDigits(stats.avgDailyInvoices)} عدد (${toPersianDigits(stats.uniqueDaysCount)} روز فعال)</div>
+            <div class="card-value">${formatMax2(stats.avgDailyRevenue)} ریال</div>
+            <div style="font-size: 9px; color: #64748b; margin-top: 4px;">میانگین فاکتور روزانه: ${formatDec2(stats.avgDailyInvoices)} عدد (${toPersianDigits(stats.uniqueDaysCount)} روز فعال)</div>
           </div>
         </div>
 
@@ -1713,9 +1736,9 @@ export default function SalesAnalysisDashboard({
                 ${categorySummary.map(c => `
                   <tr>
                     <td style="font-weight: bold; text-align: right;">${c.name}</td>
-                    <td>${toPersianDigits(Math.round(c.qty * 100) / 100)}</td>
-                    <td style="font-weight: bold;">${formatWithCommas(c.amount)} ریال</td>
-                    <td class="text-rose">${toPersianDigits(c.percentage)}%</td>
+                    <td>${formatDec2(c.qty)}</td>
+                    <td style="font-weight: bold;">${formatMax2(c.amount)} ریال</td>
+                    <td class="text-rose">${formatDec2(c.percentage)}%</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -1742,9 +1765,9 @@ export default function SalesAnalysisDashboard({
                     <tr>
                       <td style="font-weight: bold; text-align: right;">${wd}</td>
                       <td>${toPersianDigits(dayData.txCount)} ردیف</td>
-                      <td>${toPersianDigits(Math.round(dayData.qty * 100) / 100)}</td>
-                      <td style="font-weight: bold;">${formatWithCommas(dayData.amount)} ریال</td>
-                      <td style="font-weight: bold; color: #4f46e5;">${toPersianDigits(Math.round(pct * 10) / 10)}٪</td>
+                      <td>${formatDec2(dayData.qty)}</td>
+                      <td style="font-weight: bold;">${formatMax2(dayData.amount)} ریال</td>
+                      <td style="font-weight: bold; color: #4f46e5;">${formatDec2(pct)}٪</td>
                     </tr>
                   `;
                 }).join('')}
@@ -1769,19 +1792,24 @@ export default function SalesAnalysisDashboard({
         </div>
 
         <div class="avoid-break">
-          <div class="section-title">نمودار توزیع زمانی فروش بر حسب ساعت تراکنش (ساعات ۰ الی ۲۳)</div>
+          <div class="section-title">نمودار توزیع زمانی فروش بر حسب ساعت تراکنش (ساعات ۰ الی ۲۳ — مبنا: ${hourlyChartMetric === 'invoiceCount' ? 'تعداد فاکتور' : hourlyChartMetric === 'amount' ? 'مبلغ فروش (ریال)' : 'تعداد کالا'})</div>
           <div class="chart-container" style="height: 100px;">
-            ${hourlyChartData.map(h => {
-              const maxHourlyQty = Math.max(...hourlyChartData.map(ho => ho.qty)) || 1;
-              const pct = h.qty > 0 ? (h.qty / maxHourlyQty) * 100 : 2;
-              const isPeak = h.hour === stats.peakHour;
-              return `
-                <div class="chart-bar-col" style="margin: 0 2px;">
-                  <div class="chart-bar" style="height: ${pct}%; background-color: ${isPeak ? '#0ea5e9' : '#94a3b8'};"></div>
-                  <span class="chart-label">${toPersianDigits(h.hour)}</span>
-                </div>
-              `;
-            }).join('')}
+            ${(() => {
+              const getMetricVal = (ho: { qty: number; invoiceCount: number; amount: number }) =>
+                hourlyChartMetric === 'invoiceCount' ? ho.invoiceCount : hourlyChartMetric === 'amount' ? ho.amount : ho.qty;
+              const maxVal = Math.max(...hourlyChartData.map(getMetricVal)) || 1;
+              return hourlyChartData.map(h => {
+                const v = getMetricVal(h);
+                const pct = v > 0 ? (v / maxVal) * 100 : 2;
+                const isPeak = v > 0 && v === maxVal;
+                return `
+                  <div class="chart-bar-col" style="margin: 0 2px;">
+                    <div class="chart-bar" style="height: ${pct}%; background-color: ${isPeak ? '#0ea5e9' : '#94a3b8'};"></div>
+                    <span class="chart-label">${toPersianDigits(h.hour)}</span>
+                  </div>
+                `;
+              }).join('');
+            })()}
           </div>
         </div>
 
@@ -1817,7 +1845,7 @@ export default function SalesAnalysisDashboard({
                   ? `rgba(16, 185, 129, ${0.2 + ratio * 0.6})`
                   : 'rgba(226, 232, 240, 0.5)';
                 const textColor = cell.amount > 0 ? '#047857' : '#94a3b8';
-                const label = cell.amount > 0 ? toPersianDigits(Math.round(cell.qty * 10) / 10) : '-';
+                const label = cell.amount > 0 ? formatDec2(cell.qty) : '-';
 
                 return `
                   <div class="heatmap-cell" style="background-color: ${bgStyle}; border-color: ${borderStyle}; color: ${textColor};">
@@ -1852,8 +1880,8 @@ export default function SalesAnalysisDashboard({
                   <div class="peak-hour-details">
                     ${hasSales ? `
                       <b>زمان اوج:</b> ساعت ${toPersianDigits(peakData.hour)} الی ${toPersianDigits(peakData.hour + 1)}:۰۰<br/>
-                      <b>حجم فروش فیزیکی:</b> ${toPersianDigits(Math.round(peakData.qty * 100) / 100)} واحد<br/>
-                      <b>ارزش ناخالص:</b> <span style="color: #059669; font-weight: bold;">${formatWithCommas(peakData.amount)} ریال</span>
+                      <b>حجم فروش فیزیکی:</b> ${formatDec2(peakData.qty)} واحد<br/>
+                      <b>ارزش ناخالص:</b> <span style="color: #059669; font-weight: bold;">${formatMax2(peakData.amount)} ریال</span>
                     ` : `
                       <span style="color: #94a3b8; font-style: italic;">فاقد تراکنش ثبت شده در این روز هفته</span>
                     `}
@@ -1886,11 +1914,10 @@ export default function SalesAnalysisDashboard({
                 const dayCellsHtml = FA_WEEKDAYS_ORDERED.map(w => {
                   const amt = row.weekdayAmounts[w] || 0;
                   const qty = row.weekdayQtys[w] || 0;
-                  const roundedQty = Math.round(qty * 100) / 100;
                   return amt > 0 
                     ? `<td>
-                         <div style="font-weight: bold; color: #059669;">${formatWithCommas(amt)}</div>
-                         <div style="font-size: 8px; color: #64748b;">(${toPersianDigits(roundedQty)} واحد)</div>
+                         <div style="font-weight: bold; color: #059669;">${formatMax2(amt)}</div>
+                         <div style="font-size: 8px; color: #64748b;">(${formatDec2(qty)} واحد)</div>
                        </td>`
                     : `<td style="color: #cbd5e1;">۰</td>`;
                 }).join('');
@@ -1900,7 +1927,7 @@ export default function SalesAnalysisDashboard({
                     <td style="text-align: right; font-weight: bold; font-size: 10px;">${row.productName}</td>
                     <td style="color: #64748b; font-size: 10px;">${row.categoryName}</td>
                     ${dayCellsHtml}
-                    <td style="font-weight: 900; background-color: #fefcf0; color: #b45309;">${formatWithCommas(row.totalAmount)} ریال</td>
+                    <td style="font-weight: 900; background-color: #fefcf0; color: #b45309;">${formatMax2(row.totalAmount)} ریال</td>
                   </tr>
                 `;
               }).join('')}
@@ -1913,13 +1940,13 @@ export default function SalesAnalysisDashboard({
                   const qty = productWeeklyMatrixTotals.totals[w]?.qty || 0;
                   return amt > 0
                     ? `<td>
-                         <div style="font-weight: bold; color: #0f172a;">${formatWithCommas(amt)} ریال</div>
-                         <div style="font-size: 8px; color: #475569;">(${toPersianDigits(Math.round(qty * 100) / 100)} واحد)</div>
+                         <div style="font-weight: bold; color: #0f172a;">${formatMax2(amt)} ریال</div>
+                         <div style="font-size: 8px; color: #475569;">(${formatDec2(qty)} واحد)</div>
                        </td>`
                     : `<td>۰</td>`;
                 }).join('')}
                 <td style="background-color: #fef9c3; font-weight: 900; font-size: 11px; color: #92400e;">
-                  ${formatWithCommas(productWeeklyMatrixTotals.grandTotalAmount)} ریال
+                  ${formatMax2(productWeeklyMatrixTotals.grandTotalAmount)} ریال
                 </td>
               </tr>
             </tfoot>
@@ -1943,8 +1970,8 @@ export default function SalesAnalysisDashboard({
                   <tr>
                     <td style="font-weight: bold; text-align: right;">${p.name}</td>
                     <td>${p.categoryName}</td>
-                    <td>${toPersianDigits(Math.round(p.qty * 100) / 100)} عدد</td>
-                    <td style="font-weight: bold; color: #059669;">${formatWithCommas(p.amount)} ریال</td>
+                    <td>${formatDec2(p.qty)} عدد</td>
+                    <td style="font-weight: bold; color: #059669;">${formatMax2(p.amount)} ریال</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -1969,8 +1996,8 @@ export default function SalesAnalysisDashboard({
                     <td>${toPersianDigits(idx + 1)}</td>
                     <td style="font-weight: bold; text-align: right;">${cust.name}</td>
                     <td>${toPersianDigits(cust.invoicesCount)} فاکتور</td>
-                    <td style="font-weight: bold; color: #059669;">${formatWithCommas(cust.amount)}</td>
-                    <td style="font-weight: bold; color: #4f46e5;">${toPersianDigits(cust.percentage)}٪</td>
+                    <td style="font-weight: bold; color: #059669;">${formatMax2(cust.amount)}</td>
+                    <td style="font-weight: bold; color: #4f46e5;">${formatDec2(cust.percentage)}٪</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -2043,7 +2070,7 @@ export default function SalesAnalysisDashboard({
                 <span className="text-amber-400 font-black">نمایش تجمیعی کلیه ماه‌های سال ({toPersianDigits(periodTransactions.length)} تراکنش)</span>
               ) : (monthlyDashboardStats[activeMonth]?.count || 0) > 0 ? (
                 <span className="text-emerald-400 font-black">
-                  {toPersianDigits(monthlyDashboardStats[activeMonth].count)} ردیف تراکنش ({toPersianDigits(monthlyDashboardStats[activeMonth].invoiceCount)} فاکتور) — {formatWithCommas(monthlyDashboardStats[activeMonth].totalAmount)} ریال
+                  {toPersianDigits(monthlyDashboardStats[activeMonth].count)} ردیف تراکنش ({toPersianDigits(monthlyDashboardStats[activeMonth].invoiceCount)} فاکتور) — {formatMax2(monthlyDashboardStats[activeMonth].totalAmount)} ریال
                 </span>
               ) : (
                 <span className="text-slate-400 font-normal">هیچ تراکنشی برای این ماه ثبت نشده است (هماهنگ با انتخاب ماه سربرگ).</span>
@@ -2167,7 +2194,7 @@ export default function SalesAnalysisDashboard({
                   <span className="text-amber-400 font-black">نمایش تجمیعی کلیه ماه‌های سال {toPersianDigits(activeYear)} ({toPersianDigits(periodTransactions.length)} تراکنش)</span>
                 ) : (monthlyDashboardStats[activeMonth]?.count || 0) > 0 ? (
                   <span className="text-emerald-400 font-black">
-                    {toPersianDigits(monthlyDashboardStats[activeMonth].count)} ردیف تراکنش ثبت‌شده ({toPersianDigits(monthlyDashboardStats[activeMonth].invoiceCount)} فاکتور) به ارزش {formatWithCommas(monthlyDashboardStats[activeMonth].totalAmount)} ریال
+                    {toPersianDigits(monthlyDashboardStats[activeMonth].count)} ردیف تراکنش ثبت‌شده ({toPersianDigits(monthlyDashboardStats[activeMonth].invoiceCount)} فاکتور) به ارزش {formatMax2(monthlyDashboardStats[activeMonth].totalAmount)} ریال
                   </span>
                 ) : (
                   <span className="text-slate-400 font-normal">هیچ تراکنشی برای این ماه ثبت نشده است.</span>
@@ -2239,9 +2266,9 @@ export default function SalesAnalysisDashboard({
           </div>
           <div className="mt-2 text-right">
             <span className="text-base font-black text-rose-400 font-mono block">
-              {formatWithCommas(stats.avgDailyRevenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
+              {formatMax2(stats.avgDailyRevenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
-            <p className="text-[9px] text-slate-500 mt-1">میانگین فاکتور فروش در روز: {toPersianDigits(stats.avgDailyInvoices)} عدد</p>
+            <p className="text-[9px] text-slate-500 mt-1">میانگین فاکتور فروش در روز: {formatDec2(stats.avgDailyInvoices)} عدد</p>
           </div>
         </div>
 
@@ -2256,9 +2283,9 @@ export default function SalesAnalysisDashboard({
           </span>
           <div className="mt-4 text-right">
             <span className="text-base font-black text-emerald-400 font-mono block">
-              {formatWithCommas(stats.revenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
+              {formatMax2(stats.revenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
-            <p className="text-[9px] text-slate-500 mt-1">کل حجم فیزیکی: {toPersianDigits(stats.volume)} عدد</p>
+            <p className="text-[9px] text-slate-500 mt-1">کل حجم فیزیکی: {formatDec2(stats.volume)} عدد</p>
           </div>
         </div>
 
@@ -2290,7 +2317,7 @@ export default function SalesAnalysisDashboard({
           </span>
           <div className="mt-4 text-right">
             <span className="text-base font-black text-amber-400 font-mono block">
-              {formatWithCommas(stats.averageInvoiceVal)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
+              {formatMax2(stats.averageInvoiceVal)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
             <p className="text-[9px] text-slate-500 mt-1">متوسط سبد خرید نقدی معاملات</p>
           </div>
@@ -2351,7 +2378,7 @@ export default function SalesAnalysisDashboard({
                             {cat.name}
                           </span>
                           <span className="font-mono text-slate-400 text-[10px]">
-                            {toPersianDigits(cat.percentage)}% ({toPersianDigits(Math.round(cat.qty * 100) / 100)} {cat.unit})
+                            {formatDec2(cat.percentage)}% ({formatDec2(cat.qty)} {cat.unit})
                           </span>
                         </div>
                         <div className="h-2 w-full bg-slate-900 rounded-lg overflow-hidden border border-slate-800/40">
@@ -2361,7 +2388,7 @@ export default function SalesAnalysisDashboard({
                           />
                         </div>
                         <div className="text-[10px] text-left font-mono text-slate-500 group-hover:text-slate-350 transition-colors">
-                          {formatWithCommas(cat.amount)} ریال
+                          {formatMax2(cat.amount)} ریال
                         </div>
                       </div>
                     );
@@ -2393,8 +2420,8 @@ export default function SalesAnalysisDashboard({
                       </div>
                     </div>
                     <div className="text-left font-mono">
-                      <span className="text-slate-200 block text-[10px]">{formatWithCommas(p.amount)} ریال</span>
-                      <span className="text-[9px] text-slate-500">حجم: {toPersianDigits(Math.round(p.qty * 100) / 100)} {p.unit}</span>
+                      <span className="text-slate-200 block text-[10px]">{formatMax2(p.amount)} ریال</span>
+                      <span className="text-[9px] text-slate-500">حجم: {formatDec2(p.qty)} {p.unit}</span>
                     </div>
                   </div>
                 ))}
@@ -2420,8 +2447,8 @@ export default function SalesAnalysisDashboard({
                       </div>
                     </div>
                     <div className="text-left font-mono">
-                      <span className="text-slate-300 block text-[10px]">{formatWithCommas(p.amount)} ریال</span>
-                      <span className="text-[9px] text-slate-550">حجم: {toPersianDigits(Math.round(p.qty * 100) / 100)} {p.unit}</span>
+                      <span className="text-slate-300 block text-[10px]">{formatMax2(p.amount)} ریال</span>
+                      <span className="text-[9px] text-slate-550">حجم: {formatDec2(p.qty)} {p.unit}</span>
                     </div>
                   </div>
                 ))}
@@ -2451,8 +2478,8 @@ export default function SalesAnalysisDashboard({
                       </div>
                     </div>
                     <div className="text-left font-mono">
-                      <span className="text-emerald-450 block text-[10px] font-black">{formatWithCommas(cust.amount)} ریال</span>
-                      <span className="text-[9px] text-slate-500">تعداد: {toPersianDigits(Math.round(cust.qty * 100) / 100)} • سهم: {toPersianDigits(cust.percentage)}٪</span>
+                      <span className="text-emerald-450 block text-[10px] font-black">{formatMax2(cust.amount)} ریال</span>
+                      <span className="text-[9px] text-slate-500">تعداد: {formatDec2(cust.qty)} • سهم: {formatDec2(cust.percentage)}٪</span>
                     </div>
                   </div>
                 ))}
@@ -2652,7 +2679,7 @@ export default function SalesAnalysisDashboard({
                             <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
                             <span>روز {toPersianDigits(activeDayObj.day)} ماه:</span>
                             <strong className="text-emerald-400 font-mono font-black">
-                              {toPersianDigits(formatWithCommas(activeDayObj.amount))} ریال
+                              {formatMax2(activeDayObj.amount)} ریال
                             </strong>
                           </div>
                           <button
@@ -2669,7 +2696,7 @@ export default function SalesAnalysisDashboard({
                             <span className="inline-block w-2 h-2 rounded-full bg-rose-500 shrink-0" />
                             <span>بیشترین فروش: روز {toPersianDigits(peakDayObj.day)} ماه</span>
                             <strong className="text-rose-400 font-mono font-black">
-                              {toPersianDigits(formatWithCommas(peakDayObj.amount))} ریال
+                              {formatMax2(peakDayObj.amount)} ریال
                             </strong>
                           </div>
                           <span className="text-[10px] text-slate-400">
@@ -2706,7 +2733,7 @@ export default function SalesAnalysisDashboard({
                                 type="button"
                                 onClick={() => setSelectedDailyDay(prev => (prev === d.day ? null : d.day))}
                                 onMouseEnter={() => setSelectedDailyDay(d.day)}
-                                title={`روز ${toPersianDigits(d.day)} ماه: ${formatWithCommas(d.amount)} ریال`}
+                                title={`روز ${toPersianDigits(d.day)} ماه: ${formatMax2(d.amount)} ریال`}
                                 className="flex-1 min-w-[16px] md:min-w-0 flex flex-col items-center group bg-transparent border-0 p-0 cursor-pointer focus:outline-none"
                               >
                                 {/* Explicit-height Bar Track so % height works identically on iOS Safari, Android & Desktop */}
@@ -2745,31 +2772,74 @@ export default function SalesAnalysisDashboard({
                 );
               })()}
 
-              {/* DYNAMIC HOURLY DISTRIBUTION OF VALUE (فروش بر حسب ساعت) */}
+              {/* DYNAMIC HOURLY DISTRIBUTION OF VALUE (فروش بر حسب ساعت: تعداد کالا / تعداد فاکتور / مبلغ فروش) */}
               {(() => {
-                const maxHourlyQty = Math.max(...hourlyChartData.map(ho => ho.qty)) || 1;
+                const getHourlyMetricVal = (ho: { qty: number; invoiceCount: number; amount: number }) =>
+                  hourlyChartMetric === 'invoiceCount'
+                    ? ho.invoiceCount
+                    : hourlyChartMetric === 'amount'
+                    ? ho.amount
+                    : ho.qty;
+
+                const maxHourlyVal = Math.max(...hourlyChartData.map(getHourlyMetricVal)) || 1;
                 const activeHourObj = selectedHourlyHour !== null
                   ? hourlyChartData.find(h => h.hour === selectedHourlyHour) || null
                   : null;
                 const peakHourObj = hourlyChartData.reduce(
-                  (best, cur) => (cur.qty > best.qty ? cur : best),
-                  hourlyChartData[0] || { hour: 0, qty: 0, amount: 0 }
+                  (best, cur) => (getHourlyMetricVal(cur) > getHourlyMetricVal(best) ? cur : best),
+                  hourlyChartData[0] || { hour: 0, qty: 0, invoiceCount: 0, amount: 0, txCount: 0 }
                 );
+                const hasAnyHourlyData = getHourlyMetricVal(peakHourObj) > 0;
+
+                const formatPrimaryMetric = (ho: { qty: number; invoiceCount: number; amount: number }) => {
+                  if (hourlyChartMetric === 'invoiceCount') return `${formatDec2(ho.invoiceCount)} فاکتور`;
+                  if (hourlyChartMetric === 'amount') return `${formatMax2(ho.amount)} ریال`;
+                  return `${formatDec2(ho.qty)} عدد کالا`;
+                };
 
                 return (
                   <div className="bg-slate-950/40 border border-slate-800/85 p-3.5 sm:p-5 rounded-2xl sm:rounded-3xl shadow-lg">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/60 pb-3 mb-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-800/60 pb-3 mb-3">
                       <h3 className="text-xs font-black text-slate-150 flex items-center gap-1.5 leading-relaxed">
                         <Clock className="h-4 w-4 sm:h-4.5 sm:w-4.5 text-sky-400 shrink-0" />
                         <span>نمودار توزیع زمانی فروش بر حسب ساعت تراکنش (ساعات ۰ الی ۲۳)</span>
                       </h3>
-                      <div className="flex items-center justify-between sm:justify-end gap-2">
-                        <span className="sm:hidden text-[10px] text-slate-400">
-                          برای مشاهده همه ساعات به چپ/راست بکشید
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono px-2 py-0.5 rounded-lg bg-slate-900/60 border border-slate-800/70 shrink-0">
-                          تعداد واحد کالا
-                        </span>
+                      <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2">
+                        <div className="inline-flex items-center bg-slate-900 border border-slate-800 p-0.5 rounded-xl">
+                          <button
+                            type="button"
+                            onClick={() => setHourlyChartMetric('qty')}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                              hourlyChartMetric === 'qty'
+                                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                            }`}
+                          >
+                            تعداد کالا
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setHourlyChartMetric('invoiceCount')}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                              hourlyChartMetric === 'invoiceCount'
+                                ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                            }`}
+                          >
+                            تعداد فاکتور
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setHourlyChartMetric('amount')}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                              hourlyChartMetric === 'amount'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                            }`}
+                          >
+                            مبلغ فروش (ریال)
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -2778,13 +2848,17 @@ export default function SalesAnalysisDashboard({
                       {activeHourObj ? (
                         <>
                           <div className="flex flex-wrap items-center gap-2 font-bold text-slate-200">
-                            <span className="inline-block w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                            <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+                              hourlyChartMetric === 'invoiceCount' ? 'bg-indigo-400' : hourlyChartMetric === 'amount' ? 'bg-emerald-400' : 'bg-sky-500'
+                            }`} />
                             <span>ساعت {toPersianDigits(activeHourObj.hour)}:۰۰</span>
-                            <strong className="text-sky-400 font-mono font-black">
-                              {toPersianDigits(activeHourObj.qty)} عدد
+                            <strong className={`font-mono font-black ${
+                              hourlyChartMetric === 'invoiceCount' ? 'text-indigo-300' : hourlyChartMetric === 'amount' ? 'text-emerald-400' : 'text-sky-400'
+                            }`}>
+                              {formatPrimaryMetric(activeHourObj)}
                             </strong>
-                            <span className="text-slate-400 font-mono">
-                              ({toPersianDigits(formatWithCommas(activeHourObj.amount))} ریال)
+                            <span className="text-slate-400 font-mono text-[10px]">
+                              ({hourlyChartMetric !== 'qty' ? `${formatDec2(activeHourObj.qty)} کالا • ` : ''}{hourlyChartMetric !== 'invoiceCount' ? `${formatDec2(activeHourObj.invoiceCount)} فاکتور • ` : ''}{hourlyChartMetric !== 'amount' ? `${formatMax2(activeHourObj.amount)} ریال` : `${formatDec2(activeHourObj.qty)} کالا`})
                             </span>
                           </div>
                           <button
@@ -2795,16 +2869,20 @@ export default function SalesAnalysisDashboard({
                             پاک کردن انتخاب
                           </button>
                         </>
-                      ) : peakHourObj.qty > 0 ? (
+                      ) : hasAnyHourlyData ? (
                         <>
                           <div className="flex flex-wrap items-center gap-2 font-bold text-slate-300">
-                            <span className="inline-block w-2 h-2 rounded-full bg-sky-500 shrink-0" />
-                            <span>ساعت اوج فروش: {toPersianDigits(peakHourObj.hour)}:۰۰</span>
-                            <strong className="text-sky-400 font-mono font-black">
-                              {toPersianDigits(peakHourObj.qty)} عدد
+                            <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+                              hourlyChartMetric === 'invoiceCount' ? 'bg-indigo-400' : hourlyChartMetric === 'amount' ? 'bg-emerald-400' : 'bg-sky-500'
+                            }`} />
+                            <span>ساعت اوج ({hourlyChartMetric === 'invoiceCount' ? 'فاکتور' : hourlyChartMetric === 'amount' ? 'مبلغ' : 'تعداد کالا'}): {toPersianDigits(peakHourObj.hour)}:۰۰</span>
+                            <strong className={`font-mono font-black ${
+                              hourlyChartMetric === 'invoiceCount' ? 'text-indigo-300' : hourlyChartMetric === 'amount' ? 'text-emerald-400' : 'text-sky-400'
+                            }`}>
+                              {formatPrimaryMetric(peakHourObj)}
                             </strong>
-                            <span className="text-slate-400 font-mono">
-                              ({toPersianDigits(formatWithCommas(peakHourObj.amount))} ریال)
+                            <span className="text-slate-400 font-mono text-[10px]">
+                              ({formatDec2(peakHourObj.qty)} کالا • {formatDec2(peakHourObj.invoiceCount)} فاکتور • {formatMax2(peakHourObj.amount)} ریال)
                             </span>
                           </div>
                           <span className="text-[10px] text-slate-400">
@@ -2828,10 +2906,25 @@ export default function SalesAnalysisDashboard({
 
                         <div className="flex items-end justify-between gap-1 relative z-10">
                           {hourlyChartData.map((h) => {
-                            const hasVal = h.qty > 0;
-                            const pct = hasVal ? Math.max(6, (h.qty / maxHourlyQty) * 100) : 0;
-                            const isSpike = hasVal && h.hour === stats.peakHour;
+                            const metricVal = getHourlyMetricVal(h);
+                            const hasVal = metricVal > 0;
+                            const pct = hasVal ? Math.max(6, (metricVal / maxHourlyVal) * 100) : 0;
+                            const isSpike = hasVal && h.hour === peakHourObj.hour;
                             const isSelected = selectedHourlyHour === h.hour;
+
+                            const spikeBarCls =
+                              hourlyChartMetric === 'invoiceCount'
+                                ? 'bg-gradient-to-t from-indigo-600 to-indigo-400 shadow-sm shadow-indigo-500/25'
+                                : hourlyChartMetric === 'amount'
+                                ? 'bg-gradient-to-t from-emerald-600 to-teal-400 shadow-sm shadow-emerald-500/25'
+                                : 'bg-gradient-to-t from-sky-600 to-sky-400 shadow-sm shadow-sky-500/25';
+
+                            const hoverBarCls =
+                              hourlyChartMetric === 'invoiceCount'
+                                ? 'bg-slate-400 dark:bg-slate-600 group-hover:bg-indigo-500 dark:group-hover:bg-indigo-400'
+                                : hourlyChartMetric === 'amount'
+                                ? 'bg-slate-400 dark:bg-slate-600 group-hover:bg-emerald-500 dark:group-hover:bg-emerald-400'
+                                : 'bg-slate-400 dark:bg-slate-600 group-hover:bg-sky-500 dark:group-hover:bg-sky-400';
 
                             return (
                               <button
@@ -2839,7 +2932,7 @@ export default function SalesAnalysisDashboard({
                                 type="button"
                                 onClick={() => setSelectedHourlyHour(prev => (prev === h.hour ? null : h.hour))}
                                 onMouseEnter={() => setSelectedHourlyHour(h.hour)}
-                                title={`ساعت ${toPersianDigits(h.hour)}:۰۰ — ${toPersianDigits(h.qty)} عدد (${formatWithCommas(h.amount)} ریال)`}
+                                title={`ساعت ${toPersianDigits(h.hour)}:۰۰ — ${formatDec2(h.qty)} کالا | ${formatDec2(h.invoiceCount)} فاکتور | ${formatMax2(h.amount)} ریال`}
                                 className="flex-1 min-w-[18px] md:min-w-0 flex flex-col items-center group bg-transparent border-0 p-0 cursor-pointer focus:outline-none"
                               >
                                 <div className="w-full h-[145px] sm:h-[135px] flex items-end justify-center px-[1px]">
@@ -2849,9 +2942,9 @@ export default function SalesAnalysisDashboard({
                                       isSelected
                                         ? 'bg-emerald-500 dark:bg-emerald-400 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-400/50'
                                         : isSpike
-                                        ? 'bg-gradient-to-t from-sky-600 to-sky-400 shadow-sm shadow-sky-500/25'
+                                        ? spikeBarCls
                                         : hasVal
-                                        ? 'bg-slate-400 dark:bg-slate-600 group-hover:bg-sky-500 dark:group-hover:bg-sky-400'
+                                        ? hoverBarCls
                                         : 'bg-slate-200 dark:bg-slate-800/70'
                                     }`}
                                   />
@@ -2861,7 +2954,7 @@ export default function SalesAnalysisDashboard({
                                     isSelected
                                       ? 'text-emerald-500 dark:text-emerald-400 font-black'
                                       : isSpike
-                                      ? 'text-sky-500 font-black'
+                                      ? hourlyChartMetric === 'invoiceCount' ? 'text-indigo-400 font-black' : hourlyChartMetric === 'amount' ? 'text-emerald-400 font-black' : 'text-sky-500 font-black'
                                       : 'text-slate-500 group-hover:text-sky-400'
                                   }`}
                                 >
@@ -2934,7 +3027,7 @@ export default function SalesAnalysisDashboard({
                             >
                               {cell.amount > 0 ? (
                                 <span className="text-[8.5px] font-mono font-bold text-emerald-250">
-                                  {toPersianDigits(Math.round(cell.qty * 100) / 100)}
+                                  {formatDec2(cell.qty)}
                                 </span>
                               ) : (
                                 <span className="text-[8px] text-slate-800">-</span>
@@ -2943,8 +3036,8 @@ export default function SalesAnalysisDashboard({
                               {/* Tooltip on cellular hover */}
                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 opacity-0 group-hover:opacity-100 bg-slate-950 text-[9px] px-2.5 py-1.5 border border-slate-800 rounded-lg transition-opacity pointer-events-none z-15 text-center w-36 shadow-xl leading-relaxed">
                                 <span className="font-sans block border-b border-slate-800 pb-1 mb-1 font-extrabold text-slate-200">{wd} - ساعت {toPersianDigits(h)}:۰۰</span>
-                                <span className="block text-emerald-450 font-bold">مجموع: {formatWithCommas(cell.amount)} ریال</span>
-                                <span className="block text-slate-400 font-mono">تعداد: {toPersianDigits(Math.round(cell.qty * 100) / 100)} واحد</span>
+                                <span className="block text-emerald-450 font-bold">مجموع: {formatMax2(cell.amount)} ریال</span>
+                                <span className="block text-slate-400 font-mono">تعداد: {formatDec2(cell.qty)} واحد</span>
                               </div>
                             </div>
                           );
@@ -3079,12 +3172,12 @@ export default function SalesAnalysisDashboard({
                           
                           <div className="pt-2 border-t border-slate-800/50 flex items-center justify-between text-[11.5px]">
                             <span className="text-slate-400">حجم فیزیکی:</span>
-                            <span className="font-bold text-slate-200 font-mono">{toPersianDigits(Math.round(peakData.qty * 100) / 100)} عدد</span>
+                            <span className="font-bold text-slate-200 font-mono">{formatDec2(peakData.qty)} عدد</span>
                           </div>
 
                           <div className="flex items-center justify-between text-[11.5px]">
                             <span className="text-slate-400">فروش ناخالص:</span>
-                            <span className="text-amber-400 font-black font-mono">{formatWithCommas(peakData.amount)} ریال</span>
+                            <span className="text-amber-400 font-black font-mono">{formatMax2(peakData.amount)} ریال</span>
                           </div>
                         </div>
                       ) : (
@@ -3137,7 +3230,7 @@ export default function SalesAnalysisDashboard({
                            {FA_WEEKDAYS_ORDERED.map(w => {
                              const amt = row.weekdayAmounts[w] || 0;
                              const qty = row.weekdayQtys[w] || 0;
-                             const roundedQty = Math.round(qty * 100) / 100;
+                             const roundedQty = roundMax2(qty);
                              return (
                                <td 
                                  key={w} 
@@ -3148,7 +3241,7 @@ export default function SalesAnalysisDashboard({
                                >
                                  {amt > 0 ? (
                                    <div>
-                                     <div>{formatWithCommas(amt)}</div>
+                                     <div>{formatMax2(amt)}</div>
                                      <span className="text-[8px] text-slate-500">({toPersianDigits(roundedQty)} عدد)</span>
                                    </div>
                                  ) : '۰'}
@@ -3156,7 +3249,7 @@ export default function SalesAnalysisDashboard({
                              );
                            })}
                           <td className="p-3 text-center font-bold font-mono text-amber-405 bg-amber-500/5">
-                            {formatWithCommas(row.totalAmount)}
+                            {formatMax2(row.totalAmount)}
                           </td>
                         </tr>
                       ))}
@@ -3168,7 +3261,7 @@ export default function SalesAnalysisDashboard({
                         {FA_WEEKDAYS_ORDERED.map(w => {
                           const amt = productWeeklyMatrixTotals.totals[w]?.amount || 0;
                           const qty = productWeeklyMatrixTotals.totals[w]?.qty || 0;
-                          const roundedQty = Math.round(qty * 100) / 100;
+                          const roundedQty = roundMax2(qty);
                           return (
                             <td 
                               key={w} 
@@ -3177,7 +3270,7 @@ export default function SalesAnalysisDashboard({
                             >
                               {amt > 0 ? (
                                 <div>
-                                  <div>{formatWithCommas(amt)}</div>
+                                  <div>{formatMax2(amt)}</div>
                                   <span className="text-[8.5px] text-slate-400">({toPersianDigits(roundedQty)} عدد)</span>
                                 </div>
                               ) : '۰'}
@@ -3185,7 +3278,7 @@ export default function SalesAnalysisDashboard({
                           );
                         })}
                         <td className="p-3 text-center font-black font-mono text-amber-400 bg-amber-500/10">
-                          {formatWithCommas(productWeeklyMatrixTotals.grandTotalAmount)}
+                          {formatMax2(productWeeklyMatrixTotals.grandTotalAmount)}
                         </td>
                       </tr>
                     </tfoot>
@@ -3484,7 +3577,7 @@ export default function SalesAnalysisDashboard({
                                     className="bg-slate-950 border border-slate-800 text-slate-100 text-[11px] px-2 py-1 rounded w-14 font-mono text-center"
                                   />
                                 ) : (
-                                  <span>{toPersianDigits(Math.round(tx.qtySold * 100) / 100)} عدد</span>
+                                  <span>{formatDec2(tx.qtySold)} عدد</span>
                                 )}
                               </td>
 
@@ -3498,7 +3591,7 @@ export default function SalesAnalysisDashboard({
                                     className="bg-slate-950 border border-slate-800 text-slate-100 text-[11px] px-2 py-1 rounded w-28 font-mono text-left font-bold"
                                   />
                                 ) : (
-                                  <span>{formatWithCommas(tx.salesAmount)} ریال</span>
+                                  <span>{formatMax2(tx.salesAmount)} ریال</span>
                                 )}
                               </td>
 
@@ -3613,7 +3706,7 @@ export default function SalesAnalysisDashboard({
                   مدیریت زنجیره تأمین گروه‌های کالایی استراتژیک
                 </span>
                 <p className="text-[9.5px] text-slate-350 leading-relaxed">
-                  دسته کالایی <strong className="text-indigo-400">{categorySummary[0]?.name || 'اولیه'}</strong> با دارا بودن سهم بازاری معادل <strong className="text-rose-450 font-black">{toPersianDigits(categorySummary[0]?.percentage || 0)}٪</strong>، هسته نقدینگی ماه جاری را پشتیبانی می‌کند. نظارت بر زنجیره مواد اولیه آن در انبار اولویت بالایی دارد.
+                  دسته کالایی <strong className="text-indigo-400">{categorySummary[0]?.name || 'اولیه'}</strong> با دارا بودن سهم بازاری معادل <strong className="text-rose-450 font-black">{formatDec2(categorySummary[0]?.percentage || 0)}٪</strong>، هسته نقدینگی ماه جاری را پشتیبانی می‌کند. نظارت بر زنجیره مواد اولیه آن در انبار اولویت بالایی دارد.
                 </p>
               </div>
             </div>

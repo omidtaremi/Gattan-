@@ -24,6 +24,7 @@ import {
 } from '../utils/excelService';
 import AttendanceForm from './AttendanceForm';
 import AttendanceSettingsForm from './AttendanceSettingsForm';
+import ShamsiDatePicker from './ShamsiDatePicker';
 import PersonnelSettlementTab from './payroll/PersonnelSettlementTab';
 import { PersonnelPayslipModal, PayslipItemData } from './payroll/PersonnelPayslipModal';
 import {
@@ -438,6 +439,53 @@ const getEligibleChildrenCount = (insuranceHistoryDays: number, list: PersonnelC
   }).length;
 };
 
+const normalizeRateDateYMD = (d?: string): string => {
+  if (!d) return '';
+  const clean = toEnglishDigits(String(d)).trim().replace(/[-.\s]+/g, '/');
+  const m = clean.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return '';
+  return `${m[1]}/${m[2].padStart(2, '0')}/${m[3].padStart(2, '0')}`;
+};
+
+export const findSalaryBaseRateByDate = (
+  rates: SalaryBaseRate[],
+  targetDateStr?: string,
+  fallbackYearStr?: string
+): SalaryBaseRate | undefined => {
+  if (!rates || rates.length === 0) return undefined;
+  const normTarget = normalizeRateDateYMD(targetDateStr);
+  const yearStr = fallbackYearStr
+    ? toEnglishDigits(String(fallbackYearStr)).trim()
+    : (normTarget ? normTarget.slice(0, 4) : '');
+
+  if (normTarget) {
+    const datedMatches = rates.filter((r) => {
+      const s = normalizeRateDateYMD(r.startDate);
+      const e = normalizeRateDateYMD(r.endDate);
+      if (!s && !e) return false;
+      if (s && normTarget < s) return false;
+      if (e && normTarget > e) return false;
+      return true;
+    });
+    if (datedMatches.length > 0) {
+      datedMatches.sort((a, b) => normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate)));
+      return datedMatches[0];
+    }
+  }
+
+  if (yearStr) {
+    const yearMatches = rates.filter((r) => toEnglishDigits(String(r.year || '')).trim() === yearStr);
+    if (yearMatches.length > 0) {
+      const undated = yearMatches.find((r) => !normalizeRateDateYMD(r.startDate) && !normalizeRateDateYMD(r.endDate));
+      if (undated && !normTarget) return undated;
+      const sorted = [...yearMatches].sort((a, b) => normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate)));
+      return sorted[0];
+    }
+  }
+
+  return undefined;
+};
+
 export const getSalaryBaseRateForYearMonth = (
   db: AppDatabase,
   year?: number | string,
@@ -445,7 +493,8 @@ export const getSalaryBaseRateForYearMonth = (
   activePeriodId?: string
 ): SalaryBaseRate | undefined => {
   const allRates = db.salaryBaseRates || [];
-  const rates = activePeriodId ? allRates.filter((r: any) => r.periodId === activePeriodId) : allRates;
+  const periodRates = activePeriodId ? allRates.filter((r: any) => r.periodId === activePeriodId) : allRates;
+  const rates = periodRates.length > 0 ? periodRates : allRates;
   if (rates.length === 0) return undefined;
 
   const activePeriodObj = activePeriodId ? (db.periods || []).find(p => p.id === activePeriodId) : undefined;
@@ -454,9 +503,19 @@ export const getSalaryBaseRateForYearMonth = (
     : (activePeriodId ? String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId)) : '');
   const targetMonthStr = month ? String(month).padStart(2, '0') : '';
 
+  if (targetYearStr && targetMonthStr) {
+    const midMonthDate = `${targetYearStr}/${targetMonthStr}/15`;
+    const matchedByDate = findSalaryBaseRateByDate(rates, midMonthDate, targetYearStr);
+    if (matchedByDate) return matchedByDate;
+  }
+
   if (targetYearStr) {
     if (activePeriodId) {
-      const matchedByActivePeriod = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === activePeriodId);
+      const matchedByActivePeriod = findSalaryBaseRateByDate(
+        rates.filter((r: any) => r.periodId === activePeriodId),
+        undefined,
+        targetYearStr
+      );
       if (matchedByActivePeriod) return matchedByActivePeriod;
     }
 
@@ -466,7 +525,7 @@ export const getSalaryBaseRateForYearMonth = (
       if (matchedByYM) return matchedByYM;
     }
 
-    const matchedByYear = rates.find((r: any) => toEnglishDigits(String(r.year || '')).trim() === targetYearStr);
+    const matchedByYear = findSalaryBaseRateByDate(rates, undefined, targetYearStr);
     if (matchedByYear) return matchedByYear;
   }
 
@@ -475,7 +534,11 @@ export const getSalaryBaseRateForYearMonth = (
     if (matchedByActivePeriod) return matchedByActivePeriod;
   }
 
-  const sorted = [...rates].sort((a: any, b: any) => (Number(toEnglishDigits(String(b.year || ''))) || 0) - (Number(toEnglishDigits(String(a.year || ''))) || 0));
+  const sorted = [...rates].sort((a: any, b: any) => {
+    const yDiff = (Number(toEnglishDigits(String(b.year || ''))) || 0) - (Number(toEnglishDigits(String(a.year || ''))) || 0);
+    if (yDiff !== 0) return yDiff;
+    return normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate));
+  });
   return sorted[0] || rates[0];
 };
 
@@ -534,8 +597,17 @@ export const getSalaryBaseRateForContract = (
   activePeriodId: string,
   calcYear?: number | string
 ): SalaryBaseRate | undefined => {
-  const rates = (db.salaryBaseRates || []).filter((r: any) => !activePeriodId || r.periodId === activePeriodId);
+  const allRates = db.salaryBaseRates || [];
+  const periodRates = allRates.filter((r: any) => !activePeriodId || r.periodId === activePeriodId);
+  const rates = periodRates.length > 0 ? periodRates : allRates;
   if (rates.length === 0) return undefined;
+
+  // 1. Explicit manual/saved SalaryBaseRate ID on contract takes highest priority
+  const explicitRateId = c?.salaryBaseRateId || c?.contract?.salaryBaseRateId;
+  if (explicitRateId) {
+    const byId = periodRates.find((r: any) => r.id === explicitRateId) || allRates.find((r: any) => r.id === explicitRateId);
+    if (byId) return byId;
+  }
 
   const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
   const activeYear = activePeriodId ? String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId)) : '';
@@ -546,9 +618,17 @@ export const getSalaryBaseRateForContract = (
   const startYear = getJalaliYear(startDateStr);
   const endYear = getJalaliYear(endDateStr);
 
+  // 2. Automatic date-range match using contract start date
+  const normStart = normalizeRateDateYMD(startDateStr);
+  if (normStart && (!calcYear || toEnglishDigits(String(calcYear)).trim() === startYear)) {
+    const byDate = findSalaryBaseRateByDate(rates, normStart, startYear);
+    if (byDate) return byDate;
+  }
+
+  // 3. Fallback to year matching
   const targetYear = calcYear
     ? String(calcYear).trim()
-    : (activeYear || periodYear || startYear || endYear);
+    : (startYear || activeYear || periodYear || endYear);
 
   if (targetYear) {
     const matched = getSalaryBaseRateForYearMonth(db, targetYear, undefined, activePeriodId);
@@ -2599,6 +2679,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   // Salary Base Rates / Payroll Constants States
   const [editingRateId, setEditingRateId] = useState<string | null>(null);
   const [rateYear, setRateYear] = useState<string>('');
+  const [rateTitle, setRateTitle] = useState<string>('');
+  const [rateStartDate, setRateStartDate] = useState<string>('');
+  const [rateEndDate, setRateEndDate] = useState<string>('');
   const [rateDailyBaseSalary, setRateDailyBaseSalary] = useState<string>('');
   const [rateHourlyBaseSalary, setRateHourlyBaseSalary] = useState<string>('');
   const [rateDailyInsuranceSalary, setRateDailyInsuranceSalary] = useState<string>('');
@@ -2635,17 +2718,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (list.length === 0) {
       list = db.salaryBaseRates || [];
     }
-    const yearMap = new Map<string, SalaryBaseRate>();
-    list.forEach(r => {
-      const y = String(r.year || '').trim();
-      if (!y) return;
-      yearMap.set(y, r);
+
+    let result = [...list].sort((a, b) => {
+      const yDiff = (Number(toEnglishDigits(String(b.year || ''))) || 0) - (Number(toEnglishDigits(String(a.year || ''))) || 0);
+      if (yDiff !== 0) return yDiff;
+      return normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate));
     });
 
-    let result = Array.from(yearMap.values()).sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0));
     if (rateSearchQuery.trim()) {
-      const q = toEnglishDigits(rateSearchQuery.trim());
-      result = result.filter(r => r.year.toString().includes(q));
+      const q = toEnglishDigits(rateSearchQuery.trim()).toLowerCase();
+      result = result.filter(r =>
+        toEnglishDigits(String(r.year || '')).toLowerCase().includes(q) ||
+        String(r.title || '').toLowerCase().includes(q) ||
+        toEnglishDigits(String(r.startDate || '')).includes(q) ||
+        toEnglishDigits(String(r.endDate || '')).includes(q)
+      );
     }
     return result;
   }, [db.salaryBaseRates, activePeriodId, rateSearchQuery]);
@@ -2668,6 +2755,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const handleCancelEditRate = () => {
     setEditingRateId(null);
     setRateYear('');
+    setRateTitle('');
+    setRateStartDate('');
+    setRateEndDate('');
     setRateDailyBaseSalary('');
     setRateHourlyBaseSalary('');
     setRateDailyInsuranceSalary('');
@@ -2685,20 +2775,56 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const handleSaveSalaryBaseRate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!rateYear.trim()) {
-      alert('لطفا سال را وارد کنید.');
+    const normStart = normalizeRateDateYMD(rateStartDate);
+    const normEnd = normalizeRateDateYMD(rateEndDate);
+    const derivedYear = toEnglishDigits(rateYear.trim()) || (normStart ? normStart.slice(0, 4) : '') || (normEnd ? normEnd.slice(0, 4) : '');
+
+    if (!derivedYear) {
+      alert('لطفا سال مالی مرجع یا تاریخ شروع دوره را وارد کنید.');
+      return;
+    }
+
+    if ((rateStartDate.trim() && !normStart) || (rateEndDate.trim() && !normEnd)) {
+      alert('فرمت تاریخ شروع یا پایان دوره معتبر نیست. لطفاً از انتخابگر شمسی استفاده نمایید.');
+      return;
+    }
+
+    if ((normStart && !normEnd) || (!normStart && normEnd)) {
+      alert('در صورت تعیین بازه دوره، وارد کردن هر دو فیلد «از تاریخ» و «تا تاریخ» الزامی است.');
+      return;
+    }
+
+    if (normStart && normEnd && normStart > normEnd) {
+      alert('تاریخ شروع دوره (از تاریخ) نمی‌تواند بزرگتر از تاریخ پایان دوره (تا تاریخ) باشد.');
       return;
     }
 
     const currentRates = db.salaryBaseRates || [];
+    const samePeriodRates = currentRates.filter(r => r.periodId === activePeriodId && r.id !== editingRateId);
 
-    // Check duplicate year if adding new
-    if (!editingRateId) {
-      const yearDuplicate = currentRates.some(
-        r => String(r.year).trim() === rateYear.trim()
-      );
-      if (yearDuplicate) {
-        alert(`ثوابت حقوق پایه برای سال ${rateYear} قبلاً تعریف شده است. برای تغییر، آن را از لیست ویرایش کنید.`);
+    // Check overlap or duplicate within the same fiscal period
+    if (normStart && normEnd) {
+      const overlappingRate = samePeriodRates.find(r => {
+        const rs = normalizeRateDateYMD(r.startDate);
+        const re = normalizeRateDateYMD(r.endDate);
+        if (!rs || !re) return false;
+        return normStart <= re && normEnd >= rs;
+      });
+      if (overlappingRate) {
+        alert(
+          `بازه تاریخی انتخاب‌شده (${toPersianDigits(normStart)} تا ${toPersianDigits(normEnd)}) با دوره ثبت‌شده «${overlappingRate.title || `سال ${toPersianDigits(overlappingRate.year)}`}» (${toPersianDigits(overlappingRate.startDate || '')} تا ${toPersianDigits(overlappingRate.endDate || '')}) هم‌پوشانی دارد.`
+        );
+        return;
+      }
+    } else {
+      // Legacy undated entry: prevent duplicate undated entry for the same year in this period
+      const duplicateUndated = samePeriodRates.find(r => {
+        const rs = normalizeRateDateYMD(r.startDate);
+        const re = normalizeRateDateYMD(r.endDate);
+        return !rs && !re && toEnglishDigits(String(r.year || '')).trim() === derivedYear;
+      });
+      if (duplicateUndated) {
+        alert(`ثوابت حقوق پایه بدون بازه تاریخ برای سال ${toPersianDigits(derivedYear)} قبلاً تعریف شده است. برای ثبت چند دوره در یک سال، فیلدهای «از تاریخ» و «تا تاریخ» را مشخص کنید.`);
         return;
       }
     }
@@ -2730,7 +2856,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const newRate: SalaryBaseRate = {
       id: editingRateId || nextSimpleId(currentRates, getPrefixForCollection('salaryBaseRates')),
       periodId: resolvedPeriodId,
-      year: rateYear.trim(),
+      year: derivedYear,
+      title: rateTitle.trim() || undefined,
+      startDate: normStart || undefined,
+      endDate: normEnd || undefined,
       dailyBaseSalary: finalDailyBase,
       hourlyBaseSalary: parsedHourlyBase,
       dailyInsuranceSalary: parseNumber(rateDailyInsuranceSalary) || 0,
@@ -2748,10 +2877,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     let updatedRates: SalaryBaseRate[];
     if (editingRateId) {
-      updatedRates = currentRates.map(r => (r.id === editingRateId || (r.periodId === activePeriodId && String(r.year).trim() === rateYear.trim())) ? newRate : r);
+      updatedRates = currentRates.map(r => r.id === editingRateId ? newRate : r);
     } else {
-      const filtered = currentRates.filter(r => !(r.periodId === activePeriodId && String(r.year).trim() === rateYear.trim()));
-      updatedRates = [newRate, ...filtered];
+      updatedRates = [newRate, ...currentRates];
     }
 
     onUpdateDb({
@@ -2763,13 +2891,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     alert('اطلاعات ثوابت و آیتم‌های حقوق و دستمزد با موفقیت ذخیره گردید.');
   };
 
-  const handleDeleteSalaryBaseRate = (id: string, year: string) => {
+  const handleDeleteSalaryBaseRate = (id: string, label: string) => {
     askConfirm(
       'تایید حذف ثوابت حقوق',
-      `آیا از حذف آیتم‌های دستمزد مربوط به سال ${year} اطمینان دارید؟ این عملیات غیر قابل بازگشت است.`,
+      `آیا از حذف آیتم‌های دستمزد مربوط به «${label}» اطمینان دارید؟ این عملیات غیر قابل بازگشت است.`,
       () => {
         const currentRates = db.salaryBaseRates || [];
-        const updated = currentRates.filter(r => !(r.id === id || (r.periodId === activePeriodId && String(r.year).trim() === String(year).trim())));
+        const updated = currentRates.filter(r => r.id !== id);
         onUpdateDb({
           ...db,
           salaryBaseRates: updated
@@ -3010,6 +3138,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const handleEditSalaryBaseRate = (rate: SalaryBaseRate) => {
     setEditingRateId(rate.id);
     setRateYear(rate.year);
+    setRateTitle(rate.title || '');
+    setRateStartDate(rate.startDate || '');
+    setRateEndDate(rate.endDate || '');
     setRateDailyBaseSalary(formatWithCommas(rate.dailyBaseSalary));
     const hourlyVal = (rate.hourlyBaseSalary && rate.hourlyBaseSalary > 0)
       ? rate.hourlyBaseSalary
@@ -8688,6 +8819,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [originalEmpCode, setOriginalEmpCode] = useState<string>(''); // Track original code for cascading
   const [conStartDate, setConStartDate] = useState<string>('');
   const [conEndDate, setConEndDate] = useState<string>('');
+  const [conSalaryBaseRateId, setConSalaryBaseRateId] = useState<string>(''); // '' = خودکار بر اساس تاریخ شروع قرارداد
   const [conDurationMonths, setConDurationMonths] = useState<string>('');
   const [conDailySalary, setConDailySalary] = useState<string>('');
   const [conDailyWageAmount, setConDailyWageAmount] = useState<string>('');
@@ -9343,9 +9475,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const startYear = getJalaliYear(conStartDate);
-    const hasRateForYear = (db.salaryBaseRates || []).some((r: any) => r.periodId === activePeriodId && String(r.year).trim() === String(startYear).trim());
-    if (!hasRateForYear) {
-      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای سال ${toPersianDigits(startYear)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات سال ${toPersianDigits(startYear)} را ثبت نمایید.`);
+    const periodRatesList = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+    const resolvedContractRate = (conSalaryBaseRateId
+      ? (periodRatesList.find((r: any) => r.id === conSalaryBaseRateId) || (db.salaryBaseRates || []).find((r: any) => r.id === conSalaryBaseRateId))
+      : undefined)
+      || findSalaryBaseRateByDate(periodRatesList, conStartDate, startYear)
+      || findSalaryBaseRateByDate(db.salaryBaseRates || [], conStartDate, startYear);
+
+    if (!resolvedContractRate) {
+      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || conStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`);
       return;
     }
 
@@ -9358,7 +9496,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const finalContractSeniorityBase = Math.max(0, parsedSeniorityBase);
 
     const calculatedFields = calculateContractFieldsForDb(
-      { contractStartDate: conStartDate, contractEndDate: conEndDate, contractDailySalary: finalDailySalaryNum, contractSeniorityBase: finalContractSeniorityBase },
+      {
+        contractStartDate: conStartDate,
+        contractEndDate: conEndDate,
+        contractDailySalary: finalDailySalaryNum,
+        contractSeniorityBase: finalContractSeniorityBase,
+        salaryBaseRateId: resolvedContractRate.id
+      },
       emp,
       db,
       activePeriodId,
@@ -9377,6 +9521,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       contractDailyInsuranceSalary: parsedDailyIns,
       contractBaseInsuranceSalary: parsedMonthlyIns,
       jobAllowance: jobAllowanceNum,
+      salaryBaseRateId: resolvedContractRate.id,
       ...calculatedFields,
       contractSeniorityBase: finalContractSeniorityBase,
       calculatedSeniorityBase: finalContractSeniorityBase
@@ -9413,6 +9558,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       notes: conNotes,
       createdAt: new Date().toISOString(),
       contract: contractObject,
+      salaryBaseRateId: resolvedContractRate.id,
       ...calculatedFields,
       contractSeniorityBase: finalContractSeniorityBase,
       calculatedSeniorityBase: finalContractSeniorityBase,
@@ -9548,6 +9694,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setOriginalEmpCode('');
     setConStartDate('');
     setConEndDate('');
+    setConSalaryBaseRateId('');
     setConDurationMonths('');
     setConDailySalary('');
     setConDailyWageAmount('');
@@ -9573,6 +9720,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setOriginalEmpCode(c.employeeCode);
     setConStartDate(c.contractStartDate || '');
     setConEndDate(c.contractEndDate || '');
+    setConSalaryBaseRateId(c.salaryBaseRateId || c.contract?.salaryBaseRateId || '');
     setConDurationMonths(String(c.contractDurationMonths || ''));
     
     // Set daily salary and base salary
@@ -9622,7 +9770,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     if (dailyNum === 0) {
       const emp = (db.personnel || []).find(p => p.employeeCode === selContractEmpCode && p.periodId === activePeriodId) || (db.personnel || []).find(p => p.employeeCode === selContractEmpCode);
-      const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate }, emp, db, activePeriodId);
+      const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate, salaryBaseRateId: conSalaryBaseRateId || undefined }, emp, db, activePeriodId);
       if (contractRates) {
         dailyNum = contractRates.dailyBaseSalary || 0;
       }
@@ -9645,6 +9793,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setOriginalEmpCode('');
     setConStartDate('');
     setConEndDate('');
+    setConSalaryBaseRateId('');
     setConDurationMonths('');
     setConDailySalary('');
     setConBaseSalary('');
@@ -9710,15 +9859,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
 
     const startYear = getJalaliYear(batchStartDate);
-    const hasRateForYear = (db.salaryBaseRates || []).some((r: any) => String(r.year).trim() === String(startYear).trim());
-    if (!hasRateForYear) {
-      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای سال ${toPersianDigits(startYear)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات سال ${toPersianDigits(startYear)} را ثبت نمایید.`);
+    const periodRatesForBatch = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+    const rateForBatchYear = findSalaryBaseRateByDate(periodRatesForBatch, batchStartDate, startYear)
+      || findSalaryBaseRateByDate(db.salaryBaseRates || [], batchStartDate, startYear);
+    if (!rateForBatchYear) {
+      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || batchStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`);
       return;
     }
 
-    const rateForBatchYear = (db.salaryBaseRates || []).find((r: any) => String(r.year).trim() === String(startYear).trim())
-      || (db.salaryBaseRates || []).find((r: any) => r.periodId === activePeriodId);
-    const defaultDailyRate = rateForBatchYear ? rateForBatchYear.dailyBaseSalary : 4333333;
+    const defaultDailyRate = rateForBatchYear.dailyBaseSalary || 4333333;
     const durationNum = parseInt(toEnglishDigits(batchDurationMonths)) || 12;
 
     const existingContracts = db.personnelContracts || [];
@@ -9749,7 +9898,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const baseSalaryNum = finalDailySalaryNum * 30;
 
         const calculatedFields = calculateContractFieldsForDb(
-          { contractStartDate: batchStartDate, contractEndDate: batchEndDate, contractDailySalary: finalDailySalaryNum },
+          { contractStartDate: batchStartDate, contractEndDate: batchEndDate, contractDailySalary: finalDailySalaryNum, salaryBaseRateId: rateForBatchYear.id },
           p,
           db,
           activePeriodId,
@@ -9766,6 +9915,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           contractBaseSalary: baseSalaryNum,
           contractDailySalary: finalDailySalaryNum,
           contractSeniorityBase: calculatedFields.calculatedSeniorityBase,
+          salaryBaseRateId: rateForBatchYear.id,
           ...calculatedFields
         };
 
@@ -9783,6 +9933,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           notes: 'ثبت صادر شده به صورت دسته جمعی',
           createdAt: new Date().toISOString(),
           contract: contractObject,
+          salaryBaseRateId: rateForBatchYear.id,
           isActive: true,
           ...calculatedFields
         };
@@ -10902,11 +11053,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const exportSalaryBaseRatesCSV = () => {
     const headers = [
-      'سال مالی', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
+      'سال مالی', 'عنوان دوره', 'از تاریخ', 'تا تاریخ', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
     ];
     const rates = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const rows = rates.map(r => [
       r.year,
+      r.title || '',
+      r.startDate || '',
+      r.endDate || '',
       String(r.dailyBaseSalary || 0),
       String(r.hourlyBaseSalary || Math.round((r.dailyBaseSalary || 0) / 7.333333)),
       String(r.dailyInsuranceSalary || 0),
@@ -10955,6 +11109,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const nextImportRateId = createSimpleIdGenerator(updatedRates, getPrefixForCollection('salaryBaseRates'));
       let importCount = 0;
 
+      const headerRow = (rows[0] || []).map(h => String(h || '').trim());
+      const hasPeriodCols = headerRow.some(h => h.includes('از تاریخ') || h.includes('عنوان دوره'));
+
       rows.forEach((row) => {
         if (!row || row.length === 0) return;
         const col0 = String(row[0] || '').trim();
@@ -10974,29 +11131,49 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return;
         }
 
-        let dailyBase = parseNumber(row[offset + 1]);
-        let hourlyBase = parseNumber(row[offset + 2]) || (dailyBase > 0 ? Math.round(dailyBase / 7.333333) : 0);
-        let dailyIns = parseNumber(row[offset + 3]);
-        let housing = parseNumber(row[offset + 4]);
-        let food = parseNumber(row[offset + 5]);
-        let child = parseNumber(row[offset + 6]);
-        let seniority = parseNumber(row[offset + 7]);
-        let marriage = parseNumber(row[offset + 8]);
-        let taxLimit = parseNumber(row[offset + 9]);
-        const rawOt = parseNumber(row[offset + 10]);
+        let sTitle = '';
+        let sStartDate = '';
+        let sEndDate = '';
+        let numShift = 0;
+        if (hasPeriodCols) {
+          sTitle = String(row[offset + 1] || '').trim();
+          sStartDate = normalizeRateDateYMD(String(row[offset + 2] || ''));
+          sEndDate = normalizeRateDateYMD(String(row[offset + 3] || ''));
+          numShift = 3;
+        }
+
+        const baseIdx = offset + numShift;
+        let dailyBase = parseNumber(row[baseIdx + 1]);
+        let hourlyBase = parseNumber(row[baseIdx + 2]) || (dailyBase > 0 ? Math.round(dailyBase / 7.333333) : 0);
+        let dailyIns = parseNumber(row[baseIdx + 3]);
+        let housing = parseNumber(row[baseIdx + 4]);
+        let food = parseNumber(row[baseIdx + 5]);
+        let child = parseNumber(row[baseIdx + 6]);
+        let seniority = parseNumber(row[baseIdx + 7]);
+        let marriage = parseNumber(row[baseIdx + 8]);
+        let taxLimit = parseNumber(row[baseIdx + 9]);
+        const rawOt = parseNumber(row[baseIdx + 10]);
         let overtime = rawOt > (dailyBase * 0.8) ? Math.round(rawOt / 7.33) : rawOt;
-        const rawFri = row[offset + 11] !== undefined ? parseNumber(row[offset + 11]) : Math.round((dailyBase * 0.40) / 7.33);
+        const rawFri = row[baseIdx + 11] !== undefined ? parseNumber(row[baseIdx + 11]) : Math.round((dailyBase * 0.40) / 7.33);
         let fridayWork = rawFri > (dailyBase * 0.15) ? Math.round(rawFri / 7.33) : rawFri;
-        const rawLeaveVal = row[offset + 13] !== undefined && String(row[offset + 13]).includes(':')
-          ? row[offset + 13]
-          : (row[offset + 12] !== undefined && String(row[offset + 12]).includes(':') ? row[offset + 12] : DEFAULT_MONTHLY_LEAVE_HM);
+        const rawLeaveVal = row[baseIdx + 13] !== undefined && String(row[baseIdx + 13]).includes(':')
+          ? row[baseIdx + 13]
+          : (row[baseIdx + 12] !== undefined && String(row[baseIdx + 12]).includes(':') ? row[baseIdx + 12] : DEFAULT_MONTHLY_LEAVE_HM);
         const monthlyLeaveHoursVal = normalizeMonthlyLeaveHMInput(String(rawLeaveVal || DEFAULT_MONTHLY_LEAVE_HM));
 
-        const matchIndex = updatedRates.findIndex(r => r.periodId === activePeriodId && r.year === sYear);
+        const matchIndex = updatedRates.findIndex(r =>
+          r.periodId === activePeriodId &&
+          r.year === sYear &&
+          normalizeRateDateYMD(r.startDate) === sStartDate &&
+          normalizeRateDateYMD(r.endDate) === sEndDate
+        );
         const rateObj: SalaryBaseRate = {
           id: matchIndex >= 0 ? updatedRates[matchIndex].id : nextImportRateId(),
           periodId: activePeriodId,
           year: sYear,
+          title: sTitle || undefined,
+          startDate: sStartDate || undefined,
+          endDate: sEndDate || undefined,
           dailyBaseSalary: dailyBase,
           hourlyBaseSalary: hourlyBase,
           dailyInsuranceSalary: dailyIns,
@@ -16489,22 +16666,132 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   <span className="p-1.5 bg-rose-50 rounded-lg text-rose-600">
                     <Plus className="h-4 w-4" />
                   </span>
-                  {editingRateId ? `اصلاح ثوابت سال ${toPersianDigits(rateYear)}` : 'ثبت ثوابت و آیتم‌های جدید دستمزد'}
+                  {editingRateId ? `اصلاح ثوابت ${rateTitle ? `«${rateTitle}»` : `سال ${toPersianDigits(rateYear)}`}` : 'ثبت ثوابت و آیتم‌های جدید دستمزد'}
                 </h4>
 
                 <form onSubmit={handleSaveSalaryBaseRate} className="space-y-4">
-                  {/* Year Input */}
-                  <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">سال مالی مرجع (یکتا)</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="مانند: ۱۴۰۵"
-                      value={rateYear}
-                      onChange={(e) => setRateYear(e.target.value)}
-                      disabled={!!editingRateId}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 disabled:opacity-60 text-center font-mono text-slate-800"
-                    />
+                  {/* Year & Optional Period Title */}
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[10.5px] font-bold text-slate-600 mb-1">سال مالی مرجع *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="مانند: ۱۴۰۵"
+                        value={rateYear}
+                        onChange={(e) => setRateYear(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 text-center font-mono text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10.5px] font-bold text-slate-600 mb-1">عنوان دوره (اختیاری)</label>
+                      <input
+                        type="text"
+                        placeholder="مثلاً: نیمه اول ۱۴۰۵"
+                        value={rateTitle}
+                        onChange={(e) => setRateTitle(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 text-right text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Jalali Date Range Picker for Contracts & Periods */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه دوره اعتبار (جهت قراردادها)</label>
+                      <div className="flex items-center gap-1">
+                        {(() => {
+                          const yr = toEnglishDigits(rateYear.trim()) || activeFiscalYearStr || '1405';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRateYear(yr);
+                                  setRateStartDate(`${yr}/01/01`);
+                                  setRateEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                              >
+                                کل سال
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRateYear(yr);
+                                  setRateStartDate(`${yr}/01/01`);
+                                  setRateEndDate(`${yr}/06/31`);
+                                  if (!rateTitle.trim()) setRateTitle(`نیمه اول ${toPersianDigits(yr)}`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه اول
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRateYear(yr);
+                                  setRateStartDate(`${yr}/07/01`);
+                                  setRateEndDate(`${yr}/12/29`);
+                                  if (!rateTitle.trim()) setRateTitle(`نیمه دوم ${toPersianDigits(yr)}`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه دوم
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <ShamsiDatePicker
+                        label="از تاریخ (شروع دوره)"
+                        value={rateStartDate}
+                        onChange={(val) => {
+                          setRateStartDate(val);
+                          const y = getJalaliYear(val);
+                          if (y && !rateYear.trim()) {
+                            setRateYear(y);
+                          }
+                        }}
+                        placeholder="انتخاب تاریخ شروع"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="right"
+                        defaultYear={Number(toEnglishDigits(rateYear.trim()) || activeFiscalYearStr) || 1405}
+                      />
+                      <ShamsiDatePicker
+                        label="تا تاریخ (پایان دوره)"
+                        value={rateEndDate}
+                        onChange={(val) => setRateEndDate(val)}
+                        placeholder="انتخاب تاریخ پایان"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="left"
+                        defaultYear={Number(toEnglishDigits(rateYear.trim()) || activeFiscalYearStr) || 1405}
+                      />
+                    </div>
+                    {(rateStartDate || rateEndDate) && (
+                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                        <span>
+                          بازه انتخاب‌شده:{' '}
+                          <strong className="text-slate-700 font-mono">
+                            {rateStartDate ? toPersianDigits(rateStartDate) : '—'} تا {rateEndDate ? toPersianDigits(rateEndDate) : '—'}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRateStartDate('');
+                            setRateEndDate('');
+                          }}
+                          className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
+                        >
+                          پاک کردن بازه
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Daily Base Salary */}
@@ -17468,7 +17755,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   <Search className="absolute right-3 top-2.5 h-4 w-4 text-slate-500" />
                   <input
                     type="text"
-                    placeholder="جستجو مابین ثوابت بر اساس سال مالی مرجع (مثال: ۱۴۰۵)..."
+                    placeholder="جستجو مابین ثوابت بر اساس سال مالی، عنوان دوره یا تاریخ اعتبار..."
                     value={rateSearchQuery}
                     onChange={(e) => setRateSearchQuery(e.target.value)}
                     className="w-full pr-9 pl-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 transition-all font-sans text-right"
@@ -17481,7 +17768,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <div className="bg-slate-950 border border-slate-850 rounded-2xl p-12 text-center text-slate-400">
                   <DollarSign className="h-12 w-12 mx-auto text-slate-700 mb-3" />
                   <p className="text-xs font-bold">هیچ قانون یا ثوابت حقوقی برای سال مورد نظر یافت نشد.</p>
-                  <p className="text-[10px] text-slate-500 mt-1">با استفاده از فرم مجاور می‌توانید فرمول و مبالغ دستمزد سال مد نظر را تعریف کنید.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">با استفاده از فرم مجاور می‌توانید فرمول و مبالغ دستمزد سال یا دوره مد نظر را تعریف کنید.</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -17493,14 +17780,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       }`}
                     >
                       {/* Top Ribbon Row */}
-                      <div className="flex items-center justify-between border-b border-slate-850/60 pb-3 mb-4">
-                        <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-850/60 pb-3 mb-4">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-black text-white px-3 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono">
                             سال مالی {toPersianDigits(rate.year)}
                           </span>
-                          <span className="text-[10px] text-rose-455 font-bold px-2 py-0.5 bg-rose-950/20 rounded border border-rose-900/20">
-                            ثوابت محاسباتی دستمزد معتبر
-                          </span>
+                          {rate.title && (
+                            <span className="text-[10.5px] font-black text-amber-300 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/25 rounded-lg">
+                              {rate.title}
+                            </span>
+                          )}
+                          {(rate.startDate || rate.endDate) ? (
+                            <span className="text-[10px] font-bold font-mono text-emerald-300 px-2.5 py-0.5 bg-emerald-500/10 border border-emerald-500/25 rounded-lg">
+                              از {toPersianDigits(rate.startDate || '—')} تا {toPersianDigits(rate.endDate || '—')}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-rose-455 font-bold px-2 py-0.5 bg-rose-950/20 rounded border border-rose-900/20">
+                              ثوابت کل سال مالی
+                            </span>
+                          )}
                         </div>
                         
                         {/* Actions */}
@@ -17515,7 +17813,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleDeleteSalaryBaseRate(rate.id, rate.year)}
+                            onClick={() => handleDeleteSalaryBaseRate(rate.id, rate.title ? `${rate.title} (${toPersianDigits(rate.year)})` : `سال ${toPersianDigits(rate.year)}`)}
                             className="text-rose-400 hover:text-rose-300 text-[10px] p-1 bg-rose-950/20 rounded border border-rose-900/30 hover:bg-rose-950/45 transition-all cursor-pointer"
                             title="حذف کامل"
                           >
@@ -18082,14 +18380,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         const engDate = toEnglishDigits(val);
                         if (engDate.length >= 4) {
                           const startYear = getJalaliYear(engDate);
-                          if (startYear) {
-                            const foundRate = (db.salaryBaseRates || []).find((r: any) => String(r.year).trim() === String(startYear).trim());
-                            if (foundRate) {
-                              setConDailySalary(formatWithCommas(foundRate.dailyBaseSalary));
-                              setConBaseSalary(formatWithCommas(foundRate.dailyBaseSalary * 30));
-                              setConDailyInsuranceSalary(formatWithCommas(foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary));
-                              setConMonthlyInsuranceSalary(formatWithCommas((foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary) * 30));
-                            }
+                          const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                          const foundRate = findSalaryBaseRateByDate(periodRates, engDate, startYear)
+                            || findSalaryBaseRateByDate(db.salaryBaseRates || [], engDate, startYear);
+                          if (foundRate) {
+                            setConSalaryBaseRateId(foundRate.id);
+                            setConDailySalary(formatWithCommas(foundRate.dailyBaseSalary));
+                            setConBaseSalary(formatWithCommas(foundRate.dailyBaseSalary * 30));
+                            setConDailyInsuranceSalary(formatWithCommas(foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary));
+                            setConMonthlyInsuranceSalary(formatWithCommas((foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary) * 30));
                           }
                         }
                       }}
@@ -18106,6 +18405,94 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
                     />
                   </div>
+
+                  {/* Salary Base Rate Period Selector (Auto-matched by contract start date + Manual override) */}
+                  {(() => {
+                    const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                    const availableRates = periodRates.length > 0 ? periodRates : (db.salaryBaseRates || []);
+                    const autoMatchedRate = conStartDate
+                      ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate))
+                      : undefined;
+                    const activeSelectedRate = conSalaryBaseRateId
+                      ? availableRates.find((r: any) => r.id === conSalaryBaseRateId)
+                      : autoMatchedRate;
+
+                    return (
+                      <div className="col-span-2 bg-slate-900/70 border border-slate-800 rounded-xl p-3 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="text-[10.5px] font-bold text-slate-300">
+                            دوره ثوابت و نرخ پایه دستمزد (تطبیق خودکار یا انتخاب دستی):
+                          </label>
+                          {activeSelectedRate?.startDate && activeSelectedRate?.endDate && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConStartDate(toPersianDigits(activeSelectedRate.startDate || ''));
+                                setConEndDate(toPersianDigits(activeSelectedRate.endDate || ''));
+                              }}
+                              className="text-[9.5px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer transition-colors"
+                            >
+                              اعمال بازه تاریخ دوره روی قرارداد
+                            </button>
+                          )}
+                        </div>
+                        <select
+                          value={conSalaryBaseRateId}
+                          onChange={(e) => {
+                            const nextId = e.target.value;
+                            setConSalaryBaseRateId(nextId);
+                            const chosen = nextId
+                              ? availableRates.find((r: any) => r.id === nextId)
+                              : (conStartDate ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate)) : undefined);
+                            if (chosen) {
+                              setConDailySalary(formatWithCommas(chosen.dailyBaseSalary));
+                              setConBaseSalary(formatWithCommas(chosen.dailyBaseSalary * 30));
+                              setConDailyInsuranceSalary(formatWithCommas(chosen.dailyInsuranceSalary || chosen.dailyBaseSalary));
+                              setConMonthlyInsuranceSalary(formatWithCommas((chosen.dailyInsuranceSalary || chosen.dailyBaseSalary) * 30));
+                              if (!conStartDate && chosen.startDate) {
+                                setConStartDate(toPersianDigits(chosen.startDate));
+                              }
+                              if (!conEndDate && chosen.endDate) {
+                                setConEndDate(toPersianDigits(chosen.endDate));
+                              }
+                            }
+                          }}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-100 focus:outline-none focus:border-rose-500 cursor-pointer"
+                        >
+                          <option value="">
+                            {autoMatchedRate
+                              ? `تشخیص خودکار بر اساس تاریخ قرارداد (${autoMatchedRate.title ? `${autoMatchedRate.title} — ` : ''}سال ${toPersianDigits(autoMatchedRate.year)}${autoMatchedRate.startDate ? ` | ${toPersianDigits(autoMatchedRate.startDate)} تا ${toPersianDigits(autoMatchedRate.endDate || '')}` : ''})`
+                              : 'تشخیص خودکار بر اساس تاریخ شروع قرارداد'}
+                          </option>
+                          {availableRates.map((r: SalaryBaseRate) => (
+                            <option key={r.id} value={r.id}>
+                              {r.title ? `${r.title} — ` : ''}سال {toPersianDigits(r.year)}
+                              {r.startDate && r.endDate ? ` (${toPersianDigits(r.startDate)} تا ${toPersianDigits(r.endDate)})` : ' (کل سال)'}
+                              {` — پایه روزانه: ${toPersianDigits(formatWithCommas(r.dailyBaseSalary))} ریال`}
+                            </option>
+                          ))}
+                        </select>
+                        {activeSelectedRate && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[9.5px] text-slate-400">
+                            <span>
+                              نرخ فعال قرارداد:{' '}
+                              <strong className="text-emerald-300">
+                                {activeSelectedRate.title || `سال ${toPersianDigits(activeSelectedRate.year)}`}
+                              </strong>
+                              {activeSelectedRate.startDate && activeSelectedRate.endDate && (
+                                <span className="font-mono text-slate-300 mr-1.5">
+                                  ({toPersianDigits(activeSelectedRate.startDate)} تا {toPersianDigits(activeSelectedRate.endDate)})
+                                </span>
+                              )}
+                            </span>
+                            <span className="font-mono text-amber-300">
+                              پایه روزانه: {toPersianDigits(formatWithCommas(activeSelectedRate.dailyBaseSalary))} ریال
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Real-time Dynamic Seniority Lookup & Calculation Display Box */}
                   {(() => {
@@ -18200,8 +18587,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           
                           const dailyWageVal = parseFloat(cleanVal) || 0;
                           
-                          // Standard base salary and daily base salary of contract year
-                          const activeRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate }, selectedEmployee, db, activePeriodId);
+                          // Standard base salary and daily base salary of contract period
+                          const activeRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate, salaryBaseRateId: conSalaryBaseRateId || undefined }, selectedEmployee, db, activePeriodId);
                           const standardDailyBase = activeRates ? activeRates.dailyBaseSalary : 4333333;
                           const normalBaseMonthlySalary = standardDailyBase * 30;
                           
@@ -18411,7 +18798,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     />
                     <div className="text-[10px] text-slate-400 mt-1 leading-normal flex justify-between flex-wrap gap-1">
                       <span>مبلغ ۲۶ روز کارکرد: <strong className="text-white font-mono">{toPersianDigits(formatWithCommas((parseFloat(toEnglishDigits(conDailyWageAmount).replace(/,/g, '')) || 0) * 26))} ریال</strong></span>
-                      <span>حقوق پایه عادی (۳۰ روز): <strong className="text-white font-mono">{toPersianDigits(formatWithCommas(((getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate }, selectedEmployee, db, activePeriodId)?.dailyBaseSalary || 4333333) * 30)))} ریال</strong></span>
+                      <span>حقوق پایه عادی (۳۰ روز): <strong className="text-white font-mono">{toPersianDigits(formatWithCommas(((getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate, salaryBaseRateId: conSalaryBaseRateId || undefined }, selectedEmployee, db, activePeriodId)?.dailyBaseSalary || 4333333) * 30)))} ریال</strong></span>
                     </div>
                     <div className="text-[10px] text-emerald-400 mt-0.5 leading-normal">
                       فوق‌العاده شغلی محاسبه‌شده (دقیق مابه‌التفاوت با کسر بیمه و مالیات): <strong className="font-mono">{
@@ -18548,7 +18935,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 {selectedEmployee && (() => {
-                  const activeRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate }, selectedEmployee, db, activePeriodId);
+                  const activeRates = getSalaryBaseRateForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate, salaryBaseRateId: conSalaryBaseRateId || undefined }, selectedEmployee, db, activePeriodId);
                   const parsedDailySalaryNum = parseFloat(toEnglishDigits(conDailySalary).replace(/,/g, '')) || (activeRates ? activeRates.dailyBaseSalary : 4333333);
                   
                   // Calculated based on chosen view basis days (29, 30, 31)

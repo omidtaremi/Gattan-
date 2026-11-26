@@ -387,6 +387,7 @@ export interface PersonnelContract {
   promissoryNoteAmount?: number;
   jobAllowance?: number;
   contract?: any; // Nested contract object to save salary & wage info
+  salaryBaseRateId?: string; // شناسه دوره ثوابت و نرخ پایه دستمزد متناظر قرارداد
   isActive?: boolean; // وضعیت فعال بودن قرارداد (همیشه آخرین قرارداد هر پرسنل فعال است)
 }
 
@@ -515,6 +516,9 @@ export interface SalaryBaseRate {
   id: string;
   periodId: string; // Scoped period ID
   year: string; // "سال" (e.g. "1405", "1404")
+  title?: string; // عنوان اختیاری دوره ثوابت (مثلاً «نیمه اول ۱۴۰۵»)
+  startDate?: string; // تاریخ شروع اعتبار دوره به شمسی (YYYY/MM/DD)
+  endDate?: string; // تاریخ پایان اعتبار دوره به شمسی (YYYY/MM/DD)
   dailyBaseSalary: number; // "حقوق پایه روزانه"
   hourlyBaseSalary?: number; // "پایه حقوق ساعتی"
   dailyInsuranceSalary: number; // "حقوق پایه روزانه بیمه"

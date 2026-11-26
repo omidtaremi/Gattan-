@@ -742,6 +742,26 @@ function resolveSalaryRateForYearMonth(
   const targetYearStr = String(year).trim();
   const targetMonthStr = String(month).padStart(2, '0');
   const periodYM = `${targetYearStr}-${targetMonthStr}`;
+  const midMonthYMD = `${targetYearStr.padStart(4, '0')}/${targetMonthStr}/15`;
+
+  const normalizeYMD = (d?: string) => {
+    if (!d) return '';
+    const cleaned = toEnglishDigits(String(d)).replace(/-/g, '/').trim();
+    const parts = cleaned.split('/');
+    if (parts.length !== 3) return '';
+    const y = parts[0].padStart(4, '0');
+    const m = parts[1].padStart(2, '0');
+    const day = parts[2].padStart(2, '0');
+    if (y.length !== 4 || isNaN(Number(y)) || isNaN(Number(m)) || isNaN(Number(day))) return '';
+    return `${y}/${m}/${day}`;
+  };
+
+  const matchedByDateRange = rates.find(r => {
+    const s = normalizeYMD(r.startDate);
+    const e = normalizeYMD(r.endDate);
+    return !!(s && e && midMonthYMD >= s && midMonthYMD <= e);
+  });
+  if (matchedByDateRange) return matchedByDateRange;
 
   const matchedByYM = rates.find(
     r => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === periodYM

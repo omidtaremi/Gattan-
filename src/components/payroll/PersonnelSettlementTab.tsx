@@ -413,11 +413,35 @@ export default function PersonnelSettlementTab({
     return employeeContracts.find(c => c.id === formContractId);
   }, [employeeContracts, formContractId]);
 
-  // Find rate for a specific year
-  const getSalaryRateForYear = (yearNum: number): SalaryBaseRate => {
+  // Find rate for a specific year (optionally prioritizing contract's explicit rateId or date range)
+  const getSalaryRateForYear = (yearNum: number, targetDate?: string, preferredRateId?: string): SalaryBaseRate => {
     const yearStr = String(yearNum);
-    const found = (db.salaryBaseRates || []).find(r => String(r.year).trim() === yearStr.trim() && r.periodId === activePeriodId)
-      || (db.salaryBaseRates || []).find(r => String(r.year).trim() === yearStr.trim());
+    const rates = db.salaryBaseRates || [];
+    const normalizeYMD = (d?: string) => {
+      if (!d) return '';
+      const p = parseJalali(d);
+      if (!p) return '';
+      return `${String(p.y).padStart(4, '0')}/${String(p.m).padStart(2, '0')}/${String(p.d).padStart(2, '0')}`;
+    };
+
+    let found: SalaryBaseRate | undefined;
+    if (preferredRateId) {
+      found = rates.find(r => r.id === preferredRateId);
+    }
+    if (!found && targetDate) {
+      const targetNorm = normalizeYMD(targetDate);
+      if (targetNorm) {
+        found = rates.find(r => {
+          const s = normalizeYMD(r.startDate);
+          const e = normalizeYMD(r.endDate);
+          return !!(s && e && targetNorm >= s && targetNorm <= e);
+        });
+      }
+    }
+    if (!found) {
+      found = rates.find(r => String(r.year).trim() === yearStr.trim() && r.periodId === activePeriodId)
+        || rates.find(r => String(r.year).trim() === yearStr.trim());
+    }
     
     if (found) {
       const daily = found.dailyBaseSalary || 0;
@@ -489,10 +513,11 @@ export default function PersonnelSettlementTab({
     return contractYear || 1404;
   }, [formEndDate, formSettlementType, selectedContract, selectedPersonnel, formSettlementDate, formStartDate, formMonthlyDetails, contractYear]);
 
-  // نرخ قوانین و ثوابت دستمزد متناسب با سال تسویه حساب
+  // نرخ قوانین و ثوابت دستمزد متناسب با سال و دوره تسویه حساب
   const settlementSalaryRate = useMemo(() => {
-    return getSalaryRateForYear(settlementYear);
-  }, [settlementYear, db.salaryBaseRates, activePeriodId]);
+    const targetDate = formEndDate || selectedContract?.contractStartDate || formStartDate || '';
+    return getSalaryRateForYear(settlementYear, targetDate, selectedContract?.salaryBaseRateId);
+  }, [settlementYear, formEndDate, formStartDate, selectedContract, db.salaryBaseRates, activePeriodId]);
 
   // نرخ اضافه کاری ساعتی مصوب سال تسویه حساب بر مبنای ۸ ساعت کار و نه ۷.۳۳:
   const settlementOvertimeHourlyRate = useMemo(() => {
