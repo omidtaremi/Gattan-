@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   AppDatabase, Product, ProductCategory, Department, SalesPeriod, ProductSale, SalesTransaction, PackagingType
 } from '../types';
@@ -22,6 +22,7 @@ import SearchableSelect from './SearchableSelect';
 import SalesAnalysisDashboard from './SalesAnalysisDashboard';
 import { BarcodeManagement } from './BarcodeManagement';
 import { parseScannedBarcode } from '../utils/barcodeParser';
+import { generateCode128Svg } from '../utils/barcodeSvg';
 import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../utils/simpleId';
 import { getPeriodBarcodeSettings } from '../utils/periodIsolation';
 import { CopySectionKey } from '../utils/periodCopyEngine';
@@ -1453,17 +1454,109 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     return 'unassigned';
   }, [categories, departments]);
 
-  // Shelf Tags Management State & Logic
+  // Shelf Tags Management State & Logic (persisted in localStorage)
   const [tagDeptFilter, setTagDeptFilter] = useState<string>('all');
   const [tagCatFilter, setTagCatFilter] = useState<string>('all');
   const [tagSearch, setTagSearch] = useState<string>('');
-  const [tagSize, setTagSize] = useState<'standard' | 'large' | 'medium_wide' | 'compact' | 'square'>('standard');
-  const [showShopTitle, setShowShopTitle] = useState<boolean>(true);
-  const [showCode, setShowCode] = useState<boolean>(true);
-  const [showBarcode, setShowBarcode] = useState<boolean>(false);
-  const [showDepartment, setShowDepartment] = useState<boolean>(true);
-  const [shopBrandName, setShopBrandName] = useState<string>('شیرینی و کافه گاتان');
+  const [showShopTitle, setShowShopTitle] = useState<boolean>(() => {
+    try { const s = localStorage.getItem('gatan_tag_show_shop'); return s !== null ? s === 'true' : true; } catch { return true; }
+  });
+  const [showCode, setShowCode] = useState<boolean>(() => {
+    try { const s = localStorage.getItem('gatan_tag_show_code'); return s !== null ? s === 'true' : true; } catch { return true; }
+  });
+  const [showBarcode, setShowBarcode] = useState<boolean>(() => {
+    try { const s = localStorage.getItem('gatan_tag_show_barcode'); return s !== null ? s === 'true' : false; } catch { return false; }
+  });
+  const [showDepartment, setShowDepartment] = useState<boolean>(() => {
+    try { const s = localStorage.getItem('gatan_tag_show_dept'); return s !== null ? s === 'true' : true; } catch { return true; }
+  });
+  const [shopBrandName, setShopBrandName] = useState<string>(() => {
+    try { return localStorage.getItem('gatan_tag_brand_name') || 'شیرینی و کافه گاتان'; } catch { return 'شیرینی و کافه گاتان'; }
+  });
   const [selectedProductIdsForTags, setSelectedProductIdsForTags] = useState<Record<string, boolean>>({});
+
+  // Advanced Print Customization States (persisted in localStorage)
+  const [tagCols, setTagCols] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_cols'); return s ? parseInt(s, 10) : 3; } catch { return 3; }
+  });
+  const [tagRows, setTagRows] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_rows'); return s ? parseInt(s, 10) : 5; } catch { return 5; }
+  });
+  const [tagWidthCm, setTagWidthCm] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_width'); return s ? parseFloat(s) : 7; } catch { return 7; }
+  });
+  const [tagHeightCm, setTagHeightCm] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_height'); return s ? parseFloat(s) : 4; } catch { return 4; }
+  });
+  const [tagOrientation, setTagOrientation] = useState<'landscape' | 'portrait'>(() => {
+    try { return (localStorage.getItem('gatan_tag_orientation') as any) || 'landscape'; } catch { return 'landscape'; }
+  });
+  const [paperOrientation, setPaperOrientation] = useState<'portrait' | 'landscape'>(() => {
+    try { return (localStorage.getItem('gatan_paper_orientation') as any) || 'portrait'; } catch { return 'portrait'; }
+  });
+  const [fontSizeTitle, setFontSizeTitle] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_font_title'); return s ? parseInt(s, 10) : 13; } catch { return 13; }
+  });
+  const [fontSizePrice, setFontSizePrice] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_font_price'); return s ? parseInt(s, 10) : 14; } catch { return 14; }
+  });
+  const [fontSizeMeta, setFontSizeMeta] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_font_meta'); return s ? parseFloat(s) : 8.5; } catch { return 8.5; }
+  });
+  const [pageMarginMm, setPageMarginMm] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_page_margin'); return s ? parseInt(s, 10) : 0; } catch { return 0; }
+  });
+  const [contentAlignment, setContentAlignment] = useState<'center' | 'right' | 'left'>(() => {
+    try { return (localStorage.getItem('gatan_tag_align') as any) || 'center'; } catch { return 'center'; }
+  });
+  const [tagFontFamily, setTagFontFamily] = useState<string>(() => {
+    try { return localStorage.getItem('gatan_tag_font_family') || 'Vazirmatn'; } catch { return 'Vazirmatn'; }
+  });
+  const [logoUrl, setLogoUrl] = useState<string>(() => {
+    try { return localStorage.getItem('gatan_tag_logo_url') || ''; } catch { return ''; }
+  });
+  const [logoWidth, setLogoWidth] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_logo_w'); return s ? parseInt(s, 10) : 24; } catch { return 24; }
+  });
+  const [logoHeight, setLogoHeight] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_logo_h'); return s ? parseInt(s, 10) : 24; } catch { return 24; }
+  });
+  const [logoPosition, setLogoPosition] = useState<'top-right' | 'top-center' | 'top-left'>(() => {
+    try { return (localStorage.getItem('gatan_tag_logo_pos') as any) || 'top-right'; } catch { return 'top-right'; }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gatan_tag_cols', String(tagCols));
+      localStorage.setItem('gatan_tag_rows', String(tagRows));
+      localStorage.setItem('gatan_tag_width', String(tagWidthCm));
+      localStorage.setItem('gatan_tag_height', String(tagHeightCm));
+      localStorage.setItem('gatan_tag_orientation', tagOrientation);
+      localStorage.setItem('gatan_paper_orientation', paperOrientation);
+      localStorage.setItem('gatan_tag_font_title', String(fontSizeTitle));
+      localStorage.setItem('gatan_tag_font_price', String(fontSizePrice));
+      localStorage.setItem('gatan_tag_font_meta', String(fontSizeMeta));
+      localStorage.setItem('gatan_tag_page_margin', String(pageMarginMm));
+      localStorage.setItem('gatan_tag_align', contentAlignment);
+      localStorage.setItem('gatan_tag_show_shop', String(showShopTitle));
+      localStorage.setItem('gatan_tag_show_code', String(showCode));
+      localStorage.setItem('gatan_tag_show_barcode', String(showBarcode));
+      localStorage.setItem('gatan_tag_show_dept', String(showDepartment));
+      localStorage.setItem('gatan_tag_brand_name', shopBrandName);
+      localStorage.setItem('gatan_tag_font_family', tagFontFamily);
+      localStorage.setItem('gatan_tag_logo_url', logoUrl);
+      localStorage.setItem('gatan_tag_logo_w', String(logoWidth));
+      localStorage.setItem('gatan_tag_logo_h', String(logoHeight));
+      localStorage.setItem('gatan_tag_logo_pos', logoPosition);
+    } catch (e) {
+      console.error('Error saving shelf tag settings', e);
+    }
+  }, [
+    tagCols, tagRows, tagWidthCm, tagHeightCm, tagOrientation, paperOrientation,
+    fontSizeTitle, fontSizePrice, fontSizeMeta, pageMarginMm, contentAlignment,
+    showShopTitle, showCode, showBarcode, showDepartment, shopBrandName,
+    tagFontFamily, logoUrl, logoWidth, logoHeight, logoPosition
+  ]);
 
   const shelfTagFilteredProducts = useMemo(() => {
     let list = products;
@@ -1501,29 +1594,42 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       return;
     }
 
-    const sizeStyle = tagSize === 'large' 
-      ? 'width: 9.5cm; height: 5.5cm;' 
-      : tagSize === 'medium_wide'
-      ? 'width: 8cm; height: 4cm;'
-      : tagSize === 'compact' 
-      ? 'width: 5cm; height: 3cm;' 
-      : tagSize === 'square'
-      ? 'width: 4.5cm; height: 4.5cm;'
-      : 'width: 7cm; height: 4cm;';
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert("مرورگر شما جلوی باز شدن پنجره چاپ را گرفته است (Pop-up blocker). لطفا اجازه باز شدن پاپ‌آپ را بدهید.");
+      return;
+    }
 
     let html = `
-      <div dir="rtl" style="font-family: 'Vazirmatn', Tahoma, sans-serif; background: #fff; color: #000; padding: 0; margin: 0;">
+      <!DOCTYPE html>
+      <html lang="fa" dir="rtl">
+      <head>
+        <meta charset="UTF-8">
+        <title>چاپ برچسب‌های قفسه</title>
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&display=swap');
-          @media print {
-            body { background: white; margin: 0; padding: 0; }
-            .shelf-tag-card { break-inside: avoid; page-break-inside: avoid; }
+          @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&family=Shabnam:wght@400;700&display=swap');
+          @page {
+            size: A4 ${paperOrientation};
+            margin: ${pageMarginMm}mm;
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            font-family: '${tagFontFamily}', Tahoma, sans-serif;
+            background: #ffffff;
+            color: #000000;
+            margin: 0;
+            padding: 0;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
           .shelf-tag-card {
-            ${sizeStyle}
-            border: 1.5px solid #1e293b;
+            width: ${tagWidthCm}cm;
+            height: ${tagHeightCm}cm;
+            border: 1px solid #0f172a;
             border-radius: 0px;
-            padding: 6px 8px;
+            padding: 4px 6px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -1532,9 +1638,17 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             box-sizing: border-box;
             margin: 0;
             float: right;
+            overflow: hidden;
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+          @media print {
+            body { background: white; margin: 0; padding: 0; }
           }
         </style>
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; padding: 0; margin: 0; justify-items: start;">
+      </head>
+      <body>
+        <div style="display: grid; grid-template-columns: repeat(${tagCols}, ${tagWidthCm}cm); gap: 0; padding: 0; margin: 0; justify-items: start;">
     `;
 
     targetProds.forEach(p => {
@@ -1543,23 +1657,56 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const deptObj = departments.find(d => d.id === deptId);
       const priceFormatted = formatWithCommas(p.salePrice || 0);
 
+      let logoHtml = '';
+      if (logoUrl) {
+        logoHtml = `<img src="${logoUrl}" style="width: ${logoWidth}px; height: ${logoHeight}px; object-fit: contain;" />`;
+      }
+
+      let headerLeft = showDepartment && deptObj ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 700; background: #f1f5f9; padding: 1px 4px; border: 1px solid #cbd5e1; color: #0f172a;">${deptObj.name}</span>` : '<span></span>';
+      let headerRight = logoPosition === 'top-right' ? logoHtml : (logoPosition === 'top-left' ? '' : (showShopTitle ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a;">${shopBrandName}</span>` : '<span></span>'));
+
+      if (logoPosition === 'top-right') {
+        headerRight = logoHtml;
+      } else if (logoPosition === 'top-left') {
+        headerLeft = logoHtml;
+      } else if (logoPosition === 'top-center') {
+        headerLeft = logoHtml;
+      }
+
+      const barcodeValue = (p.barcode || p.code || '').trim();
+      const barcodeHeightPx = tagHeightCm >= 5 ? 28 : tagHeightCm >= 4 ? 22 : 16;
+      const barcodeSvgHtml = showBarcode && barcodeValue
+        ? generateCode128Svg(barcodeValue, {
+            height: barcodeHeightPx,
+            showText: true,
+            fontSize: Math.max(7, Math.min(9.5, fontSizeMeta)),
+            maxWidth: '100%'
+          })
+        : '';
+
       html += `
         <div class="shelf-tag-card">
-          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #94a3b8; padding-bottom: 3px;">
-            ${showShopTitle ? `<span style="font-size: 9px; font-weight: 800; color: #0f172a; font-family: 'Vazirmatn', sans-serif;">${shopBrandName}</span>` : '<span></span>'}
-            ${showDepartment && deptObj ? `<span style="font-size: 8.5px; font-weight: 700; background: #e2e8f0; padding: 1px 5px; border-radius: 0px; color: #1e293b; font-family: 'Vazirmatn', sans-serif;">${deptObj.name}</span>` : ''}
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1.5px solid #0f172a; padding-bottom: 2px; background: #f8fafc; margin: -4px -6px 2px -6px; padding: 3px 6px;">
+            <div style="display: flex; align-items: center; gap: 4px;">
+              ${headerRight}
+              ${logoPosition !== 'top-center' && logoPosition !== 'top-right' && showShopTitle ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a;">${shopBrandName}</span>` : ''}
+            </div>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              ${logoPosition === 'top-center' ? logoHtml : ''}
+              ${headerLeft}
+            </div>
           </div>
-          <div style="text-align: center; margin: 3px 0; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;">
-            <div style="font-size: ${tagSize === 'large' ? '16px' : tagSize === 'compact' ? '11px' : tagSize === 'square' ? '12px' : '13px'}; font-weight: 900; line-height: 1.25; color: #020617; font-family: 'Vazirmatn', sans-serif;">${p.name}</div>
-            ${catObj ? `<div style="font-size: 8px; color: #475569; margin-top: 1px; font-weight: 600; font-family: 'Vazirmatn', sans-serif;">${catObj.name}</div>` : ''}
+          <div style="text-align: ${contentAlignment}; margin: 1px 0; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;">
+            <div style="font-size: ${fontSizeTitle}px; font-weight: 900; line-height: 1.2; color: #000; font-family: '${tagFontFamily}', sans-serif;">${p.name}</div>
+            ${catObj ? `<div style="font-size: ${fontSizeMeta}px; color: #334155; margin-top: 1px; font-weight: 600;">${catObj.name}</div>` : ''}
           </div>
-          <div style="display: flex; justify-content: space-between; align-items: flex-end; border-top: 1px solid #cbd5e1; padding-top: 3px;">
+          ${barcodeSvgHtml ? `<div style="width: 100%; display: flex; justify-content: center; align-items: center; padding: 1px 2px; background: #ffffff;">${barcodeSvgHtml}</div>` : ''}
+          <div style="display: flex; justify-content: space-between; align-items: flex-end; border-top: 1px solid #e2e8f0; padding-top: 2px; margin-top: 1px;">
             <div>
-              ${showCode && p.code ? `<div style="font-size: 8px; font-family: monospace; color: #334155; font-weight: 700;">کد: ${p.code}</div>` : ''}
-              ${showBarcode && p.barcode ? `<div style="font-size: 7.5px; font-family: monospace; color: #334155;">بارکد: ${toPersianDigits(p.barcode)}</div>` : ''}
+              ${showCode && p.code ? `<div style="font-size: ${fontSizeMeta}px; font-family: monospace; color: #334155; font-weight: 700;">کد: ${p.code}</div>` : ''}
             </div>
             <div style="text-align: left;">
-              <div style="font-size: ${tagSize === 'large' ? '17px' : tagSize === 'compact' ? '11px' : tagSize === 'square' ? '13px' : '14px'}; font-weight: 900; font-family: 'Vazirmatn', monospace; color: #000000;">${toPersianDigits(priceFormatted)} <span style="font-size: 8.5px; font-weight: 700; font-family: 'Vazirmatn', sans-serif; color: #1e293b;">ریال</span></div>
+              <div style="font-size: ${fontSizePrice}px; font-weight: 900; font-family: '${tagFontFamily}', monospace; color: #000000;">${toPersianDigits(priceFormatted)} <span style="font-size: ${fontSizeMeta}px; font-weight: 700; color: #1e293b;">ریال</span></div>
             </div>
           </div>
         </div>
@@ -1568,10 +1715,20 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
     html += `
         </div>
-      </div>
+        <script>
+          window.onload = function() {
+            setTimeout(function() {
+              window.print();
+              window.close();
+            }, 300);
+          };
+        </script>
+      </body>
+      </html>
     `;
 
-    printElement('', html);
+    printWindow.document.write(html);
+    printWindow.document.close();
   };
   const deptMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -2090,10 +2247,11 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         );
 
         if (dupIdx >= 0) {
-          // If already registered, update ONLY cost price (بهای کالا cogs / cogsPrice)
+          // If already registered, update ONLY cost price (بهای کالا cogs / cogsPrice & purchaseCost)
           updated[dupIdx] = {
             ...updated[dupIdx],
-            cogsPrice: cogsPriceVal
+            cogsPrice: cogsPriceVal,
+            purchaseCost: cogsPriceVal
           };
           updatedCount++;
         } else {
@@ -2111,7 +2269,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             qtyPerPackage: parseNumber(row[8]) || 1,
             weightPerPackage: parseNumber(row[9]) || 1,
             salePrice: parseNumber(row[10]) || 0,
-            cogsPrice: cogsPriceVal
+            cogsPrice: cogsPriceVal,
+            purchaseCost: cogsPriceVal
           };
           updated.push(productRow);
           importedCount++;
@@ -3191,8 +3350,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     value={formatWithCommas(editingProduct ? editingProduct.cogsPrice : newProduct.cogsPrice)}
                     onChange={(e) => {
                       const v = parseNumber(e.target.value);
-                      if (editingProduct) setEditingProduct({...editingProduct, cogsPrice: v});
-                      else setNewProduct({...newProduct, cogsPrice: v});
+                      if (editingProduct) setEditingProduct({...editingProduct, cogsPrice: v, purchaseCost: v});
+                      else setNewProduct({...newProduct, cogsPrice: v, purchaseCost: v});
                     }}
                   />
                 </div>
@@ -4816,7 +4975,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           </div>
 
           {/* Filters & Customization Toolbar */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
             <div>
               <label className="block text-[11px] font-bold text-slate-300 mb-1.5">فیلتر دپارتمان تولیدی</label>
               <select
@@ -4843,32 +5002,6 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">سایز قالب برچسب شلف</label>
-              <select
-                value={tagSize}
-                onChange={(e) => setTagSize(e.target.value as any)}
-                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
-              >
-                <option value="standard">استاندارد قفسه (۷ در ۴ سانتی‌متر)</option>
-                <option value="large">بزرگ ویترین (۹.۵ در ۵.۵ سانتی‌متر)</option>
-                <option value="medium_wide">متوسط عریض (۸ در ۴ سانتی‌متر)</option>
-                <option value="compact">فشرده / نواری (۵ در ۳ سانتی‌متر)</option>
-                <option value="square">مربعی (۴.۵ در ۴.۵ سانتی‌متر)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">عنوان فروشگاه / برند روی برچسب</label>
-              <input
-                type="text"
-                value={shopBrandName}
-                onChange={(e) => setShopBrandName(e.target.value)}
-                placeholder="مثلاً: شیرینی و کافه گاتان"
-                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
-              />
             </div>
           </div>
 
@@ -4925,6 +5058,231 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 />
                 <span>چاپ دپارتمان</span>
               </label>
+            </div>
+          </div>
+
+          {/* Advanced Print Customization Panel */}
+          <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4">
+            <h4 className="text-xs font-black text-indigo-400 flex items-center gap-2">
+              <Sparkles className="w-4 h-4" />
+              <span>تنظیمات پیشرفته ابعاد، چیدمان، لوگو، فونت و چاپ لیبل (بدون فاصله برای برش آسان)</span>
+            </h4>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">تعداد در عرض (ستون)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={tagCols}
+                  onChange={(e) => setTagCols(Math.max(1, parseInt(e.target.value) || 3))}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">تعداد در طول (سطر)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={tagRows}
+                  onChange={(e) => setTagRows(Math.max(1, parseInt(e.target.value) || 5))}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">عرض لیبل (cm)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={1}
+                  max={30}
+                  value={tagWidthCm}
+                  onChange={(e) => setTagWidthCm(parseFloat(e.target.value) || 7)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">طول لیبل (cm)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={1}
+                  max={30}
+                  value={tagHeightCm}
+                  onChange={(e) => setTagHeightCm(parseFloat(e.target.value) || 4)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">جهت کاغذ چاپ</label>
+                <select
+                  value={paperOrientation}
+                  onChange={(e) => setPaperOrientation(e.target.value as any)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-medium"
+                >
+                  <option value="portrait">عمودی A4 (Portrait)</option>
+                  <option value="landscape">افقی A4 (Landscape)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">حاشیه کاغذ (mm)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={pageMarginMm}
+                  onChange={(e) => setPageMarginMm(parseInt(e.target.value) || 0)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80">
+              <div className="sm:col-span-2">
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">عنوان فروشگاه / برند روی برچسب</label>
+                <input
+                  type="text"
+                  value={shopBrandName}
+                  onChange={(e) => setShopBrandName(e.target.value)}
+                  placeholder="مثلاً: شیرینی و کافه گاتان"
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 font-medium"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">نوع فونت لیبل</label>
+                <select
+                  value={tagFontFamily}
+                  onChange={(e) => setTagFontFamily(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-medium"
+                >
+                  <option value="Vazirmatn">وزیر (Vazirmatn)</option>
+                  <option value="Shabnam">شبنم (Shabnam)</option>
+                  <option value="Tahoma">تخما (Tahoma)</option>
+                  <option value="Arial">آریال (Arial)</option>
+                  <option value="Yekan">یکان (Yekan)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">چیدمان محتوا</label>
+                <select
+                  value={contentAlignment}
+                  onChange={(e) => setContentAlignment(e.target.value as any)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-medium"
+                >
+                  <option value="center">مرکز (Center)</option>
+                  <option value="right">راست (Right)</option>
+                  <option value="left">چپ (Left)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Logo Settings & Font Sizes */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 pt-2 border-t border-slate-800/80 items-end">
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">لوگوی لیبل</label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                          setLogoUrl(event.target?.result as string || '');
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className="hidden"
+                    id="logo-upload-input"
+                  />
+                  <label htmlFor="logo-upload-input" className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all">
+                    {logoUrl ? 'تغییر لوگو' : 'آپلود لوگو'}
+                  </label>
+                  {logoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setLogoUrl('')}
+                      className="px-2 py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white rounded-xl text-xs font-bold transition-all"
+                    >
+                      حذف
+                    </button>
+                  )}
+                </div>
+              </div>
+              {logoUrl && (
+                <>
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-slate-300 mb-1">عرض لوگو (px)</label>
+                    <input
+                      type="number"
+                      min={12}
+                      max={100}
+                      value={logoWidth}
+                      onChange={(e) => setLogoWidth(parseInt(e.target.value) || 24)}
+                      className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-slate-300 mb-1">ارتفاع لوگو (px)</label>
+                    <input
+                      type="number"
+                      min={12}
+                      max={100}
+                      value={logoHeight}
+                      onChange={(e) => setLogoHeight(parseInt(e.target.value) || 24)}
+                      className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-slate-300 mb-1">محل لوگو</label>
+                    <select
+                      value={logoPosition}
+                      onChange={(e) => setLogoPosition(e.target.value as any)}
+                      className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-medium"
+                    >
+                      <option value="top-right">بالای راست</option>
+                      <option value="top-center">بالای مرکز</option>
+                      <option value="top-left">بالای چپ</option>
+                    </select>
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت نام (px)</label>
+                <input
+                  type="number"
+                  min={8}
+                  max={24}
+                  value={fontSizeTitle}
+                  onChange={(e) => setFontSizeTitle(parseInt(e.target.value) || 13)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت قیمت (px)</label>
+                <input
+                  type="number"
+                  min={10}
+                  max={30}
+                  value={fontSizePrice}
+                  onChange={(e) => setFontSizePrice(parseInt(e.target.value) || 14)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت جزئیات (px)</label>
+                <input
+                  type="number"
+                  min={6}
+                  max={14}
+                  value={fontSizeMeta}
+                  onChange={(e) => setFontSizeMeta(parseFloat(e.target.value) || 8.5)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
             </div>
           </div>
 

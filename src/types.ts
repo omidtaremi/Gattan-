@@ -192,6 +192,7 @@ export interface Product {
   weightPerPackage: number; // default 1
   salePrice: number;
   cogsPrice: number; // Calculated or manually specified
+  purchaseCost?: number; // بهای خرید پایه کالاهای خریداری‌شده (بدون فرمول تولید) جهت جلوگیری از خطای تجمعی سربار
   weight?: number; // وزن محصول (به گرم)
   approvedPrice?: number; // قیمت فروش تایید شده مصوب
   isWip?: boolean; // آیا کالای در جریان ساخت است یاخیر

@@ -84,6 +84,10 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   const [allocationModalTab, setAllocationModalTab] = useState<'departmental' | 'summary'>('departmental');
   const [allocationSearchQuery, setAllocationSearchQuery] = useState('');
   const [selectedAllocationCatId, setSelectedAllocationCatId] = useState<string>('all');
+  const [recalcTrigger, setRecalcTrigger] = useState(0);
+  const [recalcFeedback, setRecalcFeedback] = useState<{ total: number; updated: number; time: string } | null>(null);
+  const [isEditingPurchaseCost, setIsEditingPurchaseCost] = useState(false);
+  const [tempPurchaseCost, setTempPurchaseCost] = useState('');
 
   const periodDepartmentsList = useMemo(() => {
     const rawDepts = (db.departments || []).filter(d => d.periodId === activePeriodId);
@@ -120,7 +124,14 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     periodDepartmentsList.forEach(dept => {
       if (dept.targetMargin !== undefined) margins[dept.id] = dept.targetMargin;
     });
-    setDeptMargins(margins);
+    setDeptMargins(prev => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(margins);
+      if (prevKeys.length === nextKeys.length && nextKeys.every(k => prev[k] === margins[k])) {
+        return prev;
+      }
+      return margins;
+    });
   }, [periodDepartmentsList, db.productCategories, activePeriodId]);
 
   const [dateOfChange, setDateOfChange] = useState(() => {
@@ -295,11 +306,25 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     const approved: Record<string, number> = {};
     const original: Record<string, number> = {};
     periodProducts.forEach(p => {
-      approved[p.id] = p.approvedPrice || 0;
-      original[p.id] = p.salePrice || 0;
+      approved[p.id] = Number.isFinite(Number(p.approvedPrice)) ? Number(p.approvedPrice) : 0;
+      original[p.id] = Number.isFinite(Number(p.salePrice)) ? Number(p.salePrice) : 0;
     });
-    setApprovedPrices(approved);
-    setOriginalPrices(original);
+    setApprovedPrices(prev => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(approved);
+      if (prevKeys.length === nextKeys.length && nextKeys.every(k => prev[k] === approved[k])) {
+        return prev;
+      }
+      return approved;
+    });
+    setOriginalPrices(prev => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(original);
+      if (prevKeys.length === nextKeys.length && nextKeys.every(k => prev[k] === original[k])) {
+        return prev;
+      }
+      return original;
+    });
   }, [periodProducts]);
 
   const handleDeptMarginChange = (deptId: string, marginValue: number) => {
@@ -337,95 +362,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     return activeSalesRecords.reduce((acc, current) => acc + current.netSalesAmount, 0);
   }, [activeSalesRecords]);
 
-  const productsWithLossAndProfit = useMemo(() => {
-    return activeSalesRecords.map(sale => {
-      const prod = db.products.find(p => p.id === sale.productId);
-      if (!prod) return null;
-      
-      const totalCOGS = sale.qtySold * prod.cogsPrice;
-      const profitValue = sale.netSalesAmount - totalCOGS;
-      const isLossMaking = profitValue < 0;
-
-      return {
-         sale,
-         prod,
-         totalCOGS,
-         profitValue,
-         isLossMaking
-      };
-    }).filter(Boolean) as any[];
-  }, [activeSalesRecords, db.products]);
-
-  const lossyProductsList = useMemo(() => {
-    return productsWithLossAndProfit.filter(x => x.isLossMaking);
-  }, [productsWithLossAndProfit]);
-
-  const searchedLossyProductsList = useMemo(() => {
-    let list = lossyProductsList;
-    if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
-      list = list.filter(x => resolveProductDepartmentId(x.prod.categoryId) === analyticsCategoryFilter);
-    }
-    return list;
-  }, [lossyProductsList, analyticsCategoryFilter, resolveProductDepartmentId]);
-
-  const totalProfitSum = useMemo(() => {
-    return productsWithLossAndProfit
-      .filter(x => x.profitValue > 0)
-      .reduce((acc, curr) => acc + curr.profitValue, 0);
-  }, [productsWithLossAndProfit]);
-
-  const totalLossSum = useMemo(() => {
-    return productsWithLossAndProfit
-      .filter(x => x.profitValue < 0)
-      .reduce((acc, curr) => acc + Math.abs(curr.profitValue), 0);
-  }, [productsWithLossAndProfit]);
-
-  const searchedProductsWithLossAndProfit = useMemo(() => {
-    let list = productsWithLossAndProfit;
-    
-    // search filter
-    if (analyticsSearch) {
-      list = list.filter(x => 
-        matchPersianString(x.prod.name, analyticsSearch) || 
-        matchPersianString(x.prod.code, analyticsSearch)
-      );
-    }
-    
-    // formula filter
-    if (analyticsFormulaFilter === 'with_formula') {
-      list = list.filter(x => db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
-    } else if (analyticsFormulaFilter === 'without_formula') {
-      list = list.filter(x => !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
-    }
-
-    // department filter
-    if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
-      list = list.filter(x => resolveProductDepartmentId(x.prod.categoryId) === analyticsCategoryFilter);
-    }
-    
-    return list;
-  }, [productsWithLossAndProfit, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId]);
-
-  const searchedTotals = useMemo(() => {
-    let netSalesAmountSum = 0;
-    let totalCogsSum = 0;
-    let profitValueSum = 0;
-    let qtySoldSum = 0;
-
-    searchedProductsWithLossAndProfit.forEach(x => {
-      netSalesAmountSum += x.sale.netSalesAmount;
-      totalCogsSum += x.totalCOGS;
-      profitValueSum += x.profitValue;
-      qtySoldSum += x.sale.qtySold;
-    });
-
-    return {
-      netSalesAmountSum,
-      totalCogsSum,
-      profitValueSum,
-      qtySoldSum
-    };
-  }, [searchedProductsWithLossAndProfit]);
+  // Profit & Loss memos are computed right after fullCalculatedCOGSMap so they always use real-time calculated COGS.
 
   const comparedPeriodId = useMemo(() => {
     const sorted = [...db.periods].sort((a, b) => a.id.localeCompare(b.id));
@@ -2066,10 +2003,42 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     return list.filter(p => matchPersianString(p.name, formulaSearchQuery) || matchPersianString(p.code, formulaSearchQuery));
   }, [categoryFilteredProducts, formulas, formulaFilter, formulaSearchQuery]);
 
+  // Immutable base purchase cost lookup for purchased goods (products without formula)
+  // Prevents runaway feedback loops where allocated sharedLabor/overhead saved to p.cogsPrice would be re-added on every render.
+  const rawItemByLookupKey = useMemo(() => {
+    const map: Record<string, Item> = {};
+    rawItems.forEach(item => {
+      if (item.accountId) {
+        const key = normalizeAccountingCode(item.accountId);
+        if (key) map[key] = item;
+      }
+      if (item.code) {
+        const key = normalizeAccountingCode(item.code);
+        if (key && !map[key]) map[key] = item;
+      }
+    });
+    return map;
+  }, [rawItems]);
+
+  const getPurchasedBaseCost = React.useCallback((p: Product): number => {
+    if (p.purchaseCost !== undefined && p.purchaseCost !== null && Number.isFinite(Number(p.purchaseCost))) {
+      return Math.max(0, Math.round(Number(p.purchaseCost)));
+    }
+    const accKey = p.accountId ? normalizeAccountingCode(p.accountId) : '';
+    const codeKey = p.code ? normalizeAccountingCode(p.code) : '';
+    const matchedRaw = (accKey && rawItemByLookupKey[accKey]) || (codeKey && rawItemByLookupKey[codeKey]);
+    if (matchedRaw && Number.isFinite(Number(matchedRaw.price)) && Number(matchedRaw.price) > 0) {
+      return Math.round(Number(matchedRaw.price));
+    }
+    const fallback = Number(p.cogsPrice);
+    return Number.isFinite(fallback) ? Math.max(0, Math.round(fallback)) : 0;
+  }, [rawItemByLookupKey]);
+
   // ==========================================
   // REAL-TIME COMPREHENSIVE COGS ESTIMATION MATRIX
   // ==========================================
   const fullCalculatedCOGSMap = useMemo(() => {
+    void recalcTrigger;
     const results: Record<string, {
       materialCost: number;
       directLabor: number;
@@ -2078,106 +2047,115 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       totalCOGSPrice: number;
     }> = {};
 
-    // Helper function for time calculation
-    const parseTimeToMinutes = (t: string): number => {
-      if (!t) return 0;
-      const parts = t.split(':');
-      const h = parseInt(parts[0], 10) || 0;
-      const m = parseInt(parts[1], 10) || 0;
-      return h * 60 + m;
-    };
-
-    // Calculate actual production minutes per product, mapped Department and globally
-    const accumMinutes: Record<string, number> = {};
-    const accumProduced: Record<string, number> = {};
-    const categoryTotalProductionTimeMap: Record<string, number> = {};
-    let globalTotalProductionTime = 0;
-
-    periodSegments.forEach(seg => {
-      const minutes = Math.max(0, parseTimeToMinutes(seg.endTime) - parseTimeToMinutes(seg.startTime));
-      accumMinutes[seg.productId] = (accumMinutes[seg.productId] || 0) + minutes;
-      accumProduced[seg.productId] = (accumProduced[seg.productId] || 0) + (seg.producedQty || 0);
-    });
-
+    // Pre-resolve active formula per product once
+    const activeRecipeByProductId: Record<string, ProductFormula | undefined> = {};
+    const hasFormulaByProductId: Record<string, boolean> = {};
     products.forEach(p => {
-      const pDeptId = resolveProductDepartmentId(p.categoryId);
-      const mins = accumMinutes[p.id] || 0;
-      categoryTotalProductionTimeMap[pDeptId] = (categoryTotalProductionTimeMap[pDeptId] || 0) + mins;
-      globalTotalProductionTime += mins;
+      const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
+      const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
+      activeRecipeByProductId[p.id] = recipe;
+      hasFormulaByProductId[p.id] = Boolean(recipe && recipe.ingredients && recipe.ingredients.length > 0);
     });
 
-    // 1. Aggregate monthly sales qty/net-revenue/weight globally and per mapped Department
+    // 1. Aggregate monthly sales qty/net-revenue/weight globally (all products) AND per mapped Department (formulated products only for Direct Labor)
     let totalSalesQtyAll = 0;
     let totalNetSalesAll = 0;
     let grandTotalWeight = 0;
     let allGlobalSoldHaveWeight = true;
-    const categorySalesQtyMap: Record<string, number> = {};
-    const categoryNetSalesMap: Record<string, number> = {};
-    const categoryTotalWeightMap: Record<string, number> = {};
-    const categoryAllSoldHaveWeightMap: Record<string, boolean> = {};
+
+    const catFormulatedSalesQtyMap: Record<string, number> = {};
+    const catFormulatedNetSalesMap: Record<string, number> = {};
+    const catFormulatedWeightMap: Record<string, number> = {};
+    const catAllFormulatedSoldHaveWeightMap: Record<string, boolean> = {};
 
     products.forEach(p => {
       const pDeptId = resolveProductDepartmentId(p.categoryId);
       const saleAgg = salesTotalsByProductId[p.id];
       const sp = saleAgg ? saleAgg.qtySold : 0;
       const netRev = saleAgg ? saleAgg.netSalesAmount : 0;
+      const hasFormula = hasFormulaByProductId[p.id];
+
       if (sp > 0) {
         totalSalesQtyAll += sp;
         totalNetSalesAll += netRev;
-        categorySalesQtyMap[pDeptId] = (categorySalesQtyMap[pDeptId] || 0) + sp;
-        categoryNetSalesMap[pDeptId] = (categoryNetSalesMap[pDeptId] || 0) + netRev;
 
         const prodWeight = p.unit === 'کیلو' ? 1000 : (Number(p.weight) || 0);
         if (prodWeight <= 0) {
           allGlobalSoldHaveWeight = false;
-          categoryAllSoldHaveWeightMap[pDeptId] = false;
         } else {
-          if (categoryAllSoldHaveWeightMap[pDeptId] === undefined) {
-            categoryAllSoldHaveWeightMap[pDeptId] = true;
+          grandTotalWeight += sp * prodWeight;
+        }
+
+        // Direct labor denominators MUST exclude purchased goods (without formula) since their directLabor is 0
+        if (hasFormula) {
+          catFormulatedSalesQtyMap[pDeptId] = (catFormulatedSalesQtyMap[pDeptId] || 0) + sp;
+          catFormulatedNetSalesMap[pDeptId] = (catFormulatedNetSalesMap[pDeptId] || 0) + netRev;
+          if (prodWeight <= 0) {
+            catAllFormulatedSoldHaveWeightMap[pDeptId] = false;
+          } else {
+            if (catAllFormulatedSoldHaveWeightMap[pDeptId] === undefined) {
+              catAllFormulatedSoldHaveWeightMap[pDeptId] = true;
+            }
+            catFormulatedWeightMap[pDeptId] = (catFormulatedWeightMap[pDeptId] || 0) + (sp * prodWeight);
           }
-          const wTotal = sp * prodWeight;
-          grandTotalWeight += wTotal;
-          categoryTotalWeightMap[pDeptId] = (categoryTotalWeightMap[pDeptId] || 0) + wTotal;
         }
       }
     });
 
-    // Fallback department sales volume across other months in the same period
-    const fallbackCategorySalesMap: Record<string, { qty: number; weight: number }> = {};
+    // Fallback department & global sales volume across other months in the same period
+    const fallbackFormulatedCategorySalesMap: Record<string, { qty: number; weight: number }> = {};
     let fallbackGlobalSalesQty = 0;
     let fallbackGlobalSalesWeight = 0;
-    if (totalSalesQtyAll === 0 || Object.keys(categorySalesQtyMap).length === 0) {
+    if (totalSalesQtyAll === 0 || Object.keys(catFormulatedSalesQtyMap).length === 0) {
       const prodLookup: Record<string, Product> = {};
       products.forEach(p => {
         prodLookup[p.id] = p;
         if (p.code) prodLookup[p.code.trim().toLowerCase()] = p;
         if (p.accountId) prodLookup[p.accountId.trim().toLowerCase()] = p;
       });
-      const perMonthCatTotals: Record<string, Record<string, { qty: number; weight: number }>> = {};
+      const perMonthFormulatedCatTotals: Record<string, Record<string, { qty: number; weight: number }>> = {};
+      const perMonthGlobalTotals: Record<string, { qty: number; weight: number }> = {};
       (db.productSales || []).forEach(s => {
         if (s.periodId !== activePeriodId || Number(s.qtySold || 0) <= 0) return;
         const prod = prodLookup[s.productId] || prodLookup[String(s.productId || '').trim().toLowerCase()];
         if (!prod) return;
         const pDeptId = resolveProductDepartmentId(prod.categoryId);
         const ymKey = `${s.year || selectedCogsYear}-${s.month || 1}`;
-        if (!perMonthCatTotals[pDeptId]) perMonthCatTotals[pDeptId] = {};
-        if (!perMonthCatTotals[pDeptId][ymKey]) perMonthCatTotals[pDeptId][ymKey] = { qty: 0, weight: 0 };
         const q = Number(s.qtySold || 0);
         const pw = prod.unit === 'کیلو' ? 1000 : (Number(prod.weight) || 0);
-        perMonthCatTotals[pDeptId][ymKey].qty += q;
-        perMonthCatTotals[pDeptId][ymKey].weight += pw > 0 ? (q * pw) : 0;
+
+        if (!perMonthGlobalTotals[ymKey]) perMonthGlobalTotals[ymKey] = { qty: 0, weight: 0 };
+        perMonthGlobalTotals[ymKey].qty += q;
+        perMonthGlobalTotals[ymKey].weight += pw > 0 ? (q * pw) : 0;
+
+        if (hasFormulaByProductId[prod.id]) {
+          if (!perMonthFormulatedCatTotals[pDeptId]) perMonthFormulatedCatTotals[pDeptId] = {};
+          if (!perMonthFormulatedCatTotals[pDeptId][ymKey]) perMonthFormulatedCatTotals[pDeptId][ymKey] = { qty: 0, weight: 0 };
+          perMonthFormulatedCatTotals[pDeptId][ymKey].qty += q;
+          perMonthFormulatedCatTotals[pDeptId][ymKey].weight += pw > 0 ? (q * pw) : 0;
+        }
       });
-      Object.entries(perMonthCatTotals).forEach(([deptId, monthMap]) => {
+
+      const globalMonths = Object.values(perMonthGlobalTotals);
+      if (globalMonths.length > 0) {
+        fallbackGlobalSalesQty = globalMonths.reduce((s, v) => s + v.qty, 0) / globalMonths.length;
+        fallbackGlobalSalesWeight = globalMonths.reduce((s, v) => s + v.weight, 0) / globalMonths.length;
+      }
+
+      Object.entries(perMonthFormulatedCatTotals).forEach(([deptId, monthMap]) => {
         const months = Object.values(monthMap);
         if (months.length > 0) {
           const avgQty = months.reduce((s, v) => s + v.qty, 0) / months.length;
           const avgWeight = months.reduce((s, v) => s + v.weight, 0) / months.length;
-          fallbackCategorySalesMap[deptId] = { qty: avgQty, weight: avgWeight };
-          fallbackGlobalSalesQty += avgQty;
-          fallbackGlobalSalesWeight += avgWeight;
+          fallbackFormulatedCategorySalesMap[deptId] = { qty: avgQty, weight: avgWeight };
         }
       });
     }
+
+    const safeNum = (v: unknown): number => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
 
     // 2. Partition selected month's Payroll into Direct (by canonical Department) & Shared (مشترک / unallocated); UNASSIGNED always stays 0 direct labor
     const categoryDirectLaborMap: Record<string, number> = { [UNASSIGNED_DEPT_ID]: 0 };
@@ -2187,7 +2165,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
     let totalSharedLaborPayroll = 0;
     payrollItems.forEach(payItem => {
-      const totalWage = getPayrollItemTotalCost(payItem);
+      const totalWage = safeNum(getPayrollItemTotalCost(payItem));
       const alloc = allocationLookupByEmpCode.get(payItem.employeeCode);
       if (!alloc || isSharedDeptId(alloc.departmentCategoryId)) {
         totalSharedLaborPayroll += totalWage;
@@ -2202,10 +2180,15 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       }
     });
 
-    // 3. Aggregate selected month's Overheads
+    // 3. Aggregate selected month's Overheads (strictly finite to prevent NaN propagation)
     let netOverheadValue = 0;
     if (overhead) {
-      netOverheadValue = (overhead.operational + overhead.distributionSales + overhead.administrative + overhead.financial) - overhead.returnsOfExpense;
+      netOverheadValue =
+        (safeNum(overhead.operational) +
+          safeNum(overhead.distributionSales) +
+          safeNum(overhead.administrative) +
+          safeNum(overhead.financial)) -
+        safeNum(overhead.returnsOfExpense);
     }
 
     // Monthly required work hours for selected COGS month/year
@@ -2213,22 +2196,23 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       s => Number(toEnglishDigits(String(s.year ?? ''))) === Number(selectedCogsYear) &&
            Number(toEnglishDigits(String(s.month ?? ''))) === Number(selectedCogsMonth)
     );
-    const requiredHours = targetSetting ? Number(targetSetting.requiredWorkHours) : 192;
+    const rawRequiredHours = targetSetting ? safeNum(targetSetting.requiredWorkHours) : 192;
+    const requiredHours = rawRequiredHours > 0 ? rawRequiredHours : 192;
 
-    // Catalog non-WIP product count & weight per mapped Department
-    const catFinishedStats: Record<string, { count: number; totalWeight: number; allHaveWeight: boolean }> = {};
+    // Catalog non-WIP formulated product count & weight per mapped Department (for zero-sales fallback)
+    const catFormulatedFinishedStats: Record<string, { count: number; totalWeight: number; allHaveWeight: boolean }> = {};
     products.forEach(p => {
-      if (p.isWip) return;
+      if (p.isWip || !hasFormulaByProductId[p.id]) return;
       const pDeptId = resolveProductDepartmentId(p.categoryId);
-      if (!catFinishedStats[pDeptId]) {
-        catFinishedStats[pDeptId] = { count: 0, totalWeight: 0, allHaveWeight: true };
+      if (!catFormulatedFinishedStats[pDeptId]) {
+        catFormulatedFinishedStats[pDeptId] = { count: 0, totalWeight: 0, allHaveWeight: true };
       }
-      catFinishedStats[pDeptId].count += 1;
+      catFormulatedFinishedStats[pDeptId].count += 1;
       const pw = p.unit === 'کیلو' ? 1000 : (Number(p.weight) || 0);
       if (pw > 0) {
-        catFinishedStats[pDeptId].totalWeight += pw;
+        catFormulatedFinishedStats[pDeptId].totalWeight += pw;
       } else {
-        catFinishedStats[pDeptId].allHaveWeight = false;
+        catFormulatedFinishedStats[pDeptId].allHaveWeight = false;
       }
     });
 
@@ -2239,10 +2223,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     let globalRawOverheadSum = 0;
 
     products.forEach(p => {
-      const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
-      const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
-      const hasFormula = recipe && recipe.ingredients && recipe.ingredients.length > 0;
-
+      const hasFormula = hasFormulaByProductId[p.id];
       const pDeptId = resolveProductDepartmentId(p.categoryId);
       const Tsd = (pDeptId === UNASSIGNED_DEPT_ID || !hasFormula) ? 0 : (categoryDirectLaborMap[pDeptId] || 0);
       const saleAgg = salesTotalsByProductId[p.id];
@@ -2269,10 +2250,10 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             rawOverhead = pUnitTimeInHours * hourlyWageOverhead;
           } else {
             if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-              const catWeight = categoryTotalWeightMap[pDeptId] || 0;
-              const catNetSales = categoryNetSalesMap[pDeptId] || 0;
-              const catQty = categorySalesQtyMap[pDeptId] || 0;
-              const useCatWeight = categoryAllSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
+              const catWeight = catFormulatedWeightMap[pDeptId] || 0;
+              const catNetSales = catFormulatedNetSalesMap[pDeptId] || 0;
+              const catQty = catFormulatedSalesQtyMap[pDeptId] || 0;
+              const useCatWeight = catAllFormulatedSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
 
               let inCatShare = 0;
               if (useCatWeight) {
@@ -2297,30 +2278,30 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             rawShared = (globalShare * totalSharedLaborPayroll) / sp;
             rawOverhead = (globalShare * netOverheadValue) / sp;
           }
-        } else {
-          // Fallback for zero sales products
+        } else if (!p.isWip) {
+          // Fallback for zero-sales finished products (WIP items stay pure material cost to avoid double-counting labor/overhead)
           if (pUnitTime > 0) {
             const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
             rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : ((pUnitTime / 60) * hourlyWageDirect);
             rawShared = requiredHours > 0 ? (pUnitTime / 60) * (totalSharedLaborPayroll / requiredHours) : 0;
             rawOverhead = requiredHours > 0 ? (pUnitTime / 60) * (netOverheadValue / requiredHours) : 0;
-          } else if (!p.isWip) {
+          } else {
             if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-              const catWeight = categoryTotalWeightMap[pDeptId] || 0;
-              const catQty = categorySalesQtyMap[pDeptId] || 0;
+              const catWeight = catFormulatedWeightMap[pDeptId] || 0;
+              const catQty = catFormulatedSalesQtyMap[pDeptId] || 0;
               if (catWeight > 0 && prodWeight > 0) {
                 rawDirect = (Tsd / catWeight) * prodWeight;
               } else if (catQty > 0) {
                 rawDirect = Tsd / catQty;
-              } else if (fallbackCategorySalesMap[pDeptId]) {
-                const fb = fallbackCategorySalesMap[pDeptId];
+              } else if (fallbackFormulatedCategorySalesMap[pDeptId]) {
+                const fb = fallbackFormulatedCategorySalesMap[pDeptId];
                 if (fb.weight > 0 && prodWeight > 0) {
                   rawDirect = (Tsd / fb.weight) * prodWeight;
                 } else if (fb.qty > 0) {
                   rawDirect = Tsd / fb.qty;
                 }
               } else {
-                const catStats = catFinishedStats[pDeptId];
+                const catStats = catFormulatedFinishedStats[pDeptId];
                 if (catStats && catStats.count > 0) {
                   if (catStats.allHaveWeight && catStats.totalWeight > 0 && prodWeight > 0) {
                     rawDirect = (Tsd / catStats.totalWeight) * prodWeight;
@@ -2346,7 +2327,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           }
         }
       } else {
-        // Purchased goods without formula: direct labor is 0
+        // Purchased goods without formula: direct labor is strictly 0
         rawDirect = 0;
         if (sp > 0) {
           const useGlobalWeight = allGlobalSoldHaveWeight && grandTotalWeight > 0;
@@ -2360,15 +2341,19 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           }
           rawShared = (globalShare * totalSharedLaborPayroll) / sp;
           rawOverhead = (globalShare * netOverheadValue) / sp;
-        } else {
-          if (!p.isWip) {
-            if (grandTotalWeight > 0 && prodWeight > 0) {
-              rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
-              rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
-            } else if (totalSalesQtyAll > 0) {
-              rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
-              rawOverhead = netOverheadValue / totalSalesQtyAll;
-            }
+        } else if (!p.isWip) {
+          if (grandTotalWeight > 0 && prodWeight > 0) {
+            rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
+            rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
+          } else if (totalSalesQtyAll > 0) {
+            rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
+            rawOverhead = netOverheadValue / totalSalesQtyAll;
+          } else if (fallbackGlobalSalesWeight > 0 && prodWeight > 0) {
+            rawShared = (totalSharedLaborPayroll / fallbackGlobalSalesWeight) * prodWeight;
+            rawOverhead = (netOverheadValue / fallbackGlobalSalesWeight) * prodWeight;
+          } else if (fallbackGlobalSalesQty > 0) {
+            rawShared = totalSharedLaborPayroll / fallbackGlobalSalesQty;
+            rawOverhead = netOverheadValue / fallbackGlobalSalesQty;
           }
         }
       }
@@ -2419,51 +2404,155 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       }
     });
 
-    // Solve for each product in 3 passes to handle nested WIP dependencies
+    // Solve for each product in 3 passes to handle nested WIP dependencies cleanly without stale cogsPrice bleed-through
     for (let pass = 0; pass < 3; pass++) {
       products.forEach(p => {
-        // Material Recipe Sum
         let ingredientsSum = 0;
-        const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
-        const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
-        const hasFormula = recipe && recipe.ingredients && recipe.ingredients.length > 0;
+        const recipe = activeRecipeByProductId[p.id];
+        const hasFormula = hasFormulaByProductId[p.id];
 
-        if (hasFormula) {
+        if (hasFormula && recipe) {
+          let rawIngSum = 0;
           recipe.ingredients.forEach(ing => {
+            const ingQty = safeNum(ing.quantity);
+            if (ingQty <= 0) return;
             const resolved = resolveMaterialByKey(ing.rawMaterialId);
             if (resolved.item) {
               const raw = resolved.item;
-              const factor = raw.unit === 'کیلویی' ? 1000 : (findMaterialConversion(ing.rawMaterialId, raw)?.factor || 1);
-              const unitPrice = raw.price / factor;
-              ingredientsSum += Math.round(ing.quantity * unitPrice);
+              const factor = raw.unit === 'کیلویی' ? 1000 : safeNum(findMaterialConversion(ing.rawMaterialId, raw)?.factor || 1);
+              const unitPrice = factor > 0 ? (safeNum(raw.price) / factor) : 0;
+              rawIngSum += ingQty * unitPrice;
             } else if (resolved.wip) {
               const wipProduct = resolved.wip;
-              const wipCogs = results[wipProduct.id]?.totalCOGSPrice || wipProduct.cogsPrice || 0;
+              const wipCogs = results[wipProduct.id] !== undefined
+                ? safeNum(results[wipProduct.id].totalCOGSPrice)
+                : (hasFormulaByProductId[wipProduct.id] ? 0 : getPurchasedBaseCost(wipProduct));
               const factor = wipProduct.unit === 'کیلو' ? 1000 : 1;
-              const unitPrice = wipCogs / factor;
-              ingredientsSum += Math.round(ing.quantity * unitPrice);
+              const unitPrice = factor > 0 ? (wipCogs / factor) : 0;
+              rawIngSum += ingQty * unitPrice;
             }
           });
+          ingredientsSum = Math.round(safeNum(rawIngSum));
         } else {
-          ingredientsSum = p.cogsPrice || 0;
+          ingredientsSum = getPurchasedBaseCost(p);
         }
 
         const adj = adjustedAllocationsMap[p.id] || { direct: 0, shared: 0, overhead: 0 };
-        const directLaborCost = hasFormula ? adj.direct : 0;
-        const totalCOGS = ingredientsSum + directLaborCost + adj.shared + adj.overhead;
+        const directLaborCost = hasFormula ? safeNum(adj.direct) : 0;
+        const sharedLaborCost = safeNum(adj.shared);
+        const overheadCostVal = safeNum(adj.overhead);
+        const totalCOGS = safeNum(ingredientsSum + directLaborCost + sharedLaborCost + overheadCostVal);
 
         results[p.id] = {
-          materialCost: ingredientsSum,
+          materialCost: safeNum(ingredientsSum),
           directLabor: directLaborCost,
-          sharedLabor: adj.shared,
-          overheadCost: adj.overhead,
+          sharedLabor: sharedLaborCost,
+          overheadCost: overheadCostVal,
           totalCOGSPrice: totalCOGS
         };
       });
     }
 
     return results;
-  }, [products, formulas, resolveMaterialByKey, findMaterialConversion, salesTotalsByProductId, payrollItems, overhead, periodSegments, timeCoefficents, db.monthlyWorkdaySettings, db.productSales, activePeriodId, selectedCogsYear, selectedCogsMonth, departments, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId]);
+  }, [products, formulas, resolveMaterialByKey, findMaterialConversion, salesTotalsByProductId, payrollItems, overhead, timeCoefficents, db.monthlyWorkdaySettings, db.productSales, activePeriodId, selectedCogsYear, selectedCogsMonth, departments, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId, getPurchasedBaseCost, recalcTrigger]);
+
+  // Real-time Profit & Loss analysis directly synced with fullCalculatedCOGSMap
+  const productsWithLossAndProfit = useMemo(() => {
+    const prodLookup: Record<string, Product> = {};
+    products.forEach(p => {
+      prodLookup[p.id] = p;
+      if (p.code) prodLookup[p.code.trim().toLowerCase()] = p;
+      if (p.accountId) prodLookup[p.accountId.trim().toLowerCase()] = p;
+    });
+
+    return activeSalesRecords.map(sale => {
+      const prod = prodLookup[sale.productId] || prodLookup[String(sale.productId || '').trim().toLowerCase()];
+      if (!prod) return null;
+
+      const calcEntry = fullCalculatedCOGSMap[prod.id];
+      const unitCogs = calcEntry !== undefined ? Math.round(calcEntry.totalCOGSPrice) : (prod.cogsPrice || 0);
+      const totalCOGS = sale.qtySold * unitCogs;
+      const profitValue = sale.netSalesAmount - totalCOGS;
+      const isLossMaking = profitValue < 0;
+
+      return {
+        sale,
+        prod,
+        unitCogs,
+        totalCOGS,
+        profitValue,
+        isLossMaking
+      };
+    }).filter(Boolean) as any[];
+  }, [activeSalesRecords, products, fullCalculatedCOGSMap]);
+
+  const lossyProductsList = useMemo(() => {
+    return productsWithLossAndProfit.filter(x => x.isLossMaking);
+  }, [productsWithLossAndProfit]);
+
+  const searchedLossyProductsList = useMemo(() => {
+    let list = lossyProductsList;
+    if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
+      list = list.filter(x => resolveProductDepartmentId(x.prod.categoryId) === analyticsCategoryFilter);
+    }
+    return list;
+  }, [lossyProductsList, analyticsCategoryFilter, resolveProductDepartmentId]);
+
+  const totalProfitSum = useMemo(() => {
+    return productsWithLossAndProfit
+      .filter(x => x.profitValue > 0)
+      .reduce((acc, curr) => acc + curr.profitValue, 0);
+  }, [productsWithLossAndProfit]);
+
+  const totalLossSum = useMemo(() => {
+    return productsWithLossAndProfit
+      .filter(x => x.profitValue < 0)
+      .reduce((acc, curr) => acc + Math.abs(curr.profitValue), 0);
+  }, [productsWithLossAndProfit]);
+
+  const searchedProductsWithLossAndProfit = useMemo(() => {
+    let list = productsWithLossAndProfit;
+
+    if (analyticsSearch) {
+      list = list.filter(x =>
+        matchPersianString(x.prod.name, analyticsSearch) ||
+        matchPersianString(x.prod.code, analyticsSearch)
+      );
+    }
+
+    if (analyticsFormulaFilter === 'with_formula') {
+      list = list.filter(x => db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+    } else if (analyticsFormulaFilter === 'without_formula') {
+      list = list.filter(x => !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+    }
+
+    if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
+      list = list.filter(x => resolveProductDepartmentId(x.prod.categoryId) === analyticsCategoryFilter);
+    }
+
+    return list;
+  }, [productsWithLossAndProfit, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId]);
+
+  const searchedTotals = useMemo(() => {
+    let netSalesAmountSum = 0;
+    let totalCogsSum = 0;
+    let profitValueSum = 0;
+    let qtySoldSum = 0;
+
+    searchedProductsWithLossAndProfit.forEach(x => {
+      netSalesAmountSum += x.sale.netSalesAmount;
+      totalCogsSum += x.totalCOGS;
+      profitValueSum += x.profitValue;
+      qtySoldSum += x.sale.qtySold;
+    });
+
+    return {
+      netSalesAmountSum,
+      totalCogsSum,
+      profitValueSum,
+      qtySoldSum
+    };
+  }, [searchedProductsWithLossAndProfit]);
 
   // Global COGS statistics card widgets
   const globalCOGSStats = useMemo(() => {
@@ -3326,50 +3415,115 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
   };
 
-  // Push Calculated COGS Price to master Product catalog
-  const applyCogsPricesToProductCatalog = () => {
-    const updatedProducts = db.products.map(p => {
-      if (p.periodId === activePeriodId) {
-        const calculatedCogs = Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || p.cogsPrice || 0);
-        return {
-          ...p,
-          cogsPrice: calculatedCogs,
-          salePrice: p.isWip ? calculatedCogs : p.salePrice
-        };
-      }
-      return p;
-    });
-
-    onUpdateDb({ ...db, products: updatedProducts });
-    alert('بهای تمام شده محاسباتی تمامی محصولات با موفقیت در کاتالوگ ثبت گردید.');
-  };
-
-  // Automatic silent cost allocation & catalog COGS persistence whenever month or cost inputs change
+  // Automatic & manual COGS catalog sync — locks purchaseCost for non-formula purchased goods & prevents infinite update loops
   const latestDbRef = React.useRef(db);
   latestDbRef.current = db;
+  const onUpdateDbRef = React.useRef(onUpdateDb);
+  onUpdateDbRef.current = onUpdateDb;
+  const lastAutoSyncSignatureRef = React.useRef<string>('');
 
-  React.useEffect(() => {
+  const syncCalculatedCogsToCatalog = React.useCallback((showToast?: boolean, isAutoEffect?: boolean) => {
     if (!activePeriodId) return;
     const currentDb = latestDbRef.current;
     let hasDiff = false;
+    let periodCount = 0;
+    let updatedCount = 0;
+    const sigParts: string[] = [`${activePeriodId}|${selectedCogsYear}|${selectedCogsMonth}`];
+
     const updatedProducts = (currentDb.products || []).map(p => {
       if (p.periodId !== activePeriodId) return p;
-      const nextCogs = Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || p.cogsPrice || 0);
-      const nextSale = p.isWip ? nextCogs : p.salePrice;
-      if ((p.cogsPrice || 0) !== nextCogs || (p.salePrice || 0) !== nextSale) {
+      periodCount++;
+      const hasFormula = formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0);
+      const calcEntry = fullCalculatedCOGSMap[p.id];
+      const currentCogs = Number.isFinite(Number(p.cogsPrice)) ? Math.round(Number(p.cogsPrice)) : 0;
+      const nextCogs = calcEntry !== undefined && Number.isFinite(calcEntry.totalCOGSPrice)
+        ? Math.round(calcEntry.totalCOGSPrice)
+        : currentCogs;
+
+      const hasStoredPurchaseCost =
+        p.purchaseCost !== undefined &&
+        p.purchaseCost !== null &&
+        Number.isFinite(Number(p.purchaseCost));
+      const nextPurchaseCost = !hasFormula
+        ? (hasStoredPurchaseCost ? Math.max(0, Math.round(Number(p.purchaseCost))) : getPurchasedBaseCost(p))
+        : undefined;
+
+      sigParts.push(`${p.id}:${nextCogs}:${hasFormula ? '-' : nextPurchaseCost}`);
+
+      const cogsChanged = p.cogsPrice !== nextCogs;
+      const saleChanged = Boolean(p.isWip) && p.salePrice !== nextCogs;
+      const purchaseCostChanged =
+        !hasFormula &&
+        (!hasStoredPurchaseCost || Number(p.purchaseCost) !== nextPurchaseCost);
+
+      if (cogsChanged || saleChanged || purchaseCostChanged) {
         hasDiff = true;
+        updatedCount++;
         return {
           ...p,
+          ...(!hasFormula ? { purchaseCost: nextPurchaseCost } : {}),
           cogsPrice: nextCogs,
-          salePrice: nextSale
+          ...(p.isWip ? { salePrice: nextCogs } : {})
         };
       }
       return p;
     });
-    if (hasDiff) {
-      onUpdateDb({ ...currentDb, products: updatedProducts });
+
+    const signature = sigParts.join(';');
+    if (isAutoEffect && signature === lastAutoSyncSignatureRef.current) {
+      return;
     }
-  }, [activePeriodId, selectedCogsMonth, selectedCogsYear, formulas, fullCalculatedCOGSMap, onUpdateDb]);
+
+    if (hasDiff) {
+      lastAutoSyncSignatureRef.current = signature;
+      onUpdateDbRef.current({ ...currentDb, products: updatedProducts });
+    } else if (isAutoEffect) {
+      lastAutoSyncSignatureRef.current = signature;
+    }
+
+    if (showToast) {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      setRecalcFeedback({ total: periodCount, updated: updatedCount, time: timeStr });
+    }
+  }, [activePeriodId, selectedCogsYear, selectedCogsMonth, formulas, fullCalculatedCOGSMap, getPurchasedBaseCost]);
+
+  // Push Calculated COGS Price to master Product catalog
+  const applyCogsPricesToProductCatalog = () => {
+    lastAutoSyncSignatureRef.current = '';
+    syncCalculatedCogsToCatalog(true, false);
+  };
+
+  // Explicit user-triggered recalculation button handler
+  const handleRecalculateCogs = () => {
+    lastAutoSyncSignatureRef.current = '';
+    setRecalcTrigger(prev => prev + 1);
+    syncCalculatedCogsToCatalog(true, false);
+  };
+
+  const handleSavePurchaseCost = () => {
+    if (!selectedProductId) return;
+    const parsed = parseFloat(toEnglishDigits(tempPurchaseCost).replace(/,/g, ''));
+    const nextBaseCost = isNaN(parsed) || parsed < 0 ? 0 : Math.round(parsed);
+    const updatedProducts = db.products.map(p =>
+      p.id === selectedProductId
+        ? { ...p, purchaseCost: nextBaseCost }
+        : p
+    );
+    lastAutoSyncSignatureRef.current = '';
+    onUpdateDbRef.current({ ...db, products: updatedProducts });
+    setIsEditingPurchaseCost(false);
+    setRecalcTrigger(prev => prev + 1);
+  };
+
+  React.useEffect(() => {
+    setIsEditingPurchaseCost(false);
+    setTempPurchaseCost('');
+  }, [selectedProductId]);
+
+  React.useEffect(() => {
+    syncCalculatedCogsToCatalog(false, true);
+  }, [syncCalculatedCogsToCatalog]);
 
 
   // ==========================================
@@ -4152,21 +4306,43 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         })()}
       </div>
 
-      {/* Allocation Table Button directly below the 12-month selector */}
+      {/* Allocation Table & Recalculate COGS Buttons directly below the 12-month selector */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-5 mb-6">
-        <button
-          onClick={() => {
-            setShowAllocationTableModal(true);
-            setAllocationModalTab('departmental');
-          }}
-          className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-rose-600 to-pink-500 hover:from-rose-500 hover:to-pink-400 text-white font-black text-xs rounded-xl shadow-lg border border-rose-400/10 select-none cursor-pointer transition-all active:scale-98"
-        >
-          <FileSpreadsheet className="h-4 w-4 text-rose-100" />
-          جدول تسهیم هزینه و حقوق
-        </button>
-        <span className="text-[11px] text-emerald-400/90 font-bold">
-          ✓ تسهیم خودکار بهای تمام‌شده برای ماه {PERSIAN_MONTHS[selectedCogsMonth - 1]} {toPersianDigits(selectedCogsYear)} فعال است
-        </span>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              setShowAllocationTableModal(true);
+              setAllocationModalTab('departmental');
+            }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-rose-600 to-pink-500 hover:from-rose-500 hover:to-pink-400 text-white font-black text-xs rounded-xl shadow-lg border border-rose-400/10 select-none cursor-pointer transition-all active:scale-98"
+          >
+            <FileSpreadsheet className="h-4 w-4 text-rose-100" />
+            جدول تسهیم هزینه و حقوق
+          </button>
+
+          <button
+            type="button"
+            onClick={handleRecalculateCogs}
+            className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs rounded-xl shadow-lg border border-indigo-400/20 select-none cursor-pointer transition-all active:scale-98"
+            title="بازمحاسبه کامل بهای تمام‌شده کلیه کالاها و همگام‌سازی کاتالوگ"
+          >
+            <RefreshCcw className="h-4 w-4 text-indigo-100" />
+            محاسبه مجدد بهای تمام شده
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {recalcFeedback && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-950/60 border border-emerald-500/30 text-[11px] font-bold text-emerald-300">
+              <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+              محاسبه مجدد انجام شد ({toPersianDigits(recalcFeedback.total)} کالا • {toPersianDigits(recalcFeedback.updated)} تغییر • {toPersianDigits(recalcFeedback.time)})
+            </span>
+          )}
+          <span className="text-[11px] text-emerald-400/90 font-bold">
+            ✓ تسهیم خودکار بهای تمام‌شده برای ماه {PERSIAN_MONTHS[selectedCogsMonth - 1]} {toPersianDigits(selectedCogsYear)} فعال است
+          </span>
+        </div>
       </div>
 
       {/* 2. NAVIGATION AND INTERACTIVE CONTROLS */}
@@ -4628,13 +4804,54 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                         
                         <div className="grid grid-cols-1 md:grid-cols-5 gap-3.5">
                           
-                          {/* Card 1: RAW INGREDIENTS RECIPE SUM */}
+                          {/* Card 1: RAW INGREDIENTS RECIPE SUM OR PURCHASED BASE COST */}
                           <div className="p-3 bg-slate-900 border border-slate-850 rounded-2xl space-y-2 relative group hover:border-slate-800 transition-all">
-                            <span className="block text-[10px] text-slate-400 font-bold">بهای کل مواد خام</span>
-                            <div className="flex items-baseline gap-1 mt-1">
-                              <strong className="text-[13px] font-black text-white font-mono">{formatWithCommas(Math.round(fullCalculatedCOGSMap[selectedProductId].materialCost))}</strong>
-                              <span className="text-[9px] text-slate-500">ریال</span>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="block text-[10px] text-slate-400 font-bold">
+                                {activeFormulaData && activeFormulaData.ingredients.length > 0 ? 'بهای کل مواد خام' : 'بهای خرید پایه (کالای خریداری)'}
+                              </span>
+                              {(!activeFormulaData || activeFormulaData.ingredients.length === 0) && !isEditingPurchaseCost && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTempPurchaseCost(String(getPurchasedBaseCost(selectedProductData)));
+                                    setIsEditingPurchaseCost(true);
+                                  }}
+                                  className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold cursor-pointer"
+                                  title="اصلاح قیمت خرید پایه کالای بدون فرمول"
+                                >
+                                  ویرایش
+                                </button>
+                              )}
                             </div>
+                            {isEditingPurchaseCost && (!activeFormulaData || activeFormulaData.ingredients.length === 0) ? (
+                              <div className="flex items-center gap-1 mt-1">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={tempPurchaseCost}
+                                  onChange={(e) => setTempPurchaseCost(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSavePurchaseCost();
+                                    if (e.key === 'Escape') setIsEditingPurchaseCost(false);
+                                  }}
+                                  className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-indigo-500/50 text-xs font-mono text-white focus:outline-none"
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleSavePurchaseCost}
+                                  className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                                >
+                                  ثبت
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-baseline gap-1 mt-1">
+                                <strong className="text-[13px] font-black text-white font-mono">{formatWithCommas(Math.round(fullCalculatedCOGSMap[selectedProductId].materialCost))}</strong>
+                                <span className="text-[9px] text-slate-500">ریال</span>
+                              </div>
+                            )}
                             <div className="pt-2 border-t border-slate-850/80 flex items-center justify-between text-[9px] text-slate-450">
                               <span>سهم از کل:</span>
                               <span className="font-mono text-slate-300 font-bold">
@@ -4701,16 +4918,19 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                             const finalPrice = fullCalculatedCOGSMap[selectedProductId].totalCOGSPrice;
                             const salePrice = selectedProductData.salePrice;
                             const nominalProfit = salePrice - finalPrice;
-                            const marginPercent = salePrice > 0 ? (nominalProfit / salePrice) * 105 : 0; // standard indicator
+                            const marginPercent = salePrice > 0 ? (nominalProfit / salePrice) * 100 : 0;
 
                             let badgeColor = 'text-emerald-400 bg-emerald-950/40 border-emerald-500/20';
-                            let statusText = 'سودآور عالی 🌸';
-                            if (nominalProfit < 0) {
+                            let statusText = `سودآور عالی (${toPersianDigits(marginPercent.toFixed(0))}٪)`;
+                            if (salePrice <= 0) {
+                              badgeColor = 'text-slate-400 bg-slate-800/60 border-slate-700';
+                              statusText = 'قیمت فروش ثبت نشده';
+                            } else if (nominalProfit < 0) {
                               badgeColor = 'text-rose-400 bg-rose-950/40 border-rose-500/20';
                               statusText = 'فروش در زیان ⚠️';
-                            } else if (nominalProfit / salePrice < 0.15) {
+                            } else if (marginPercent < 15) {
                               badgeColor = 'text-amber-400 bg-amber-950/40 border-amber-500/20';
-                              statusText = 'سود نگران‌کننده (سربه‌سر)';
+                              statusText = `حاشیه سود پایین (${toPersianDigits(marginPercent.toFixed(0))}٪)`;
                             }
 
                             return (
@@ -6735,7 +6955,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                       <div key={x.sale?.id || `${x.prod.id}-${idx}`} className="bg-slate-900/80 border border-rose-900/30 p-3 rounded-xl text-xs flex justify-between items-center shadow-sm">
                         <div>
                           <strong className="block text-white font-sans mb-1">{x.prod.name}</strong>
-                          <span className="text-slate-400">فروش: {formatWithCommas(x.prod.salePrice)} <span className="text-slate-650 font-normal">| تمام شده: {formatWithCommas(x.prod.cogsPrice)}</span></span>
+                          <span className="text-slate-400">فروش: {formatWithCommas(x.prod.salePrice)} <span className="text-slate-650 font-normal">| تمام شده: {formatWithCommas(x.unitCogs ?? x.prod.cogsPrice)}</span></span>
                         </div>
                         <div className="text-rose-400 font-bold">
                           ضرر: {formatWithCommas(Math.abs(x.profitValue))} ریال
