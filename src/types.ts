@@ -172,6 +172,7 @@ export interface ProductCategory {
   name: string;
   targetMargin?: number;
   departmentId?: string; // Mapped production Department ID
+  isPurchased?: boolean; // آیا کالاهای این دسته‌بندی به‌صورت پیش‌فرض خریداری (بازرگانی) هستند؟
 }
 
 export interface Product {
@@ -196,6 +197,7 @@ export interface Product {
   weight?: number; // وزن محصول (به گرم)
   approvedPrice?: number; // قیمت فروش تایید شده مصوب
   isWip?: boolean; // آیا کالای در جریان ساخت است یاخیر
+  isPurchased?: boolean; // true = کالای خریداری (حقوق مستقیم صفر)، false = کالای تولیدی، undefined = تبعیت از دسته‌بندی
 }
 
 export interface SalesPeriod {

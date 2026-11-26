@@ -1657,21 +1657,20 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const deptObj = departments.find(d => d.id === deptId);
       const priceFormatted = formatWithCommas(p.salePrice || 0);
 
-      let logoHtml = '';
-      if (logoUrl) {
-        logoHtml = `<img src="${logoUrl}" style="width: ${logoWidth}px; height: ${logoHeight}px; object-fit: contain;" />`;
-      }
+      const logoHtml = logoUrl
+        ? `<img src="${logoUrl}" style="width: ${logoWidth}px; height: ${logoHeight}px; object-fit: contain; flex-shrink: 0;" />`
+        : '';
 
-      let headerLeft = showDepartment && deptObj ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 700; background: #f1f5f9; padding: 1px 4px; border: 1px solid #cbd5e1; color: #0f172a;">${deptObj.name}</span>` : '<span></span>';
-      let headerRight = logoPosition === 'top-right' ? logoHtml : (logoPosition === 'top-left' ? '' : (showShopTitle ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a;">${shopBrandName}</span>` : '<span></span>'));
+      const cleanShopTitle = (shopBrandName || '').trim();
+      const shopTitleHtml = showShopTitle && cleanShopTitle
+        ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a; white-space: nowrap;">${cleanShopTitle}</span>`
+        : '';
 
-      if (logoPosition === 'top-right') {
-        headerRight = logoHtml;
-      } else if (logoPosition === 'top-left') {
-        headerLeft = logoHtml;
-      } else if (logoPosition === 'top-center') {
-        headerLeft = logoHtml;
-      }
+      const deptBadgeHtml = showDepartment && deptObj
+        ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 700; background: #f1f5f9; padding: 1px 4px; border: 1px solid #cbd5e1; color: #0f172a; white-space: nowrap;">${deptObj.name}</span>`
+        : '';
+
+      const hasHeaderContent = Boolean(logoHtml || shopTitleHtml || deptBadgeHtml);
 
       const barcodeValue = (p.barcode || p.code || '').trim();
       const barcodeHeightPx = tagHeightCm >= 5 ? 28 : tagHeightCm >= 4 ? 22 : 16;
@@ -1686,16 +1685,19 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
       html += `
         <div class="shelf-tag-card">
-          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1.5px solid #0f172a; padding-bottom: 2px; background: #f8fafc; margin: -4px -6px 2px -6px; padding: 3px 6px;">
-            <div style="display: flex; align-items: center; gap: 4px;">
-              ${headerRight}
-              ${logoPosition !== 'top-center' && logoPosition !== 'top-right' && showShopTitle ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a;">${shopBrandName}</span>` : ''}
+          ${hasHeaderContent ? `
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px; border-bottom: 1.5px solid #0f172a; background: #f8fafc; margin: -4px -6px 2px -6px; padding: 3px 6px;">
+            <div style="display: flex; align-items: center; gap: 4px; min-width: 0;">
+              ${logoPosition === 'top-right' ? logoHtml : ''}
+              ${shopTitleHtml}
             </div>
-            <div style="display: flex; align-items: center; gap: 4px;">
-              ${logoPosition === 'top-center' ? logoHtml : ''}
-              ${headerLeft}
+            ${logoPosition === 'top-center' && logoHtml ? `<div style="display: flex; align-items: center; justify-content: center;">${logoHtml}</div>` : ''}
+            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+              ${deptBadgeHtml}
+              ${logoPosition === 'top-left' ? logoHtml : ''}
             </div>
           </div>
+          ` : ''}
           <div style="text-align: ${contentAlignment}; margin: 1px 0; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;">
             <div style="font-size: ${fontSizeTitle}px; font-weight: 900; line-height: 1.2; color: #000; font-family: '${tagFontFamily}', sans-serif;">${p.name}</div>
             ${catObj ? `<div style="font-size: ${fontSizeMeta}px; color: #334155; margin-top: 1px; font-weight: 600;">${catObj.name}</div>` : ''}
@@ -1767,6 +1769,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [bulkEditCategoryId, setBulkEditCategoryId] = useState<string>('__keep__');
   const [bulkEditUnit, setBulkEditUnit] = useState<string>('__keep__');
   const [bulkEditPackageType, setBulkEditPackageType] = useState<string>('__keep__');
+  const [bulkEditPurchasedType, setBulkEditPurchasedType] = useState<string>('__keep__');
   const [bulkEditFeedback, setBulkEditFeedback] = useState<string>('');
   const [prodSearch, setProdSearch] = useState('');
   const [selectedCatFilter, setSelectedCatFilter] = useState('ALL');
@@ -1777,9 +1780,10 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     if (
       bulkEditCategoryId === '__keep__' &&
       bulkEditUnit === '__keep__' &&
-      bulkEditPackageType === '__keep__'
+      bulkEditPackageType === '__keep__' &&
+      bulkEditPurchasedType === '__keep__'
     ) {
-      setBulkEditFeedback('لطفاً حداقل یکی از فیلدهای گروه کالا، واحد فروش یا نوع بسته‌بندی را جهت اعمال تغییر دسته‌ای انتخاب کنید.');
+      setBulkEditFeedback('لطفاً حداقل یکی از فیلدهای گروه کالا، واحد فروش، نوع بسته‌بندی یا نوع تولیدی/خریداری را انتخاب کنید.');
       setTimeout(() => setBulkEditFeedback(''), 4000);
       return;
     }
@@ -1799,6 +1803,13 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       if (bulkEditPackageType !== '__keep__') {
         next.packageType = bulkEditPackageType as Product['packageType'];
       }
+      if (bulkEditPurchasedType === 'purchased') {
+        next.isPurchased = true;
+      } else if (bulkEditPurchasedType === 'produced') {
+        next.isPurchased = false;
+      } else if (bulkEditPurchasedType === 'inherit') {
+        delete next.isPurchased;
+      }
       return next;
     });
 
@@ -1810,6 +1821,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     setBulkEditCategoryId('__keep__');
     setBulkEditUnit('__keep__');
     setBulkEditPackageType('__keep__');
+    setBulkEditPurchasedType('__keep__');
     setSelectedProductIds([]);
     setBulkEditFeedback(`تغییرات دسته‌ای با موفقیت بر روی ${toPersianDigits(updatedCount)} محصول نهایی اعمال گردید.`);
     setTimeout(() => setBulkEditFeedback(''), 5000);
@@ -2159,30 +2171,35 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   };
 
   const exportProductsCSV = () => {
-    const headers = ['کد محصول', 'کد حسابداری ردیف', 'نام محصول', 'دسته‌بندی', 'واحد قیاسی', 'وزن محصول (گرم)', 'بارکد', 'سنجش بسته‌بندی', 'تعداد بسته', 'وزن بسته', 'قیمت فروش ریال', 'قیمت تمام شده ریال'];
-    const rows = products.map(p => [
-      p.code,
-      p.accountId,
-      p.name,
-      catMap[p.categoryId] || 'مشترک',
-      p.unit,
-      p.weight || 0,
-      p.barcode,
-      p.packageType,
-      p.qtyPerPackage,
-      p.weightPerPackage,
-      p.salePrice,
-      p.cogsPrice
-    ]);
+    const headers = ['کد محصول', 'کد حسابداری ردیف', 'نام محصول', 'دسته‌بندی', 'واحد قیاسی', 'وزن محصول (گرم)', 'بارکد', 'سنجش بسته‌بندی', 'تعداد بسته', 'وزن بسته', 'قیمت فروش ریال', 'قیمت تمام شده ریال', 'نوع کالا (تولیدی/خریداری)'];
+    const rows = products.map(p => {
+      const catObj = categories.find(c => c.id === p.categoryId);
+      const effectivePurchased = p.isPurchased !== undefined ? Boolean(p.isPurchased) : Boolean(catObj?.isPurchased);
+      return [
+        p.code,
+        p.accountId,
+        p.name,
+        catMap[p.categoryId] || 'مشترک',
+        p.unit,
+        p.weight || 0,
+        p.barcode,
+        p.packageType,
+        p.qtyPerPackage,
+        p.weightPerPackage,
+        p.salePrice,
+        p.cogsPrice,
+        effectivePurchased ? 'خریداری' : 'تولیدی'
+      ];
+    });
     downloadCSV('Gatan_Final_Products', headers, rows);
   };
 
   const downloadSampleProductsCSV = () => {
-    const headers = ['کد محصول', 'کد حسابداری معین', 'نام محصول نهایی', 'گروه محصول', 'واحد فروش', 'وزن محصول (گرم)', 'بارکد', 'نوع بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'نرخ فروش (ریال)', 'بهای کالا cogs (ریال)'];
+    const headers = ['کد محصول', 'کد حسابداری معین', 'نام محصول نهایی', 'گروه محصول', 'واحد فروش', 'وزن محصول (گرم)', 'بارکد', 'نوع بسته‌بندی', 'تعداد در بسته', 'وزن هر بسته', 'نرخ فروش (ریال)', 'بهای کالا cogs (ریال)', 'نوع کالا (تولیدی/خریداری)'];
     const rows = [
-      ['P-101', '901010', 'کلوچه کنجدی مینی', 'کلوچه و بیسکوئیت', 'عدد', '50', '987654320011', 'سلفون', '30', '1.5', '120000', '78000'],
-      ['P-102', '901011', 'بیسکوئیت رژیمی جو', 'کلوچه و بیسکوئیت', 'عدد', '300', '987654320012', 'کارتن', '12', '3.6', '240000', '165000'],
-      ['P-103', '901012', 'کاپ کیک دوقلو کاکائویی', 'کیک معمولی', 'عدد', '100', '987654320013', 'سلفون', '20', '2.0', '160000', '108000']
+      ['P-101', '901010', 'کلوچه کنجدی مینی', 'کلوچه و بیسکوئیت', 'عدد', '50', '987654320011', 'سلفون', '30', '1.5', '120000', '78000', 'تولیدی'],
+      ['P-102', '901011', 'بیسکوئیت رژیمی جو', 'کلوچه و بیسکوئیت', 'عدد', '300', '987654320012', 'کارتن', '12', '3.6', '240000', '165000', 'تولیدی'],
+      ['P-103', '901012', 'آب معدنی کوچک', 'نوشیدنی آماده', 'عدد', '500', '987654320013', 'شیرینک', '12', '6', '150000', '95000', 'خریداری']
     ];
     downloadCSV('Sample_Gatan_Products', headers, rows);
   };
@@ -2236,6 +2253,13 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         }
 
         const cogsPriceVal = parseNumber(row[11]) || 0;
+        const rawTypeStr = (row[12] || '').toString().trim().toLowerCase();
+        const parsedIsPurchased: boolean | undefined =
+          rawTypeStr.includes('خرید') || rawTypeStr.includes('بازرگان') || rawTypeStr === 'purchased' || rawTypeStr === 'true' || rawTypeStr === '1'
+            ? true
+            : (rawTypeStr.includes('تولید') || rawTypeStr === 'produced' || rawTypeStr === 'false' || rawTypeStr === '0'
+                ? false
+                : undefined);
 
         // Compare using accountId (if present). If empty, fall back to code.
         const dupIdx = updated.findIndex(ui => 
@@ -2247,11 +2271,12 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         );
 
         if (dupIdx >= 0) {
-          // If already registered, update ONLY cost price (بهای کالا cogs / cogsPrice & purchaseCost)
+          // If already registered, update cost price (& purchased type if explicitly specified in CSV)
           updated[dupIdx] = {
             ...updated[dupIdx],
             cogsPrice: cogsPriceVal,
-            purchaseCost: cogsPriceVal
+            purchaseCost: cogsPriceVal,
+            ...(parsedIsPurchased !== undefined ? { isPurchased: parsedIsPurchased } : {})
           };
           updatedCount++;
         } else {
@@ -2270,7 +2295,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
             weightPerPackage: parseNumber(row[9]) || 1,
             salePrice: parseNumber(row[10]) || 0,
             cogsPrice: cogsPriceVal,
-            purchaseCost: cogsPriceVal
+            purchaseCost: cogsPriceVal,
+            ...(parsedIsPurchased !== undefined ? { isPurchased: parsedIsPurchased } : {})
           };
           updated.push(productRow);
           importedCount++;
@@ -2294,6 +2320,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [pcatDeptIdInput, setPcatDeptIdInput] = useState('');
   const [newPcatName, setNewPcatName] = useState('');
   const [newPcatDeptId, setNewPcatDeptId] = useState('');
+  const [newPcatIsPurchased, setNewPcatIsPurchased] = useState(false);
   const [catAllocFilter, setCatAllocFilter] = useState<'ALL' | 'UNASSIGNED' | 'ASSIGNED'>('ALL');
 
   const [newDeptName, setNewDeptName] = useState('');
@@ -2414,11 +2441,22 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
         id: nextSimpleId(db.productCategories, 'pcat'),
         periodId: activePeriodId,
         name: cleanedName,
-        departmentId: newPcatDeptId || undefined
+        departmentId: newPcatDeptId || undefined,
+        isPurchased: newPcatIsPurchased || undefined
       }]
     });
     setNewPcatName('');
     setNewPcatDeptId('');
+    setNewPcatIsPurchased(false);
+  };
+
+  const handleToggleCategoryPurchased = (catId: string) => {
+    onUpdateDb({
+      ...db,
+      productCategories: db.productCategories.map(c =>
+        c.id === catId ? { ...c, isPurchased: !c.isPurchased } : c
+      )
+    });
   };
 
   const savePCatEdit = (id: string) => {
@@ -3355,6 +3393,30 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     }}
                   />
                 </div>
+
+                <div>
+                  <label htmlFor="p-purchased-type" className="block text-[11px] font-bold text-slate-300 mb-1.5">نوع کالا (تسهیم حقوق مستقیم)</label>
+                  <select
+                    id="p-purchased-type"
+                    className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
+                    value={(() => {
+                      const curr = editingProduct ? editingProduct.isPurchased : newProduct.isPurchased;
+                      if (curr === true) return 'purchased';
+                      if (curr === false) return 'produced';
+                      return 'inherit';
+                    })()}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const nextIsPurchased = val === 'purchased' ? true : (val === 'produced' ? false : undefined);
+                      if (editingProduct) setEditingProduct({ ...editingProduct, isPurchased: nextIsPurchased });
+                      else setNewProduct({ ...newProduct, isPurchased: nextIsPurchased });
+                    }}
+                  >
+                    <option value="inherit">تبعیت از گروه کالا (پیش‌فرض)</option>
+                    <option value="produced">تولیدی کارگاه (مشمول حقوق مستقیم)</option>
+                    <option value="purchased">خریداری / بازرگانی (بدون حقوق مستقیم)</option>
+                  </select>
+                </div>
               </div>
 
               {/* Row 3: Barcode Definition Section (Variable Dibal Scale & Simple Fixed) */}
@@ -3558,7 +3620,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
                 <div>
                   <label className="block text-[11px] font-bold text-zinc-300 mb-1">تغییر گروه کالاهای انتخابی</label>
                   <select
@@ -3600,6 +3662,20 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     {!packagingTypesList.some(pt => pt.name === 'سلفون') && <option value="سلفون">سلفون</option>}
                     {!packagingTypesList.some(pt => pt.name === 'شیرینک') && <option value="شیرینک">شیرینک</option>}
                     {!packagingTypesList.some(pt => pt.name === 'جعبه') && <option value="جعبه">جعبه</option>}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-300 mb-1">نوع کالا (تولیدی / خریداری)</label>
+                  <select
+                    value={bulkEditPurchasedType}
+                    onChange={(e) => setBulkEditPurchasedType(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
+                  >
+                    <option value="__keep__">-- بدون تغییر نوع کالا --</option>
+                    <option value="produced">تولیدی کارگاه</option>
+                    <option value="purchased">خریداری / بازرگانی</option>
+                    <option value="inherit">تبعیت از دسته‌بندی</option>
                   </select>
                 </div>
 
@@ -3683,15 +3759,26 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                       <td className="px-4 py-4 font-mono text-slate-400">{p.accountId || '-'}</td>
                       <td className="px-4 py-4 font-bold text-slate-100">
                         <div>{p.name}</div>
-                        <span className={`text-[10px] border px-2 py-0.5 rounded font-normal mt-1 inline-block ${
-                          catMap[p.categoryId]
-                            ? 'bg-slate-950 border-slate-800 text-slate-400'
-                            : (p.categoryId === 'cat-4' || /-cat-4$/.test(p.categoryId || ''))
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className={`text-[10px] border px-2 py-0.5 rounded font-normal inline-block ${
+                            catMap[p.categoryId]
                               ? 'bg-slate-950 border-slate-800 text-slate-400'
-                              : 'bg-amber-950/30 border-amber-500/30 text-amber-400'
-                        }`}>
-                          {catMap[p.categoryId] || ((p.categoryId === 'cat-4' || /-cat-4$/.test(p.categoryId || '')) ? 'مشترک' : 'بدون گروه (نیاز به انتخاب)')}
-                        </span>
+                              : (p.categoryId === 'cat-4' || /-cat-4$/.test(p.categoryId || ''))
+                                ? 'bg-slate-950 border-slate-800 text-slate-400'
+                                : 'bg-amber-950/30 border-amber-500/30 text-amber-400'
+                          }`}>
+                            {catMap[p.categoryId] || ((p.categoryId === 'cat-4' || /-cat-4$/.test(p.categoryId || '')) ? 'مشترک' : 'بدون گروه (نیاز به انتخاب)')}
+                          </span>
+                          {(() => {
+                            const catObj = categories.find(c => c.id === p.categoryId);
+                            const effPurchased = p.isPurchased !== undefined ? Boolean(p.isPurchased) : Boolean(catObj?.isPurchased);
+                            return effPurchased ? (
+                              <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 font-bold">
+                                خریداری
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
                       </td>
                       <td className="px-4 py-4 text-xs font-mono">
                         {p.barcodeType === 'weighted_composite' ? (
@@ -3891,6 +3978,17 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     ))}
                   </select>
                 </div>
+                <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-sky-950/20 border border-sky-500/20 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={newPcatIsPurchased}
+                    onChange={(e) => setNewPcatIsPurchased(e.target.checked)}
+                    className="rounded border-sky-500/40 bg-zinc-950 text-sky-500 focus:ring-0 w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-[11px] font-bold text-sky-300">
+                    گروه کالای خریداری / بازرگانی (بدون تسهیم حقوق مستقیم)
+                  </span>
+                </label>
                 <button
                   type="submit"
                   className="w-full px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-rose-600/15 cursor-pointer transition-all"
@@ -3987,14 +4085,15 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   <thead className="bg-zinc-900/40 text-zinc-400 border-b border-zinc-800/80">
                     <tr>
                       <th className="px-4 py-3.5 font-bold tracking-wider">عنوان دسته‌بندی محصول</th>
-                      <th className="px-4 py-3.5 font-bold tracking-wider w-[35%]">دپارتمان تولیدی تخصیص‌یافته</th>
-                      <th className="px-4 py-3.5 text-center font-bold tracking-wider w-[22%]">عملیات مدیریت</th>
+                      <th className="px-4 py-3.5 font-bold tracking-wider w-[30%]">دپارتمان تولیدی تخصیص‌یافته</th>
+                      <th className="px-4 py-3.5 text-center font-bold tracking-wider w-[18%]">نوع گروه کالا</th>
+                      <th className="px-4 py-3.5 text-center font-bold tracking-wider w-[18%]">عملیات مدیریت</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-900/50 text-zinc-350">
                     {searchedPCats.length === 0 ? (
                       <tr>
-                        <td colSpan={3} className="px-4 py-8 text-center text-zinc-500 text-xs">
+                        <td colSpan={4} className="px-4 py-8 text-center text-zinc-500 text-xs">
                           دسته‌بندی مطابق با فیلتر انتخابی یافت نشد.
                         </td>
                       </tr>
@@ -4023,7 +4122,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                             ) : (
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span>{c.name}</span>
-                                {!hasValidDept && (
+                                {!hasValidDept && !c.isPurchased && (
                                   <span className="text-[9.5px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/35 font-bold">
                                     تخصیص‌نیافته
                                   </span>
@@ -4052,6 +4151,20 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                                 <option key={d.id} value={d.id}>{d.name}</option>
                               ))}
                             </select>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleCategoryPurchased(c.id)}
+                              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border cursor-pointer transition-all ${
+                                c.isPurchased
+                                  ? 'bg-sky-500/15 text-sky-300 border-sky-500/35 hover:bg-sky-500/25'
+                                  : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25 hover:bg-emerald-500/20'
+                              }`}
+                              title="کلیک جهت تغییر وضعیت کل کالاهای این دسته‌بندی بین تولیدی و خریداری"
+                            >
+                              {c.isPurchased ? 'خریداری (بازرگانی)' : 'تولیدی کارگاه'}
+                            </button>
                           </td>
                           <td className="px-4 py-3 text-center">
                             <div className="flex items-center justify-center gap-1.5">

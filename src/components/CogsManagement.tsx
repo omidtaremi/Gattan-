@@ -145,7 +145,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   const [approvedPrices, setApprovedPrices] = useState<Record<string, number>>({});
   const [originalPrices, setOriginalPrices] = useState<Record<string, number>>({});
   const [analyticsSearch, setAnalyticsSearch] = useState('');
-  const [analyticsFormulaFilter, setAnalyticsFormulaFilter] = useState<'all' | 'with_formula' | 'without_formula'>('all');
+  const [analyticsFormulaFilter, setAnalyticsFormulaFilter] = useState<'all' | 'with_formula' | 'without_formula' | 'purchased'>('all');
   const [analyticsCategoryFilter, setAnalyticsCategoryFilter] = useState<string>('all');
   const [pricingSearch, setPricingSearch] = useState('');
   const [pricingFilterMode, setPricingFilterMode] = useState<'all' | 'approved' | 'hasCost'>('all');
@@ -248,6 +248,13 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     });
     return map;
   }, [productCategories]);
+
+  // Effective purchased/resale classifier: Product-level override > Category-level default > false (produced)
+  const isProductPurchased = React.useCallback((p: Product): boolean => {
+    if (p.isPurchased !== undefined) return Boolean(p.isPurchased);
+    const cat = categoryByIdMap[p.categoryId];
+    return Boolean(cat?.isPurchased);
+  }, [categoryByIdMap]);
 
   const resolveProductDepartmentId = React.useCallback((productCategoryId?: string): string => {
     if (!productCategoryId) return UNASSIGNED_DEPT_ID;
@@ -457,9 +464,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
     
     if (analyticsFormulaFilter === 'with_formula') {
-      list = list.filter(g => db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, g.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+      list = list.filter(g => !isProductPurchased(g.prod) && db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, g.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
     } else if (analyticsFormulaFilter === 'without_formula') {
-      list = list.filter(g => !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, g.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+      list = list.filter(g => !isProductPurchased(g.prod) && !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, g.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+    } else if (analyticsFormulaFilter === 'purchased') {
+      list = list.filter(g => isProductPurchased(g.prod));
     }
 
     if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
@@ -467,7 +476,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
     
     return list;
-  }, [growthComparisonList, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId]);
+  }, [growthComparisonList, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId, isProductPurchased]);
 
   const searchedGrowthTotals = useMemo(() => {
     let priorRevSum = 0;
@@ -1273,7 +1282,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   // Formula products tabs settings
   const [selectedProductId, setSelectedProductId] = useState(products[0]?.id || '');
   const [formulaSearchQuery, setFormulaSearchQuery] = useState('');
-  const [formulaFilter, setFormulaFilter] = useState<'all' | 'has_formula' | 'no_formula'>('all');
+  const [formulaFilter, setFormulaFilter] = useState<'all' | 'has_formula' | 'no_formula' | 'purchased'>('all');
   const [formulaCategoryFilter, setFormulaCategoryFilter] = useState<string>('all');
 
   // Timeline Scheduler States
@@ -1994,14 +2003,16 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   const searchedFormulaProducts = useMemo(() => {
     let list = categoryFilteredProducts;
     if (formulaFilter === 'has_formula') {
-      list = categoryFilteredProducts.filter(p => formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0));
+      list = categoryFilteredProducts.filter(p => !isProductPurchased(p) && formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0));
     } else if (formulaFilter === 'no_formula') {
-      list = categoryFilteredProducts.filter(p => !formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0));
+      list = categoryFilteredProducts.filter(p => !isProductPurchased(p) && !formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0));
+    } else if (formulaFilter === 'purchased') {
+      list = categoryFilteredProducts.filter(p => isProductPurchased(p));
     }
 
     if (!formulaSearchQuery) return list;
     return list.filter(p => matchPersianString(p.name, formulaSearchQuery) || matchPersianString(p.code, formulaSearchQuery));
-  }, [categoryFilteredProducts, formulas, formulaFilter, formulaSearchQuery]);
+  }, [categoryFilteredProducts, formulas, formulaFilter, formulaSearchQuery, isProductPurchased]);
 
   // Immutable base purchase cost lookup for purchased goods (products without formula)
   // Prevents runaway feedback loops where allocated sharedLabor/overhead saved to p.cogsPrice would be re-added on every render.
@@ -2047,33 +2058,35 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       totalCOGSPrice: number;
     }> = {};
 
-    // Pre-resolve active formula per product once
+    // Pre-resolve active formula & purchased status per product once
     const activeRecipeByProductId: Record<string, ProductFormula | undefined> = {};
     const hasFormulaByProductId: Record<string, boolean> = {};
+    const isPurchasedByProductId: Record<string, boolean> = {};
     products.forEach(p => {
       const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
       const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
       activeRecipeByProductId[p.id] = recipe;
       hasFormulaByProductId[p.id] = Boolean(recipe && recipe.ingredients && recipe.ingredients.length > 0);
+      isPurchasedByProductId[p.id] = isProductPurchased(p);
     });
 
-    // 1. Aggregate monthly sales qty/net-revenue/weight globally (all products) AND per mapped Department (formulated products only for Direct Labor)
+    // 1. Aggregate monthly sales qty/net-revenue/weight globally (all products) AND per mapped Department (produced products ONLY — strictly excluding purchased goods)
     let totalSalesQtyAll = 0;
     let totalNetSalesAll = 0;
     let grandTotalWeight = 0;
     let allGlobalSoldHaveWeight = true;
 
-    const catFormulatedSalesQtyMap: Record<string, number> = {};
-    const catFormulatedNetSalesMap: Record<string, number> = {};
-    const catFormulatedWeightMap: Record<string, number> = {};
-    const catAllFormulatedSoldHaveWeightMap: Record<string, boolean> = {};
+    const catProducedSalesQtyMap: Record<string, number> = {};
+    const catProducedNetSalesMap: Record<string, number> = {};
+    const catProducedWeightMap: Record<string, number> = {};
+    const catAllProducedSoldHaveWeightMap: Record<string, boolean> = {};
 
     products.forEach(p => {
       const pDeptId = resolveProductDepartmentId(p.categoryId);
       const saleAgg = salesTotalsByProductId[p.id];
       const sp = saleAgg ? saleAgg.qtySold : 0;
       const netRev = saleAgg ? saleAgg.netSalesAmount : 0;
-      const hasFormula = hasFormulaByProductId[p.id];
+      const isPurchased = isPurchasedByProductId[p.id];
 
       if (sp > 0) {
         totalSalesQtyAll += sp;
@@ -2086,34 +2099,34 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           grandTotalWeight += sp * prodWeight;
         }
 
-        // Direct labor denominators MUST exclude purchased goods (without formula) since their directLabor is 0
-        if (hasFormula) {
-          catFormulatedSalesQtyMap[pDeptId] = (catFormulatedSalesQtyMap[pDeptId] || 0) + sp;
-          catFormulatedNetSalesMap[pDeptId] = (catFormulatedNetSalesMap[pDeptId] || 0) + netRev;
+        // Direct labor denominators include ALL produced goods (formulated + non-formulated produced) and strictly exclude purchased goods
+        if (!isPurchased) {
+          catProducedSalesQtyMap[pDeptId] = (catProducedSalesQtyMap[pDeptId] || 0) + sp;
+          catProducedNetSalesMap[pDeptId] = (catProducedNetSalesMap[pDeptId] || 0) + netRev;
           if (prodWeight <= 0) {
-            catAllFormulatedSoldHaveWeightMap[pDeptId] = false;
+            catAllProducedSoldHaveWeightMap[pDeptId] = false;
           } else {
-            if (catAllFormulatedSoldHaveWeightMap[pDeptId] === undefined) {
-              catAllFormulatedSoldHaveWeightMap[pDeptId] = true;
+            if (catAllProducedSoldHaveWeightMap[pDeptId] === undefined) {
+              catAllProducedSoldHaveWeightMap[pDeptId] = true;
             }
-            catFormulatedWeightMap[pDeptId] = (catFormulatedWeightMap[pDeptId] || 0) + (sp * prodWeight);
+            catProducedWeightMap[pDeptId] = (catProducedWeightMap[pDeptId] || 0) + (sp * prodWeight);
           }
         }
       }
     });
 
     // Fallback department & global sales volume across other months in the same period
-    const fallbackFormulatedCategorySalesMap: Record<string, { qty: number; weight: number }> = {};
+    const fallbackProducedCategorySalesMap: Record<string, { qty: number; weight: number }> = {};
     let fallbackGlobalSalesQty = 0;
     let fallbackGlobalSalesWeight = 0;
-    if (totalSalesQtyAll === 0 || Object.keys(catFormulatedSalesQtyMap).length === 0) {
+    if (totalSalesQtyAll === 0 || Object.keys(catProducedSalesQtyMap).length === 0) {
       const prodLookup: Record<string, Product> = {};
       products.forEach(p => {
         prodLookup[p.id] = p;
         if (p.code) prodLookup[p.code.trim().toLowerCase()] = p;
         if (p.accountId) prodLookup[p.accountId.trim().toLowerCase()] = p;
       });
-      const perMonthFormulatedCatTotals: Record<string, Record<string, { qty: number; weight: number }>> = {};
+      const perMonthProducedCatTotals: Record<string, Record<string, { qty: number; weight: number }>> = {};
       const perMonthGlobalTotals: Record<string, { qty: number; weight: number }> = {};
       (db.productSales || []).forEach(s => {
         if (s.periodId !== activePeriodId || Number(s.qtySold || 0) <= 0) return;
@@ -2128,11 +2141,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         perMonthGlobalTotals[ymKey].qty += q;
         perMonthGlobalTotals[ymKey].weight += pw > 0 ? (q * pw) : 0;
 
-        if (hasFormulaByProductId[prod.id]) {
-          if (!perMonthFormulatedCatTotals[pDeptId]) perMonthFormulatedCatTotals[pDeptId] = {};
-          if (!perMonthFormulatedCatTotals[pDeptId][ymKey]) perMonthFormulatedCatTotals[pDeptId][ymKey] = { qty: 0, weight: 0 };
-          perMonthFormulatedCatTotals[pDeptId][ymKey].qty += q;
-          perMonthFormulatedCatTotals[pDeptId][ymKey].weight += pw > 0 ? (q * pw) : 0;
+        if (!isPurchasedByProductId[prod.id]) {
+          if (!perMonthProducedCatTotals[pDeptId]) perMonthProducedCatTotals[pDeptId] = {};
+          if (!perMonthProducedCatTotals[pDeptId][ymKey]) perMonthProducedCatTotals[pDeptId][ymKey] = { qty: 0, weight: 0 };
+          perMonthProducedCatTotals[pDeptId][ymKey].qty += q;
+          perMonthProducedCatTotals[pDeptId][ymKey].weight += pw > 0 ? (q * pw) : 0;
         }
       });
 
@@ -2142,12 +2155,12 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         fallbackGlobalSalesWeight = globalMonths.reduce((s, v) => s + v.weight, 0) / globalMonths.length;
       }
 
-      Object.entries(perMonthFormulatedCatTotals).forEach(([deptId, monthMap]) => {
+      Object.entries(perMonthProducedCatTotals).forEach(([deptId, monthMap]) => {
         const months = Object.values(monthMap);
         if (months.length > 0) {
           const avgQty = months.reduce((s, v) => s + v.qty, 0) / months.length;
           const avgWeight = months.reduce((s, v) => s + v.weight, 0) / months.length;
-          fallbackFormulatedCategorySalesMap[deptId] = { qty: avgQty, weight: avgWeight };
+          fallbackProducedCategorySalesMap[deptId] = { qty: avgQty, weight: avgWeight };
         }
       });
     }
@@ -2199,20 +2212,20 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     const rawRequiredHours = targetSetting ? safeNum(targetSetting.requiredWorkHours) : 192;
     const requiredHours = rawRequiredHours > 0 ? rawRequiredHours : 192;
 
-    // Catalog non-WIP formulated product count & weight per mapped Department (for zero-sales fallback)
-    const catFormulatedFinishedStats: Record<string, { count: number; totalWeight: number; allHaveWeight: boolean }> = {};
+    // Catalog non-WIP produced product count & weight per mapped Department (for zero-sales formulated fallback)
+    const catProducedFinishedStats: Record<string, { count: number; totalWeight: number; allHaveWeight: boolean }> = {};
     products.forEach(p => {
-      if (p.isWip || !hasFormulaByProductId[p.id]) return;
+      if (p.isWip || isPurchasedByProductId[p.id]) return;
       const pDeptId = resolveProductDepartmentId(p.categoryId);
-      if (!catFormulatedFinishedStats[pDeptId]) {
-        catFormulatedFinishedStats[pDeptId] = { count: 0, totalWeight: 0, allHaveWeight: true };
+      if (!catProducedFinishedStats[pDeptId]) {
+        catProducedFinishedStats[pDeptId] = { count: 0, totalWeight: 0, allHaveWeight: true };
       }
-      catFormulatedFinishedStats[pDeptId].count += 1;
+      catProducedFinishedStats[pDeptId].count += 1;
       const pw = p.unit === 'کیلو' ? 1000 : (Number(p.weight) || 0);
       if (pw > 0) {
-        catFormulatedFinishedStats[pDeptId].totalWeight += pw;
+        catProducedFinishedStats[pDeptId].totalWeight += pw;
       } else {
-        catFormulatedFinishedStats[pDeptId].allHaveWeight = false;
+        catProducedFinishedStats[pDeptId].allHaveWeight = false;
       }
     });
 
@@ -2224,8 +2237,9 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
     products.forEach(p => {
       const hasFormula = hasFormulaByProductId[p.id];
+      const isPurchased = isPurchasedByProductId[p.id];
       const pDeptId = resolveProductDepartmentId(p.categoryId);
-      const Tsd = (pDeptId === UNASSIGNED_DEPT_ID || !hasFormula) ? 0 : (categoryDirectLaborMap[pDeptId] || 0);
+      const Tsd = (pDeptId === UNASSIGNED_DEPT_ID || isPurchased) ? 0 : (categoryDirectLaborMap[pDeptId] || 0);
       const saleAgg = salesTotalsByProductId[p.id];
       const sp = saleAgg ? saleAgg.qtySold : 0;
       const netRev = saleAgg ? saleAgg.netSalesAmount : 0;
@@ -2236,7 +2250,8 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       let rawShared = 0;
       let rawOverhead = 0;
 
-      if (hasFormula) {
+      if (!isPurchased && hasFormula) {
+        // Case A: Produced goods WITH formula
         if (sp > 0) {
           if (pUnitTime > 0) {
             const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
@@ -2250,10 +2265,10 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             rawOverhead = pUnitTimeInHours * hourlyWageOverhead;
           } else {
             if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-              const catWeight = catFormulatedWeightMap[pDeptId] || 0;
-              const catNetSales = catFormulatedNetSalesMap[pDeptId] || 0;
-              const catQty = catFormulatedSalesQtyMap[pDeptId] || 0;
-              const useCatWeight = catAllFormulatedSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
+              const catWeight = catProducedWeightMap[pDeptId] || 0;
+              const catNetSales = catProducedNetSalesMap[pDeptId] || 0;
+              const catQty = catProducedSalesQtyMap[pDeptId] || 0;
+              const useCatWeight = catAllProducedSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
 
               let inCatShare = 0;
               if (useCatWeight) {
@@ -2279,7 +2294,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             rawOverhead = (globalShare * netOverheadValue) / sp;
           }
         } else if (!p.isWip) {
-          // Fallback for zero-sales finished products (WIP items stay pure material cost to avoid double-counting labor/overhead)
+          // Fallback for zero-sales formulated finished products (WIP stays pure material cost)
           if (pUnitTime > 0) {
             const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
             rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : ((pUnitTime / 60) * hourlyWageDirect);
@@ -2287,21 +2302,21 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             rawOverhead = requiredHours > 0 ? (pUnitTime / 60) * (netOverheadValue / requiredHours) : 0;
           } else {
             if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-              const catWeight = catFormulatedWeightMap[pDeptId] || 0;
-              const catQty = catFormulatedSalesQtyMap[pDeptId] || 0;
+              const catWeight = catProducedWeightMap[pDeptId] || 0;
+              const catQty = catProducedSalesQtyMap[pDeptId] || 0;
               if (catWeight > 0 && prodWeight > 0) {
                 rawDirect = (Tsd / catWeight) * prodWeight;
               } else if (catQty > 0) {
                 rawDirect = Tsd / catQty;
-              } else if (fallbackFormulatedCategorySalesMap[pDeptId]) {
-                const fb = fallbackFormulatedCategorySalesMap[pDeptId];
+              } else if (fallbackProducedCategorySalesMap[pDeptId]) {
+                const fb = fallbackProducedCategorySalesMap[pDeptId];
                 if (fb.weight > 0 && prodWeight > 0) {
                   rawDirect = (Tsd / fb.weight) * prodWeight;
                 } else if (fb.qty > 0) {
                   rawDirect = Tsd / fb.qty;
                 }
               } else {
-                const catStats = catFormulatedFinishedStats[pDeptId];
+                const catStats = catProducedFinishedStats[pDeptId];
                 if (catStats && catStats.count > 0) {
                   if (catStats.allHaveWeight && catStats.totalWeight > 0 && prodWeight > 0) {
                     rawDirect = (Tsd / catStats.totalWeight) * prodWeight;
@@ -2326,8 +2341,53 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             }
           }
         }
+      } else if (!isPurchased && !hasFormula) {
+        // Case B: Produced goods WITHOUT formula -> Direct labor strictly by net-sales share of produced goods in its department; 0 if zero sales in selected month
+        if (sp > 0) {
+          if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
+            const catNetSales = catProducedNetSalesMap[pDeptId] || 0;
+            const catQty = catProducedSalesQtyMap[pDeptId] || 0;
+            let inCatShare = 0;
+            if (catNetSales > 0) {
+              inCatShare = netRev / catNetSales;
+            } else if (catQty > 0) {
+              inCatShare = sp / catQty;
+            }
+            rawDirect = (inCatShare * Tsd) / sp;
+          }
+
+          const useGlobalWeight = allGlobalSoldHaveWeight && grandTotalWeight > 0;
+          let globalShare = 0;
+          if (useGlobalWeight) {
+            globalShare = (sp * prodWeight) / grandTotalWeight;
+          } else if (totalNetSalesAll > 0) {
+            globalShare = netRev / totalNetSalesAll;
+          } else if (totalSalesQtyAll > 0) {
+            globalShare = sp / totalSalesQtyAll;
+          }
+          rawShared = (globalShare * totalSharedLaborPayroll) / sp;
+          rawOverhead = (globalShare * netOverheadValue) / sp;
+        } else {
+          // Zero sales in selected month -> Direct labor is strictly 0
+          rawDirect = 0;
+          if (!p.isWip) {
+            if (grandTotalWeight > 0 && prodWeight > 0) {
+              rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
+              rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
+            } else if (totalSalesQtyAll > 0) {
+              rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
+              rawOverhead = netOverheadValue / totalSalesQtyAll;
+            } else if (fallbackGlobalSalesWeight > 0 && prodWeight > 0) {
+              rawShared = (totalSharedLaborPayroll / fallbackGlobalSalesWeight) * prodWeight;
+              rawOverhead = (netOverheadValue / fallbackGlobalSalesWeight) * prodWeight;
+            } else if (fallbackGlobalSalesQty > 0) {
+              rawShared = totalSharedLaborPayroll / fallbackGlobalSalesQty;
+              rawOverhead = netOverheadValue / fallbackGlobalSalesQty;
+            }
+          }
+        }
       } else {
-        // Purchased goods without formula: direct labor is strictly 0
+        // Case C: Purchased / Resale goods -> Direct labor is strictly 0
         rawDirect = 0;
         if (sp > 0) {
           const useGlobalWeight = allGlobalSoldHaveWeight && grandTotalWeight > 0;
@@ -2360,7 +2420,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       rawAllocationsMap[p.id] = { direct: rawDirect, shared: rawShared, overhead: rawOverhead };
 
-      if (sp > 0 && hasFormula) {
+      if (sp > 0 && !isPurchased) {
         catRawDirectSum[pDeptId] = (catRawDirectSum[pDeptId] || 0) + (sp * rawDirect);
         globalRawSharedSum += (sp * rawShared);
         globalRawOverheadSum += (sp * rawOverhead);
@@ -2438,7 +2498,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         }
 
         const adj = adjustedAllocationsMap[p.id] || { direct: 0, shared: 0, overhead: 0 };
-        const directLaborCost = hasFormula ? safeNum(adj.direct) : 0;
+        const directLaborCost = !isPurchasedByProductId[p.id] ? safeNum(adj.direct) : 0;
         const sharedLaborCost = safeNum(adj.shared);
         const overheadCostVal = safeNum(adj.overhead);
         const totalCOGS = safeNum(ingredientsSum + directLaborCost + sharedLaborCost + overheadCostVal);
@@ -2454,7 +2514,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
 
     return results;
-  }, [products, formulas, resolveMaterialByKey, findMaterialConversion, salesTotalsByProductId, payrollItems, overhead, timeCoefficents, db.monthlyWorkdaySettings, db.productSales, activePeriodId, selectedCogsYear, selectedCogsMonth, departments, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId, getPurchasedBaseCost, recalcTrigger]);
+  }, [products, formulas, resolveMaterialByKey, findMaterialConversion, salesTotalsByProductId, payrollItems, overhead, timeCoefficents, db.monthlyWorkdaySettings, db.productSales, activePeriodId, selectedCogsYear, selectedCogsMonth, departments, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId, getPurchasedBaseCost, isProductPurchased, recalcTrigger]);
 
   // Real-time Profit & Loss analysis directly synced with fullCalculatedCOGSMap
   const productsWithLossAndProfit = useMemo(() => {
@@ -2521,9 +2581,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
 
     if (analyticsFormulaFilter === 'with_formula') {
-      list = list.filter(x => db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+      list = list.filter(x => !isProductPurchased(x.prod) && db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
     } else if (analyticsFormulaFilter === 'without_formula') {
-      list = list.filter(x => !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+      list = list.filter(x => !isProductPurchased(x.prod) && !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0));
+    } else if (analyticsFormulaFilter === 'purchased') {
+      list = list.filter(x => isProductPurchased(x.prod));
     }
 
     if (analyticsCategoryFilter && analyticsCategoryFilter !== 'all') {
@@ -2531,7 +2593,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     }
 
     return list;
-  }, [productsWithLossAndProfit, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId]);
+  }, [productsWithLossAndProfit, analyticsSearch, analyticsFormulaFilter, analyticsCategoryFilter, db.productFormulas, activePeriodId, resolveProductDepartmentId, isProductPurchased]);
 
   const searchedTotals = useMemo(() => {
     let netSalesAmountSum = 0;
@@ -2635,6 +2697,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       let allCatSoldHaveWeight = true;
 
       catProducts.forEach(p2 => {
+        if (isProductPurchased(p2)) return; // Exclude purchased goods from department produced direct-labor pool
         const saleAgg2 = salesTotalsByProductId[p2.id];
         const sp2 = saleAgg2 ? saleAgg2.qtySold : 0;
         const netRev2 = saleAgg2 ? saleAgg2.netSalesAmount : 0;
@@ -2654,6 +2717,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         const saleAgg = salesTotalsByProductId[p.id];
         const sp = saleAgg ? saleAgg.qtySold : 0;
         const netRev = saleAgg ? saleAgg.netSalesAmount : 0;
+        const isPurchased = isProductPurchased(p);
+        const hasFormula = formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0);
+        const productClass: 'formulated' | 'produced_no_formula' | 'purchased' = isPurchased
+          ? 'purchased'
+          : (hasFormula ? 'formulated' : 'produced_no_formula');
 
         const cogsData = fullCalculatedCOGSMap[p.id] || { directLabor: 0, sharedLabor: 0, overheadCost: 0 };
         const directLaborPerUnit = cogsData.directLabor;
@@ -2661,12 +2729,19 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         const overheadPerUnit = cogsData.overheadCost;
 
         const pUnitTime = timeCoefficents[p.id] || 0;
-        let allocationMode: 'time' | 'weight' | 'none' = 'none';
+        let allocationMode: 'time' | 'weight' | 'sales_no_formula' | 'purchased' | 'none' = 'none';
         let allocationDetail = '';
         let pctWeightInCategory = 0;
 
-        if (sp > 0) {
-          if (pUnitTime > 0) {
+        if (isPurchased) {
+          allocationMode = 'purchased';
+          allocationDetail = 'کالای خریداری (حقوق مستقیم صفر)';
+        } else if (sp > 0) {
+          if (!hasFormula) {
+            allocationMode = 'sales_no_formula';
+            pctWeightInCategory = categoryTotalNetSales > 0 ? (netRev / categoryTotalNetSales) : (categoryTotalQty > 0 ? (sp / categoryTotalQty) : 0);
+            allocationDetail = `سهم فروش دپارتمان (${toPersianDigits((pctWeightInCategory * 100).toFixed(1))}٪)`;
+          } else if (pUnitTime > 0) {
             allocationMode = 'time';
             allocationDetail = 'زمان‌محور تعدیل‌شده (روش دوم)';
           } else {
@@ -2686,7 +2761,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
             }
           }
         } else {
-          allocationDetail = 'فاقد فروش در این ماه';
+          allocationDetail = hasFormula ? 'فاقد فروش در این ماه' : 'فاقد فروش (حقوق مستقیم صفر)';
         }
 
         const directLaborTotal = sp * directLaborPerUnit;
@@ -2700,6 +2775,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           unit: p.unit,
           weight: p.weight || 0,
           qtySold: sp,
+          productClass,
           allocationMode,
           allocationDetail,
           pUnitTime,
@@ -2768,7 +2844,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         }
       }
     };
-  }, [products, departments, departmentFilterOptions, payrollItems, overhead, salesTotalsByProductId, timeCoefficents, fullCalculatedCOGSMap, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId]);
+  }, [products, departments, departmentFilterOptions, payrollItems, overhead, salesTotalsByProductId, timeCoefficents, fullCalculatedCOGSMap, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, resolveProductDepartmentId, formulas, isProductPurchased]);
 
   const selectedDraftMaterial = useMemo(() => {
     if (!draftMaterialId) return undefined;
@@ -3513,6 +3589,20 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     lastAutoSyncSignatureRef.current = '';
     onUpdateDbRef.current({ ...db, products: updatedProducts });
     setIsEditingPurchaseCost(false);
+    setRecalcTrigger(prev => prev + 1);
+  };
+
+  const handleToggleProductPurchased = (productId: string) => {
+    const target = db.products.find(p => p.id === productId);
+    if (!target) return;
+    const nextPurchased = !isProductPurchased(target);
+    const updatedProducts = db.products.map(p =>
+      p.id === productId
+        ? { ...p, isPurchased: nextPurchased }
+        : p
+    );
+    lastAutoSyncSignatureRef.current = '';
+    onUpdateDbRef.current({ ...db, products: updatedProducts });
     setRecalcTrigger(prev => prev + 1);
   };
 
@@ -4645,12 +4735,12 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                 </select>
               </div>
 
-              {/* Filter Toggles */}
-              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-850 text-[10.5px] font-bold select-none">
+              {/* Filter Toggles (3-state classification + All) */}
+              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-850 text-[10px] font-bold select-none">
                 <button
                   type="button"
                   onClick={() => setFormulaFilter('all')}
-                  className={`py-1.5 rounded-lg transition-all cursor-pointer text-center font-sans ${
+                  className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center font-sans ${
                     formulaFilter === 'all'
                       ? 'bg-rose-600 text-white shadow-md font-extrabold'
                       : 'text-slate-400 hover:text-white'
@@ -4661,26 +4751,38 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                 <button
                   type="button"
                   onClick={() => setFormulaFilter('has_formula')}
-                  className={`py-1.5 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1 font-sans ${
+                  className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1 font-sans ${
                     formulaFilter === 'has_formula'
                       ? 'bg-emerald-600 text-white shadow-md font-extrabold'
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-                  فرمول‌دار ({toPersianDigits(categoryFilteredProducts.filter(p => formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0)).length)})
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                  تولیدی فرمول‌دار ({toPersianDigits(categoryFilteredProducts.filter(p => !isProductPurchased(p) && formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0)).length)})
                 </button>
                 <button
                   type="button"
                   onClick={() => setFormulaFilter('no_formula')}
-                  className={`py-1.5 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1 font-sans ${
+                  className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1 font-sans ${
                     formulaFilter === 'no_formula'
                       ? 'bg-amber-600 text-white shadow-md font-extrabold'
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-450"></span>
-                  بدون فرمول ({toPersianDigits(categoryFilteredProducts.filter(p => !formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0)).length)})
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0"></span>
+                  تولیدی بدون فرمول ({toPersianDigits(categoryFilteredProducts.filter(p => !isProductPurchased(p) && !formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0)).length)})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormulaFilter('purchased')}
+                  className={`py-1.5 px-1.5 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1 font-sans ${
+                    formulaFilter === 'purchased'
+                      ? 'bg-sky-600 text-white shadow-md font-extrabold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-sky-400 shrink-0"></span>
+                  خریداری ({toPersianDigits(categoryFilteredProducts.filter(p => isProductPurchased(p)).length)})
                 </button>
               </div>
 
@@ -4690,6 +4792,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                   const compCogs = fullCalculatedCOGSMap[p.id];
                   const isSelected = selectedProductId === p.id;
                   const hasFormula = formulas.some(f => doesFormulaMatchProduct(f.productId, p) && f.ingredients.length > 0);
+                  const isPurchased = isProductPurchased(p);
                   const pFormulasCount = formulas.filter(f => doesFormulaMatchProduct(f.productId, p)).length;
 
                   return (
@@ -4704,12 +4807,23 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                     >
                       <div className="space-y-1">
                         <div className="font-extrabold text-xs flex items-center gap-1.5 flex-wrap">
-                          {hasFormula ? (
-                            <span className="h-1.5 w-1.5 bg-emerald-500 rounded-full" title="دارای فرمول ساخت مصرفی"></span>
+                          {isPurchased ? (
+                            <span className="h-1.5 w-1.5 bg-sky-400 rounded-full" title="کالای خریداری (بازرگانی) — حقوق مستقیم صفر"></span>
+                          ) : hasFormula ? (
+                            <span className="h-1.5 w-1.5 bg-emerald-500 rounded-full" title="تولیدی (دارای فرمول ساخت)"></span>
                           ) : (
-                            <span className="h-1.5 w-1.5 bg-amber-500 rounded-full" title="فرمول خالی"></span>
+                            <span className="h-1.5 w-1.5 bg-amber-500 rounded-full" title="تولیدی (بدون فرمول — حقوق مستقیم بر اساس سهم فروش دپارتمان)"></span>
                           )}
                           <span className={`${isSelected ? 'text-white font-black' : 'text-slate-200 group-hover:text-white'}`}>{p.name}</span>
+                          {isPurchased ? (
+                            <span className="bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[8px] px-1.5 py-0.5 rounded font-sans font-bold">
+                              خریداری
+                            </span>
+                          ) : !hasFormula ? (
+                            <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[8px] px-1.5 py-0.5 rounded font-sans font-bold">
+                              تولیدی بدون فرمول
+                            </span>
+                          ) : null}
                           {p.isWip && (
                             <span className="bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 text-[8px] px-1.5 py-0.5 rounded font-sans font-bold">
                               نیمه‌ساخته
@@ -4766,6 +4880,35 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                           ) : (
                             <span className="text-[10px] bg-amber-950/40 border border-amber-500/30 px-2 py-0.5 rounded-md text-amber-300">بدون کد حسابداری (اتصال موقت با شناسه)</span>
                           )}
+                          {(() => {
+                            const selPurchased = isProductPurchased(selectedProductData);
+                            const selHasFormula = Boolean(activeFormulaData && activeFormulaData.ingredients.length > 0);
+                            return (
+                              <>
+                                {selPurchased ? (
+                                  <span className="text-[10px] bg-sky-500/15 border border-sky-500/35 px-2 py-0.5 rounded-md font-bold text-sky-300">
+                                    خریداری (بازرگانی • حقوق مستقیم صفر)
+                                  </span>
+                                ) : selHasFormula ? (
+                                  <span className="text-[10px] bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold text-emerald-300">
+                                    تولیدی (دارای فرمول)
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] bg-amber-500/15 border border-amber-500/35 px-2 py-0.5 rounded-md font-bold text-amber-300">
+                                    تولیدی (بدون فرمول • حقوق مستقیم بر مبنای سهم فروش دپارتمان)
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleProductPurchased(selectedProductData.id)}
+                                  className="text-[10px] px-2 py-0.5 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 font-bold cursor-pointer transition-colors"
+                                  title="تغییر سریع وضعیت کالا بین تولیدی کارگاه و خریداری (بازرگانی)"
+                                >
+                                  {selPurchased ? 'تبدیل به تولیدی' : 'تبدیل به خریداری'}
+                                </button>
+                              </>
+                            );
+                          })()}
                         </div>
                         <div className="flex items-center gap-4 mt-2">
                           <p className="text-[11px] text-slate-400">واحد سنجش نهایی: <strong className="text-slate-200">{selectedProductData.unit}</strong></p>
@@ -4808,7 +4951,11 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                           <div className="p-3 bg-slate-900 border border-slate-850 rounded-2xl space-y-2 relative group hover:border-slate-800 transition-all">
                             <div className="flex items-center justify-between gap-1">
                               <span className="block text-[10px] text-slate-400 font-bold">
-                                {activeFormulaData && activeFormulaData.ingredients.length > 0 ? 'بهای کل مواد خام' : 'بهای خرید پایه (کالای خریداری)'}
+                                {activeFormulaData && activeFormulaData.ingredients.length > 0
+                                  ? 'بهای کل مواد خام'
+                                  : isProductPurchased(selectedProductData)
+                                    ? 'بهای خرید پایه (کالای خریداری)'
+                                    : 'بهای پایه کالا (تولیدی بدون فرمول)'}
                               </span>
                               {(!activeFormulaData || activeFormulaData.ingredients.length === 0) && !isEditingPurchaseCost && (
                                 <button
@@ -4818,7 +4965,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                                     setIsEditingPurchaseCost(true);
                                   }}
                                   className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold cursor-pointer"
-                                  title="اصلاح قیمت خرید پایه کالای بدون فرمول"
+                                  title="اصلاح بهای پایه کالای بدون فرمول"
                                 >
                                   ویرایش
                                 </button>
@@ -6778,22 +6925,33 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                     onClick={() => setAnalyticsFormulaFilter('with_formula')}
                     className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
                       analyticsFormulaFilter === 'with_formula'
-                        ? 'bg-rose-600 text-white shadow'
+                        ? 'bg-emerald-600 text-white shadow'
                         : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    دارای فرمول تولید ({toPersianDigits(productsWithLossAndProfit.filter(x => db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0)).length)})
+                    تولیدی (دارای فرمول) ({toPersianDigits(productsWithLossAndProfit.filter(x => !isProductPurchased(x.prod) && db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0)).length)})
                   </button>
                   <button
                     type="button"
                     onClick={() => setAnalyticsFormulaFilter('without_formula')}
                     className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
                       analyticsFormulaFilter === 'without_formula'
-                        ? 'bg-rose-600 text-white shadow'
+                        ? 'bg-amber-600 text-white shadow'
                         : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    بدون فرمول ({toPersianDigits(productsWithLossAndProfit.filter(x => !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0)).length)})
+                    تولیدی (بدون فرمول) ({toPersianDigits(productsWithLossAndProfit.filter(x => !isProductPurchased(x.prod) && !db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0)).length)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAnalyticsFormulaFilter('purchased')}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                      analyticsFormulaFilter === 'purchased'
+                        ? 'bg-sky-600 text-white shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    خریداری ({toPersianDigits(productsWithLossAndProfit.filter(x => isProductPurchased(x.prod)).length)})
                   </button>
                 </div>
               </div>
@@ -6989,6 +7147,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                       <>
                         {searchedProductsWithLossAndProfit.map((x, idx) => {
                           const hasFormula = db.productFormulas.some(f => doesFormulaMatchProduct(f.productId, x.prod) && f.periodId === activePeriodId && f.ingredients.length > 0);
+                          const isPurchased = isProductPurchased(x.prod);
                           const pDeptId = resolveProductDepartmentId(x.prod.categoryId);
                           const deptName = pDeptId === UNASSIGNED_DEPT_ID
                             ? `تخصیص‌نیافته (${categoryByIdMap[x.prod.categoryId]?.name || 'نامشخص'})`
@@ -7001,10 +7160,12 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                                 <div className="flex flex-wrap items-center gap-2 mt-1">
                                   <span className="text-[10px] text-slate-400">قیمت مصوب: {formatWithCommas(Math.round(x.prod.salePrice))}</span>
                                   <span className={`inline-flex items-center text-[9px] font-black px-1 py-0.5 rounded border ${pDeptId === UNASSIGNED_DEPT_ID ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'}`}>دپارتمان: {deptName}</span>
-                                  {hasFormula ? (
-                                    <span className="inline-flex items-center text-[9px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1 py-0.5 rounded">دارای فرمول تولید</span>
+                                  {isPurchased ? (
+                                    <span className="inline-flex items-center text-[9px] font-black bg-sky-500/15 text-sky-300 border border-sky-500/30 px-1.5 py-0.5 rounded">خریداری (بازرگانی)</span>
+                                  ) : hasFormula ? (
+                                    <span className="inline-flex items-center text-[9px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">تولیدی (دارای فرمول)</span>
                                   ) : (
-                                    <span className="inline-flex items-center text-[9px] font-black bg-slate-850 text-slate-400 border border-slate-750 px-1 py-0.5 rounded">بدون فرمول</span>
+                                    <span className="inline-flex items-center text-[9px] font-black bg-amber-500/15 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">تولیدی (بدون فرمول)</span>
                                   )}
                                 </div>
                               </td>
@@ -8988,23 +9149,38 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                                     <tr key={p.productId} className="hover:bg-slate-850/30 transition-all">
                                       <td className="py-2.5 px-3 text-center font-mono text-[10px] text-slate-400">{toPersianDigits(p.code)}</td>
                                       <td className="py-2.5 px-3 font-bold text-slate-100">
-                                        {p.name}
-                                        <span className="text-[9px] text-slate-400 font-semibold mr-1.5">({p.unit === 'کیلو' ? 'کیلویی' : `${toPersianDigits(p.weight || '')} گرمی`})</span>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span>{p.name}</span>
+                                          <span className="text-[9px] text-slate-400 font-semibold">({p.unit === 'کیلو' ? 'کیلویی' : `${toPersianDigits(p.weight || '')} گرمی`})</span>
+                                          {p.productClass === 'purchased' ? (
+                                            <span className="text-[8.5px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 font-bold">خریداری</span>
+                                          ) : p.productClass === 'formulated' ? (
+                                            <span className="text-[8.5px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/25 font-bold">تولیدی (فرمول‌دار)</span>
+                                          ) : (
+                                            <span className="text-[8.5px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">تولیدی (بدون فرمول)</span>
+                                          )}
+                                        </div>
                                       </td>
                                       <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-300">
                                         {p.qtySold > 0 ? toPersianDigits(formatWithCommas(p.qtySold)) : '—'}
                                       </td>
                                       <td className="py-2.5 px-3 text-center">
-                                        {p.qtySold > 0 ? (
+                                        {p.allocationMode === 'purchased' ? (
+                                          <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-sky-600/15 text-sky-300 border border-sky-500/25">
+                                            {p.allocationDetail}
+                                          </span>
+                                        ) : p.qtySold > 0 ? (
                                           <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
                                             p.allocationMode === 'time'
                                               ? 'bg-blue-600/10 text-blue-400 border border-blue-500/10'
-                                              : 'bg-amber-600/10 text-amber-400 border border-amber-500/10'
+                                              : p.allocationMode === 'sales_no_formula'
+                                                ? 'bg-amber-600/15 text-amber-300 border border-amber-500/30'
+                                                : 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/15'
                                           }`}>
                                             {p.allocationDetail}
                                           </span>
                                         ) : (
-                                          <span className="text-slate-400 text-[10px]">—</span>
+                                          <span className="text-slate-400 text-[10px]">{p.allocationDetail || '—'}</span>
                                         )}
                                       </td>
                                       <td className="py-2.5 px-3 text-center font-mono">
