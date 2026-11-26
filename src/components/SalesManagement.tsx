@@ -15,7 +15,7 @@ import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
 import { 
   Plus, Search, Edit2, Trash2, CheckCircle, AlertTriangle, FileSpreadsheet, 
   Printer, Save, TrendingUp, TrendingDown, Layers, BarChart3, PieChart, Info, DollarSign, Download,
-  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, CheckSquare, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag
+  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, CheckSquare, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag, Tag
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import SearchableSelect from './SearchableSelect';
@@ -35,7 +35,8 @@ interface SalesManagementProps {
 }
 
 export default function SalesManagement({ db, onUpdateDb, activePeriodId }: SalesManagementProps) {
-  const [activeTab, setActiveTab] = useState<'products' | 'categories' | 'packaging' | 'barcodes' | 'records' | 'analysis'>('products');
+  const [activeTab, setActiveTab] = useState<'products' | 'categories' | 'packaging' | 'barcodes' | 'records' | 'analysis' | 'shelf_tags'>('products');
+
   const [showCopyModal, setShowCopyModal] = useState(false);
 
   const activeCopySection: CopySectionKey = useMemo(() => {
@@ -1443,6 +1444,135 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       return !dup;
     });
   }, [db.departments, activePeriodId]);
+
+  const resolveProductDepartmentId = React.useCallback((productCategoryId?: string): string => {
+    if (!productCategoryId) return 'unassigned';
+    const cat = categories.find(c => c.id === productCategoryId);
+    if (cat && cat.departmentId) return cat.departmentId;
+    if (departments.some(d => d.id === productCategoryId)) return productCategoryId;
+    return 'unassigned';
+  }, [categories, departments]);
+
+  // Shelf Tags Management State & Logic
+  const [tagDeptFilter, setTagDeptFilter] = useState<string>('all');
+  const [tagCatFilter, setTagCatFilter] = useState<string>('all');
+  const [tagSearch, setTagSearch] = useState<string>('');
+  const [tagSize, setTagSize] = useState<'standard' | 'large' | 'medium_wide' | 'compact' | 'square'>('standard');
+  const [showShopTitle, setShowShopTitle] = useState<boolean>(true);
+  const [showCode, setShowCode] = useState<boolean>(true);
+  const [showBarcode, setShowBarcode] = useState<boolean>(false);
+  const [showDepartment, setShowDepartment] = useState<boolean>(true);
+  const [shopBrandName, setShopBrandName] = useState<string>('شیرینی و کافه گاتان');
+  const [selectedProductIdsForTags, setSelectedProductIdsForTags] = useState<Record<string, boolean>>({});
+
+  const shelfTagFilteredProducts = useMemo(() => {
+    let list = products;
+    if (tagDeptFilter !== 'all') {
+      list = list.filter(p => resolveProductDepartmentId(p.categoryId) === tagDeptFilter);
+    }
+    if (tagCatFilter !== 'all') {
+      list = list.filter(p => p.categoryId === tagCatFilter);
+    }
+    if (tagSearch.trim()) {
+      list = list.filter(p => matchPersianString(p.name, tagSearch) || matchPersianString(p.code, tagSearch) || matchPersianString(p.barcode, tagSearch));
+    }
+    return list;
+  }, [products, tagDeptFilter, tagCatFilter, tagSearch, resolveProductDepartmentId]);
+
+  const selectedShelfTagsCount = useMemo(() => {
+    return Object.values(selectedProductIdsForTags).filter(Boolean).length;
+  }, [selectedProductIdsForTags]);
+
+  const handleSelectAllShelfTags = (select: boolean) => {
+    const map: Record<string, boolean> = {};
+    if (select) {
+      shelfTagFilteredProducts.forEach(p => {
+        map[p.id] = true;
+      });
+    }
+    setSelectedProductIdsForTags(map);
+  };
+
+  const handlePrintShelfTags = () => {
+    const selectedProds = products.filter(p => selectedProductIdsForTags[p.id]);
+    const targetProds = selectedProds.length > 0 ? selectedProds : shelfTagFilteredProducts;
+    if (targetProds.length === 0) {
+      alert('هیچ محصولی برای چاپ تگ قفسه انتخاب نشده است.');
+      return;
+    }
+
+    const sizeStyle = tagSize === 'large' 
+      ? 'width: 9.5cm; height: 5.5cm;' 
+      : tagSize === 'medium_wide'
+      ? 'width: 8cm; height: 4cm;'
+      : tagSize === 'compact' 
+      ? 'width: 5cm; height: 3cm;' 
+      : tagSize === 'square'
+      ? 'width: 4.5cm; height: 4.5cm;'
+      : 'width: 7cm; height: 4cm;';
+
+    let html = `
+      <div dir="rtl" style="font-family: 'Vazirmatn', Tahoma, sans-serif; background: #fff; color: #000; padding: 0; margin: 0;">
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800;900&display=swap');
+          @media print {
+            body { background: white; margin: 0; padding: 0; }
+            .shelf-tag-card { break-inside: avoid; page-break-inside: avoid; }
+          }
+          .shelf-tag-card {
+            ${sizeStyle}
+            border: 1.5px solid #1e293b;
+            border-radius: 0px;
+            padding: 6px 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            background: #ffffff;
+            color: #000000;
+            box-sizing: border-box;
+            margin: 0;
+            float: right;
+          }
+        </style>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; padding: 0; margin: 0; justify-items: start;">
+    `;
+
+    targetProds.forEach(p => {
+      const catObj = categories.find(c => c.id === p.categoryId);
+      const deptId = resolveProductDepartmentId(p.categoryId);
+      const deptObj = departments.find(d => d.id === deptId);
+      const priceFormatted = formatWithCommas(p.salePrice || 0);
+
+      html += `
+        <div class="shelf-tag-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #94a3b8; padding-bottom: 3px;">
+            ${showShopTitle ? `<span style="font-size: 9px; font-weight: 800; color: #0f172a; font-family: 'Vazirmatn', sans-serif;">${shopBrandName}</span>` : '<span></span>'}
+            ${showDepartment && deptObj ? `<span style="font-size: 8.5px; font-weight: 700; background: #e2e8f0; padding: 1px 5px; border-radius: 0px; color: #1e293b; font-family: 'Vazirmatn', sans-serif;">${deptObj.name}</span>` : ''}
+          </div>
+          <div style="text-align: center; margin: 3px 0; flex-grow: 1; display: flex; flex-direction: column; justify-content: center;">
+            <div style="font-size: ${tagSize === 'large' ? '16px' : tagSize === 'compact' ? '11px' : tagSize === 'square' ? '12px' : '13px'}; font-weight: 900; line-height: 1.25; color: #020617; font-family: 'Vazirmatn', sans-serif;">${p.name}</div>
+            ${catObj ? `<div style="font-size: 8px; color: #475569; margin-top: 1px; font-weight: 600; font-family: 'Vazirmatn', sans-serif;">${catObj.name}</div>` : ''}
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: flex-end; border-top: 1px solid #cbd5e1; padding-top: 3px;">
+            <div>
+              ${showCode && p.code ? `<div style="font-size: 8px; font-family: monospace; color: #334155; font-weight: 700;">کد: ${p.code}</div>` : ''}
+              ${showBarcode && p.barcode ? `<div style="font-size: 7.5px; font-family: monospace; color: #334155;">بارکد: ${toPersianDigits(p.barcode)}</div>` : ''}
+            </div>
+            <div style="text-align: left;">
+              <div style="font-size: ${tagSize === 'large' ? '17px' : tagSize === 'compact' ? '11px' : tagSize === 'square' ? '13px' : '14px'}; font-weight: 900; font-family: 'Vazirmatn', monospace; color: #000000;">${toPersianDigits(priceFormatted)} <span style="font-size: 8.5px; font-weight: 700; font-family: 'Vazirmatn', sans-serif; color: #1e293b;">ریال</span></div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+
+    html += `
+        </div>
+      </div>
+    `;
+
+    printElement('', html);
+  };
   const deptMap = useMemo(() => {
     const map: Record<string, string> = {};
     departments.forEach(d => { map[d.id] = d.name; });
@@ -2669,7 +2799,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           { id: 'packaging', label: 'نوع بسته‌بندی', count: packagingTypesList.length },
           { id: 'barcodes', label: 'تنظیمات بارکد', icon: <BarcodeIcon className="h-4 w-4" /> },
           { id: 'records', label: 'ثبت فروش ماهانه', count: salesRecords.length },
-          { id: 'analysis', label: 'تحلیل فروش ماهانه' }
+          { id: 'analysis', label: 'تحلیل فروش ماهانه' },
+          { id: 'shelf_tags', label: 'تگ و برچسب قفسه', icon: <Tag className="h-4 w-4" /> }
         ]}
       />
 
@@ -4658,6 +4789,240 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           selectedYear={selectedSalesYear}
           onNavigateToCategories={() => setActiveTab('categories')}
         />
+      )}
+
+      {activeTab === 'shelf_tags' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-xl space-y-6 text-right" dir="rtl">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl shrink-0 border border-indigo-500/20">
+                <Tag className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-white">مدیریت و چاپ تگ‌ها و برچسب‌های قفسه (Shelf Tags)</h3>
+                <p className="text-xs text-slate-400 mt-0.5">طراحی، تفکیک دپارتمانی و چاپ برچسب قیمت استاندارد برای نصب روی شلف‌ها و ویترین فروشگاه</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <button
+                type="button"
+                onClick={handlePrintShelfTags}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white rounded-2xl text-xs font-black shadow-lg shadow-indigo-500/20 transition-all cursor-pointer border border-indigo-400/30"
+              >
+                <Printer className="w-4 h-4" />
+                <span>چاپ برچسب‌های قفسه ({toPersianDigits(selectedShelfTagsCount > 0 ? selectedShelfTagsCount : shelfTagFilteredProducts.length)})</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Filters & Customization Toolbar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">فیلتر دپارتمان تولیدی</label>
+              <select
+                value={tagDeptFilter}
+                onChange={(e) => setTagDeptFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
+              >
+                <option value="all">همه دپارتمان‌ها ({departments.length})</option>
+                {departments.map(d => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">فیلتر دسته‌بندی کالا</label>
+              <select
+                value={tagCatFilter}
+                onChange={(e) => setTagCatFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
+              >
+                <option value="all">همه دسته‌بندی‌ها ({categories.length})</option>
+                {categories.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">سایز قالب برچسب شلف</label>
+              <select
+                value={tagSize}
+                onChange={(e) => setTagSize(e.target.value as any)}
+                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
+              >
+                <option value="standard">استاندارد قفسه (۷ در ۴ سانتی‌متر)</option>
+                <option value="large">بزرگ ویترین (۹.۵ در ۵.۵ سانتی‌متر)</option>
+                <option value="medium_wide">متوسط عریض (۸ در ۴ سانتی‌متر)</option>
+                <option value="compact">فشرده / نواری (۵ در ۳ سانتی‌متر)</option>
+                <option value="square">مربعی (۴.۵ در ۴.۵ سانتی‌متر)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">عنوان فروشگاه / برند روی برچسب</label>
+              <input
+                type="text"
+                value={shopBrandName}
+                onChange={(e) => setShopBrandName(e.target.value)}
+                placeholder="مثلاً: شیرینی و کافه گاتان"
+                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-500 font-medium"
+              />
+            </div>
+          </div>
+
+          {/* Search & Toggles Bar */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-950/40 p-3.5 rounded-2xl border border-slate-800">
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute right-3.5 top-3 w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                value={tagSearch}
+                onChange={(e) => setTagSearch(e.target.value)}
+                placeholder="جستجو در نام، کد یا بارکد کالا..."
+                className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl pr-10 pl-3.5 py-2.5 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-4 flex-wrap text-xs text-slate-300 font-bold">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showShopTitle}
+                  onChange={(e) => setShowShopTitle(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                />
+                <span>نمایش نام فروشگاه</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showCode}
+                  onChange={(e) => setShowCode(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                />
+                <span>نمایش کد کالا</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showBarcode}
+                  onChange={(e) => setShowBarcode(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                />
+                <span>چاپ بارکد</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showDepartment}
+                  onChange={(e) => setShowDepartment(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                />
+                <span>چاپ دپارتمان</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Products List & Selection Table */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-2">
+              <span className="text-xs font-bold text-slate-300">
+                فهرست کالاها و محصولات قابل چاپ تگ ({toPersianDigits(shelfTagFilteredProducts.length)} مورد)
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSelectAllShelfTags(true)}
+                  className="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded-lg font-bold transition-colors cursor-pointer border border-slate-700"
+                >
+                  انتخاب همه
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectAllShelfTags(false)}
+                  className="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-lg font-bold transition-colors cursor-pointer border border-slate-700"
+                >
+                  لغو انتخاب‌ها
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950">
+              <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
+                <thead className="bg-slate-900/80 text-slate-300 font-bold">
+                  <tr>
+                    <th className="p-3.5 text-center w-12">
+                      <input
+                        type="checkbox"
+                        checked={shelfTagFilteredProducts.length > 0 && shelfTagFilteredProducts.every(p => selectedProductIdsForTags[p.id])}
+                        onChange={(e) => handleSelectAllShelfTags(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                      />
+                    </th>
+                    <th className="p-3.5">کد کالا</th>
+                    <th className="p-3.5">نام محصول</th>
+                    <th className="p-3.5">دسته‌بندی و دپارتمان</th>
+                    <th className="p-3.5 text-center">واحد فروش</th>
+                    <th className="p-3.5 text-left">قیمت مصوب (ریال)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850 text-slate-200">
+                  {shelfTagFilteredProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-12 text-slate-500 font-medium">
+                        هیچ کالایی مطابق با فیلترهای انتخابی یافت نشد.
+                      </td>
+                    </tr>
+                  ) : (
+                    shelfTagFilteredProducts.map(p => {
+                      const catObj = categories.find(c => c.id === p.categoryId);
+                      const deptId = resolveProductDepartmentId(p.categoryId);
+                      const deptObj = departments.find(d => d.id === deptId);
+                      const isSelected = !!selectedProductIdsForTags[p.id];
+
+                      return (
+                        <tr 
+                          key={p.id} 
+                          onClick={() => {
+                            setSelectedProductIdsForTags(prev => ({ ...prev, [p.id]: !prev[p.id] }));
+                          }}
+                          className={`hover:bg-slate-900/70 transition-colors cursor-pointer ${isSelected ? 'bg-indigo-950/20' : ''}`}
+                        >
+                          <td className="p-3.5 text-center" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setSelectedProductIdsForTags(prev => ({ ...prev, [p.id]: checked }));
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
+                            />
+                          </td>
+                          <td className="p-3.5 font-mono font-bold text-indigo-400">{p.code || '---'}</td>
+                          <td className="p-3.5 font-black text-white">{p.name}</td>
+                          <td className="p-3.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {catObj && <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded-md text-[10px] font-bold">{catObj.name}</span>}
+                              {deptObj && <span className="px-2 py-0.5 bg-indigo-500/15 text-indigo-300 rounded-md text-[10px] font-black border border-indigo-500/30">{deptObj.name}</span>}
+                            </div>
+                          </td>
+                          <td className="p-3.5 text-center font-medium text-slate-300">{p.unit}</td>
+                          <td className="p-3.5 text-left font-mono font-black text-emerald-400">{formatWithCommas(p.salePrice || 0)}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       )}
 
       {confirmModal && (

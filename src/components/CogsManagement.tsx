@@ -2239,8 +2239,12 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     let globalRawOverheadSum = 0;
 
     products.forEach(p => {
+      const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
+      const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
+      const hasFormula = recipe && recipe.ingredients && recipe.ingredients.length > 0;
+
       const pDeptId = resolveProductDepartmentId(p.categoryId);
-      const Tsd = pDeptId === UNASSIGNED_DEPT_ID ? 0 : (categoryDirectLaborMap[pDeptId] || 0);
+      const Tsd = (pDeptId === UNASSIGNED_DEPT_ID || !hasFormula) ? 0 : (categoryDirectLaborMap[pDeptId] || 0);
       const saleAgg = salesTotalsByProductId[p.id];
       const sp = saleAgg ? saleAgg.qtySold : 0;
       const netRev = saleAgg ? saleAgg.netSalesAmount : 0;
@@ -2251,35 +2255,100 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
       let rawShared = 0;
       let rawOverhead = 0;
 
-      if (sp > 0) {
-        if (pUnitTime > 0) {
-          const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
-          const pUnitTimeInHours = pUnitTime / 60;
-          rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : (pUnitTimeInHours * hourlyWageDirect);
+      if (hasFormula) {
+        if (sp > 0) {
+          if (pUnitTime > 0) {
+            const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
+            const pUnitTimeInHours = pUnitTime / 60;
+            rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : (pUnitTimeInHours * hourlyWageDirect);
 
-          const hourlyWageShared = requiredHours > 0 ? (totalSharedLaborPayroll / requiredHours) : 0;
-          rawShared = pUnitTimeInHours * hourlyWageShared;
+            const hourlyWageShared = requiredHours > 0 ? (totalSharedLaborPayroll / requiredHours) : 0;
+            rawShared = pUnitTimeInHours * hourlyWageShared;
 
-          const hourlyWageOverhead = requiredHours > 0 ? (netOverheadValue / requiredHours) : 0;
-          rawOverhead = pUnitTimeInHours * hourlyWageOverhead;
-        } else {
-          if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-            const catWeight = categoryTotalWeightMap[pDeptId] || 0;
-            const catNetSales = categoryNetSalesMap[pDeptId] || 0;
-            const catQty = categorySalesQtyMap[pDeptId] || 0;
-            const useCatWeight = categoryAllSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
+            const hourlyWageOverhead = requiredHours > 0 ? (netOverheadValue / requiredHours) : 0;
+            rawOverhead = pUnitTimeInHours * hourlyWageOverhead;
+          } else {
+            if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
+              const catWeight = categoryTotalWeightMap[pDeptId] || 0;
+              const catNetSales = categoryNetSalesMap[pDeptId] || 0;
+              const catQty = categorySalesQtyMap[pDeptId] || 0;
+              const useCatWeight = categoryAllSoldHaveWeightMap[pDeptId] === true && catWeight > 0;
 
-            let inCatShare = 0;
-            if (useCatWeight) {
-              inCatShare = (sp * prodWeight) / catWeight;
-            } else if (catNetSales > 0) {
-              inCatShare = netRev / catNetSales;
-            } else if (catQty > 0) {
-              inCatShare = sp / catQty;
+              let inCatShare = 0;
+              if (useCatWeight) {
+                inCatShare = (sp * prodWeight) / catWeight;
+              } else if (catNetSales > 0) {
+                inCatShare = netRev / catNetSales;
+              } else if (catQty > 0) {
+                inCatShare = sp / catQty;
+              }
+              rawDirect = (inCatShare * Tsd) / sp;
             }
-            rawDirect = (inCatShare * Tsd) / sp;
-          }
 
+            const useGlobalWeight = allGlobalSoldHaveWeight && grandTotalWeight > 0;
+            let globalShare = 0;
+            if (useGlobalWeight) {
+              globalShare = (sp * prodWeight) / grandTotalWeight;
+            } else if (totalNetSalesAll > 0) {
+              globalShare = netRev / totalNetSalesAll;
+            } else if (totalSalesQtyAll > 0) {
+              globalShare = sp / totalSalesQtyAll;
+            }
+            rawShared = (globalShare * totalSharedLaborPayroll) / sp;
+            rawOverhead = (globalShare * netOverheadValue) / sp;
+          }
+        } else {
+          // Fallback for zero sales products
+          if (pUnitTime > 0) {
+            const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
+            rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : ((pUnitTime / 60) * hourlyWageDirect);
+            rawShared = requiredHours > 0 ? (pUnitTime / 60) * (totalSharedLaborPayroll / requiredHours) : 0;
+            rawOverhead = requiredHours > 0 ? (pUnitTime / 60) * (netOverheadValue / requiredHours) : 0;
+          } else if (!p.isWip) {
+            if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
+              const catWeight = categoryTotalWeightMap[pDeptId] || 0;
+              const catQty = categorySalesQtyMap[pDeptId] || 0;
+              if (catWeight > 0 && prodWeight > 0) {
+                rawDirect = (Tsd / catWeight) * prodWeight;
+              } else if (catQty > 0) {
+                rawDirect = Tsd / catQty;
+              } else if (fallbackCategorySalesMap[pDeptId]) {
+                const fb = fallbackCategorySalesMap[pDeptId];
+                if (fb.weight > 0 && prodWeight > 0) {
+                  rawDirect = (Tsd / fb.weight) * prodWeight;
+                } else if (fb.qty > 0) {
+                  rawDirect = Tsd / fb.qty;
+                }
+              } else {
+                const catStats = catFinishedStats[pDeptId];
+                if (catStats && catStats.count > 0) {
+                  if (catStats.allHaveWeight && catStats.totalWeight > 0 && prodWeight > 0) {
+                    rawDirect = (Tsd / catStats.totalWeight) * prodWeight;
+                  } else {
+                    rawDirect = Tsd / catStats.count;
+                  }
+                }
+              }
+            }
+            if (grandTotalWeight > 0 && prodWeight > 0) {
+              rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
+              rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
+            } else if (totalSalesQtyAll > 0) {
+              rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
+              rawOverhead = netOverheadValue / totalSalesQtyAll;
+            } else if (fallbackGlobalSalesWeight > 0 && prodWeight > 0) {
+              rawShared = (totalSharedLaborPayroll / fallbackGlobalSalesWeight) * prodWeight;
+              rawOverhead = (netOverheadValue / fallbackGlobalSalesWeight) * prodWeight;
+            } else if (fallbackGlobalSalesQty > 0) {
+              rawShared = totalSharedLaborPayroll / fallbackGlobalSalesQty;
+              rawOverhead = netOverheadValue / fallbackGlobalSalesQty;
+            }
+          }
+        }
+      } else {
+        // Purchased goods without formula: direct labor is 0
+        rawDirect = 0;
+        if (sp > 0) {
           const useGlobalWeight = allGlobalSoldHaveWeight && grandTotalWeight > 0;
           let globalShare = 0;
           if (useGlobalWeight) {
@@ -2291,60 +2360,26 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           }
           rawShared = (globalShare * totalSharedLaborPayroll) / sp;
           rawOverhead = (globalShare * netOverheadValue) / sp;
-        }
-      } else {
-        // Fallback for zero sales products
-        if (pUnitTime > 0) {
-          const hourlyWageDirect = requiredHours > 0 ? (Tsd / requiredHours) : 0;
-          rawDirect = pDeptId === UNASSIGNED_DEPT_ID ? 0 : ((pUnitTime / 60) * hourlyWageDirect);
-          rawShared = requiredHours > 0 ? (pUnitTime / 60) * (totalSharedLaborPayroll / requiredHours) : 0;
-          rawOverhead = requiredHours > 0 ? (pUnitTime / 60) * (netOverheadValue / requiredHours) : 0;
-        } else if (!p.isWip) {
-          if (pDeptId !== UNASSIGNED_DEPT_ID && Tsd > 0) {
-            const catWeight = categoryTotalWeightMap[pDeptId] || 0;
-            const catQty = categorySalesQtyMap[pDeptId] || 0;
-            if (catWeight > 0 && prodWeight > 0) {
-              rawDirect = (Tsd / catWeight) * prodWeight;
-            } else if (catQty > 0) {
-              rawDirect = Tsd / catQty;
-            } else if (fallbackCategorySalesMap[pDeptId]) {
-              const fb = fallbackCategorySalesMap[pDeptId];
-              if (fb.weight > 0 && prodWeight > 0) {
-                rawDirect = (Tsd / fb.weight) * prodWeight;
-              } else if (fb.qty > 0) {
-                rawDirect = Tsd / fb.qty;
-              }
-            } else {
-              const catStats = catFinishedStats[pDeptId];
-              if (catStats && catStats.count > 0) {
-                if (catStats.allHaveWeight && catStats.totalWeight > 0 && prodWeight > 0) {
-                  rawDirect = (Tsd / catStats.totalWeight) * prodWeight;
-                } else {
-                  rawDirect = Tsd / catStats.count;
-                }
-              }
+        } else {
+          if (!p.isWip) {
+            if (grandTotalWeight > 0 && prodWeight > 0) {
+              rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
+              rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
+            } else if (totalSalesQtyAll > 0) {
+              rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
+              rawOverhead = netOverheadValue / totalSalesQtyAll;
             }
-          }
-          if (grandTotalWeight > 0 && prodWeight > 0) {
-            rawShared = (totalSharedLaborPayroll / grandTotalWeight) * prodWeight;
-            rawOverhead = (netOverheadValue / grandTotalWeight) * prodWeight;
-          } else if (totalSalesQtyAll > 0) {
-            rawShared = totalSharedLaborPayroll / totalSalesQtyAll;
-            rawOverhead = netOverheadValue / totalSalesQtyAll;
-          } else if (fallbackGlobalSalesWeight > 0 && prodWeight > 0) {
-            rawShared = (totalSharedLaborPayroll / fallbackGlobalSalesWeight) * prodWeight;
-            rawOverhead = (netOverheadValue / fallbackGlobalSalesWeight) * prodWeight;
-          } else if (fallbackGlobalSalesQty > 0) {
-            rawShared = totalSharedLaborPayroll / fallbackGlobalSalesQty;
-            rawOverhead = netOverheadValue / fallbackGlobalSalesQty;
           }
         }
       }
 
       rawAllocationsMap[p.id] = { direct: rawDirect, shared: rawShared, overhead: rawOverhead };
 
-      if (sp > 0) {
+      if (sp > 0 && hasFormula) {
         catRawDirectSum[pDeptId] = (catRawDirectSum[pDeptId] || 0) + (sp * rawDirect);
+        globalRawSharedSum += (sp * rawShared);
+        globalRawOverheadSum += (sp * rawOverhead);
+      } else if (sp > 0) {
         globalRawSharedSum += (sp * rawShared);
         globalRawOverheadSum += (sp * rawOverhead);
       }
@@ -2391,7 +2426,9 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
         let ingredientsSum = 0;
         const productFormulasList = formulas.filter(f => doesFormulaMatchProduct(f.productId, p));
         const recipe = productFormulasList.find(f => f.isActive) || productFormulasList[0];
-        if (recipe && recipe.ingredients) {
+        const hasFormula = recipe && recipe.ingredients && recipe.ingredients.length > 0;
+
+        if (hasFormula) {
           recipe.ingredients.forEach(ing => {
             const resolved = resolveMaterialByKey(ing.rawMaterialId);
             if (resolved.item) {
@@ -2407,14 +2444,17 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
               ingredientsSum += Math.round(ing.quantity * unitPrice);
             }
           });
+        } else {
+          ingredientsSum = p.cogsPrice || 0;
         }
 
         const adj = adjustedAllocationsMap[p.id] || { direct: 0, shared: 0, overhead: 0 };
-        const totalCOGS = ingredientsSum + adj.direct + adj.shared + adj.overhead;
+        const directLaborCost = hasFormula ? adj.direct : 0;
+        const totalCOGS = ingredientsSum + directLaborCost + adj.shared + adj.overhead;
 
         results[p.id] = {
           materialCost: ingredientsSum,
-          directLabor: adj.direct,
+          directLabor: directLaborCost,
           sharedLabor: adj.shared,
           overheadCost: adj.overhead,
           totalCOGSPrice: totalCOGS
@@ -3290,27 +3330,18 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   const applyCogsPricesToProductCatalog = () => {
     const updatedProducts = db.products.map(p => {
       if (p.periodId === activePeriodId) {
-        const hasFormula = formulas.some(f => doesFormulaMatchProduct(f.productId, p));
-        if (hasFormula) {
-          const calculatedCogs = Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || 0);
-          return {
-            ...p,
-            cogsPrice: calculatedCogs,
-            salePrice: p.isWip ? calculatedCogs : p.salePrice
-          };
-        } else {
-          return {
-            ...p,
-            cogsPrice: 0,
-            salePrice: p.isWip ? 0 : p.salePrice
-          };
-        }
+        const calculatedCogs = Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || p.cogsPrice || 0);
+        return {
+          ...p,
+          cogsPrice: calculatedCogs,
+          salePrice: p.isWip ? calculatedCogs : p.salePrice
+        };
       }
       return p;
     });
 
     onUpdateDb({ ...db, products: updatedProducts });
-    alert('بهای تمام شده محاسباتی تمامی محصولات فرمول‌دار با موفقیت در کاتالوگ ثبت گردید. بهای تمام شده سایر کالاها صفر منظور شد.');
+    alert('بهای تمام شده محاسباتی تمامی محصولات با موفقیت در کاتالوگ ثبت گردید.');
   };
 
   // Automatic silent cost allocation & catalog COGS persistence whenever month or cost inputs change
@@ -3323,10 +3354,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
     let hasDiff = false;
     const updatedProducts = (currentDb.products || []).map(p => {
       if (p.periodId !== activePeriodId) return p;
-      const hasFormula = formulas.some(f => doesFormulaMatchProduct(f.productId, p));
-      const nextCogs = hasFormula
-        ? Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || 0)
-        : 0;
+      const nextCogs = Math.round(fullCalculatedCOGSMap[p.id]?.totalCOGSPrice || p.cogsPrice || 0);
       const nextSale = p.isWip ? nextCogs : p.salePrice;
       if ((p.cogsPrice || 0) !== nextCogs || (p.salePrice || 0) !== nextSale) {
         hasDiff = true;

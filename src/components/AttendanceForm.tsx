@@ -875,6 +875,27 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     return Array.from(capsSet);
   };
 
+  const getDeduplicatedAuthorizedSectionsAndShifts = (empCapabilities: string[]) => {
+    const seenIds = new Set<string>();
+    const authorizedSections = periodProductionSections.filter(sec => {
+      if (seenIds.has(sec.id)) return false;
+      if (empCapabilities.includes(sec.id)) {
+        seenIds.add(sec.id);
+        return true;
+      }
+      return false;
+    });
+    const authorizedShifts = (shiftsList || []).filter(sh => {
+      if (seenIds.has(sh.id)) return false;
+      if (!periodProductionSections.some(s => s.id === sh.id) && empCapabilities.includes(sh.id)) {
+        seenIds.add(sh.id);
+        return true;
+      }
+      return false;
+    });
+    return { authorizedSections, authorizedShifts };
+  };
+
   const resolveShiftDisplayName = (shiftId: string): string => {
     if (!shiftId || shiftId === 'none') return 'بدون شیفت';
     const sec = periodProductionSections.find(s => s.id === shiftId || s.departmentCategoryId === shiftId);
@@ -5817,8 +5838,8 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                                           <div className="flex items-center gap-1.5">
                                             {(() => {
                                               const empCapabilities = getAuthorizedCapabilitiesForEmployee(mismatch.employee);
-                                              const authorizedSections = (db.productionSections || []).filter(sec => empCapabilities.includes(sec.id));
-                                              const authorizedShifts = (shiftsList || []).filter(sh => !(db.productionSections || []).some(s => s.id === sh.id) && empCapabilities.includes(sh.id));
+                                              const authorizedSections = periodProductionSections.filter(sec => empCapabilities.includes(sec.id));
+                                              const authorizedShifts = (shiftsList || []).filter(sh => !periodProductionSections.some(s => s.id === sh.id) && empCapabilities.includes(sh.id));
                                               return (
                                                 <select
                                                   value={draftShifts[recordKey] !== undefined ? draftShifts[recordKey] : mismatch.currentSectionId}
@@ -6416,8 +6437,8 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                         <td className="px-4 py-3 text-center">
                           {(() => {
                             const empCapabilities = getAuthorizedCapabilitiesForEmployee(inspectionDetails.employee);
-                            const authorizedSections = (db.productionSections || []).filter(sec => empCapabilities.includes(sec.id));
-                            const authorizedShifts = (shiftsList || []).filter(sh => !(db.productionSections || []).some(s => s.id === sh.id) && empCapabilities.includes(sh.id));
+                            const authorizedSections = periodProductionSections.filter(sec => empCapabilities.includes(sec.id));
+                            const authorizedShifts = (shiftsList || []).filter(sh => !periodProductionSections.some(s => s.id === sh.id) && empCapabilities.includes(sh.id));
                             return (
                               <select
                                 value={currentSectionId}
