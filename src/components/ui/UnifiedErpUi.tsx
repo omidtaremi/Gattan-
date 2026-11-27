@@ -90,8 +90,8 @@ const VARIANT_CLASSES: Record<ErpButtonVariant, string> = {
 };
 
 const SIZE_CLASSES: Record<ErpButtonSize, string> = {
-  sm: 'h-9 sm:h-8 px-2.5 text-xs gap-1.5',
-  md: 'h-10 sm:h-9 px-3.5 text-xs sm:text-[13px] gap-1.5',
+  sm: 'min-h-[34px] py-1.5 px-2.5 text-xs gap-1.5 leading-tight',
+  md: 'min-h-[38px] py-2 px-3.5 text-xs sm:text-[13px] gap-1.5 leading-tight',
 };
 
 export const ErpButton: React.FC<ErpButtonProps> = ({
@@ -357,7 +357,7 @@ export const UnifiedSearchInput: React.FC<UnifiedSearchInputProps> = ({
   placeholder = ERP_BUTTON_LABELS.searchPlaceholder,
   className = '',
 }) => (
-  <div className={`relative flex-1 min-w-[180px] sm:max-w-xs ${className}`}>
+  <div className={`relative flex-1 min-w-[200px] w-full sm:max-w-sm ${className}`}>
     <Search className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
     <input
       type="text"
@@ -458,11 +458,11 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
 
   return (
     <div
-      className={`flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 shadow-sm ${className}`}
+      className={`flex flex-col xl:flex-row xl:flex-wrap xl:items-center justify-between gap-2.5 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 shadow-sm ${className}`}
     >
       {/* Right side (RTL start): Search & Filters */}
       {hasSearchOrFilters ? (
-        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[220px]">
           {onSearchChange && (
             <UnifiedSearchInput
               value={searchValue ?? ''}
@@ -483,12 +483,12 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
           )}
         </div>
       ) : (
-        <div className="hidden lg:block" />
+        <div className="hidden xl:block" />
       )}
 
       {/* Left side (RTL end): Fixed canonical order of utility buttons + primary CTA */}
       {(hasSecondaryActions || hasPrimary) && (
-        <div className="flex flex-wrap items-center gap-1.5 shrink-0 justify-end">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0 justify-start xl:justify-end">
           {onCopyFromPeriod && (
             <ErpButton
               variant="secondary"
@@ -578,7 +578,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
           {extraSecondaryActions}
 
           {hasSecondaryActions && hasPrimary && (
-            <span className="hidden sm:inline-block w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5" />
+            <span className="hidden xl:inline-block w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5" />
           )}
 
           {primaryActionSlot}
@@ -892,6 +892,7 @@ export interface KpiItem {
   value: string | number;
   sublabel?: string;
   tone?: 'default' | 'success' | 'danger' | 'warning' | 'info';
+  valueClassName?: string;
 }
 
 export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
@@ -919,19 +920,21 @@ export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
     >
       {items.map((item, idx) => {
         const tone = item.tone ?? 'default';
+        const displayValue = typeof item.value === 'number' ? item.value.toLocaleString('fa-IR') : item.value;
         return (
           <div
             key={`${item.label}-${idx}`}
-            className="bg-slate-50 dark:bg-slate-950/70 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800/80"
+            className="bg-slate-50 dark:bg-slate-950/70 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800/80 min-w-0"
           >
             <span className={`text-[11px] font-bold block mb-1 truncate ${labelTone[tone]}`}>
               {item.label}
             </span>
-            <div className="flex items-baseline justify-between gap-2">
+            <div className="flex items-baseline justify-between gap-1.5 min-w-0">
               <span
-                className={`text-lg sm:text-xl font-black font-mono tabular-nums truncate ${valueTone[tone]}`}
+                title={String(displayValue)}
+                className={`font-black font-mono tabular-nums min-w-0 ${item.valueClassName ?? 'text-lg sm:text-xl truncate'} ${valueTone[tone]}`}
               >
-                {typeof item.value === 'number' ? item.value.toLocaleString('fa-IR') : item.value}
+                {displayValue}
               </span>
               {item.sublabel && (
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0 truncate">

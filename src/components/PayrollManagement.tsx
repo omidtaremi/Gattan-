@@ -9600,8 +9600,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [searchContractQuery, setSearchContractQuery] = useState<string>('');
   const [groupByPersonnelContracts, setGroupByPersonnelContracts] = useState<boolean>(false);
   const [contractAgreementFilter, setContractAgreementFilter] = useState<'all' | 'agreed' | 'standard'>('all');
-  const [contractSortBy, setContractSortBy] = useState<'name' | 'startDate' | 'baseSalary' | 'netPayable'>('startDate');
-  const [contractSortOrder, setContractSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [contractSortBy, setContractSortBy] = useState<'name' | 'employeeCode' | 'startDate' | 'baseSalary' | 'netPayable'>('employeeCode');
+  const [contractSortOrder, setContractSortOrder] = useState<'asc' | 'desc'>('asc');
   const [constantsSearchQuery, setConstantsSearchQuery] = useState<string>('');
   const [contractModalEmployee, setContractModalEmployee] = useState<Personnel | null>(null);
   const [contractModalContractData, setContractModalContractData] = useState<any | null>(null);
@@ -9623,6 +9623,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   } | null>(null);
   const [batchSeniorityOverrides, setBatchSeniorityOverrides] = useState<Record<string, string>>({});
   const [selectedContractIds, setSelectedContractIds] = useState<string[]>([]);
+  const [quickEntryDateDrafts, setQuickEntryDateDrafts] = useState<Record<string, string>>({});
+  const [quickEntryDateErrorByEmp, setQuickEntryDateErrorByEmp] = useState<Record<string, string>>({});
+  const [isEditingSingleEntryDate, setIsEditingSingleEntryDate] = useState<boolean>(false);
+  const [singleEntryDateSuccessMsg, setSingleEntryDateSuccessMsg] = useState<string>('');
 
   useEffect(() => {
     setSelectedContractIds([]);
@@ -10364,6 +10368,169 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     return dates[0];
   };
 
+  const findFirstAttendanceDateForPersonnelOverall = (emp: Personnel | null | undefined): string => {
+    if (!emp) return '';
+    const records = db.attendanceRecords || [];
+    if (records.length === 0) return '';
+
+    const cleanTok = (v: any) => toEnglishDigits(String(v || '')).trim().toLowerCase();
+    const stripZeros = (v: string) => {
+      const s = v.replace(/^0+/, '');
+      return s === '' && v !== '' ? '0' : s;
+    };
+
+    const empTokenSet = new Set<string>();
+    const addToken = (raw: any) => {
+      const c = cleanTok(raw);
+      if (!c) return;
+      empTokenSet.add(c);
+      empTokenSet.add(stripZeros(c));
+    };
+
+    const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
+    if (rawAtt) {
+      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(addToken);
+    }
+    addToken(emp.employeeCode);
+    addToken(emp.id);
+
+    if (empTokenSet.size === 0) return '';
+
+    const dates: string[] = [];
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      if (!rec || !Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+
+      const recAtt = cleanTok(rec.attendanceCode);
+      const recEmpId = cleanTok(rec.employeeId);
+      const matches =
+        (recAtt && (empTokenSet.has(recAtt) || empTokenSet.has(stripZeros(recAtt)))) ||
+        (recEmpId && (empTokenSet.has(recEmpId) || empTokenSet.has(stripZeros(recEmpId))));
+
+      if (!matches) continue;
+      const normDate = normalizeRateDateYMD(rec.date);
+      if (normDate) {
+        dates.push(normDate);
+      }
+    }
+
+    if (dates.length === 0) return '';
+    dates.sort();
+    return dates[0];
+  };
+
+  const handleQuickSavePersonnelEntryDate = (empCode: string, rawDate: string): boolean => {
+    const normEntry = normalizeRateDateYMD(rawDate);
+    if (!normEntry) {
+      setQuickEntryDateErrorByEmp(prev => ({
+        ...prev,
+        [empCode]: 'فرمت تاریخ ورود به کار معتبر نیست (فرمت صحیح: ۱۴۰۵/۰۱/۰۱).'
+      }));
+      return false;
+    }
+
+    const updatedPersonnel = db.personnel.map(p => {
+      if (p.periodId === activePeriodId && p.employeeCode === empCode) {
+        const prevEntryNorm = normalizeRateDateYMD(p.entryDate || '');
+        const prevSenNorm = normalizeRateDateYMD(p.seniorityBaseStartDate || '');
+        const shouldSyncSeniority = !prevSenNorm || (prevEntryNorm && prevSenNorm === prevEntryNorm);
+        return {
+          ...p,
+          entryDate: normEntry,
+          ...(shouldSyncSeniority ? { seniorityBaseStartDate: normEntry } : {})
+        };
+      }
+      return p;
+    });
+
+    onUpdateDb({
+      ...db,
+      personnel: updatedPersonnel
+    });
+
+    setQuickEntryDateErrorByEmp(prev => {
+      const next = { ...prev };
+      delete next[empCode];
+      return next;
+    });
+    setQuickEntryDateDrafts(prev => {
+      const next = { ...prev };
+      delete next[empCode];
+      return next;
+    });
+
+    if (selContractEmpCode === empCode) {
+      setContractFormValidationError('');
+      setIsEditingSingleEntryDate(false);
+      setSingleEntryDateSuccessMsg(`تاریخ ورود به کار پرسنل با موفقیت روی ${toPersianDigits(normEntry)} ثبت شد.`);
+
+      if (!editContractId) {
+        const curStartNorm = normalizeRateDateYMD(conStartDate);
+        const minAllowed = normEntry > activePeriodStartDate ? normEntry : activePeriodStartDate;
+        if (!curStartNorm || curStartNorm < minAllowed) {
+          const nextStart = minAllowed;
+          setConStartDate(toPersianDigits(nextStart));
+          const curEndNorm = normalizeRateDateYMD(conEndDate);
+          if (curEndNorm && nextStart <= curEndNorm) {
+            const autoDur = calculateJalaliContractMonths(nextStart, curEndNorm);
+            setConDurationMonths(autoDur > 0 ? String(autoDur) : '');
+          }
+          const updatedEmp = updatedPersonnel.find(p => p.periodId === activePeriodId && p.employeeCode === empCode);
+          if (updatedEmp && !conSeniorityManuallyEdited) {
+            const autoSen = computeAutoSeniorityForContract(updatedEmp, nextStart);
+            setConSeniorityBase(formatWithCommas(autoSen.monthly30));
+          }
+        }
+      }
+    }
+
+    return true;
+  };
+
+  const handleBatchApplyFirstAttendanceEntryDates = (
+    items: Array<{ emp: Personnel; firstAttendanceDate: string }>
+  ) => {
+    const applicable = items.filter(it => Boolean(normalizeRateDateYMD(it.firstAttendanceDate)));
+    if (applicable.length === 0) return;
+
+    const dateByCode = new Map<string, string>();
+    applicable.forEach(it => {
+      const n = normalizeRateDateYMD(it.firstAttendanceDate);
+      if (n) dateByCode.set(it.emp.employeeCode, n);
+    });
+
+    const updatedPersonnel = db.personnel.map(p => {
+      if (p.periodId === activePeriodId && dateByCode.has(p.employeeCode)) {
+        const normEntry = dateByCode.get(p.employeeCode)!;
+        const prevEntryNorm = normalizeRateDateYMD(p.entryDate || '');
+        const prevSenNorm = normalizeRateDateYMD(p.seniorityBaseStartDate || '');
+        const shouldSyncSeniority = !prevSenNorm || (prevEntryNorm && prevSenNorm === prevEntryNorm);
+        return {
+          ...p,
+          entryDate: normEntry,
+          ...(shouldSyncSeniority ? { seniorityBaseStartDate: normEntry } : {})
+        };
+      }
+      return p;
+    });
+
+    onUpdateDb({
+      ...db,
+      personnel: updatedPersonnel
+    });
+
+    setQuickEntryDateDrafts(prev => {
+      const next = { ...prev };
+      dateByCode.forEach((_, code) => { delete next[code]; });
+      return next;
+    });
+    setQuickEntryDateErrorByEmp(prev => {
+      const next = { ...prev };
+      dateByCode.forEach((_, code) => { delete next[code]; });
+      return next;
+    });
+  };
+
   const resolveSuggestedContractDatesForPersonnel = (
     emp: Personnel | null | undefined,
     excludeContractId?: string | null
@@ -10375,6 +10542,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         startSourceLabel: `اولین روز دوره مالی (${toPersianDigits(activePeriodStartDate)})`,
         latestPriorContractEndDate: '',
         firstAttendanceDate: '',
+        firstAttendanceDateOverall: '',
+        entryDate: '',
+        hasMissingEntryDate: false,
+        minAllowedStartDate: activePeriodStartDate,
         departureDate: '',
         dayBeforeDeparture: '',
         maxAllowedEndDate: activePeriodEndDate,
@@ -10383,6 +10554,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         cannotRegisterReason: ''
       };
     }
+
+    const rawEntry = emp.entryDate || (emp as any).personnel?.entryDate || '';
+    const entryYMD = normalizeRateDateYMD(rawEntry);
+    const hasMissingEntryDate = !entryYMD;
+    const minAllowedStartDate = (entryYMD && entryYMD > activePeriodStartDate) ? entryYMD : activePeriodStartDate;
+    const firstAttendanceDateOverall = findFirstAttendanceDateForPersonnelOverall(emp);
 
     const rawDep = emp.departureDate || (emp as any).personnel?.departureDate || '';
     const depYMD = normalizeRateDateYMD(rawDep);
@@ -10406,7 +10583,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const latestPriorContractEndDate = priorEndDates[0] || '';
 
     let suggestedStartDate = activePeriodStartDate;
-    let startSource: 'prior_contract' | 'first_attendance' | 'period_start' = 'period_start';
+    let startSource: 'prior_contract' | 'first_attendance' | 'entry_date' | 'period_start' = 'period_start';
     let startSourceLabel = `اولین روز سال/دوره مالی (${toPersianDigits(activePeriodStartDate)})`;
     let firstAttendanceDate = '';
 
@@ -10424,12 +10601,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
 
+    if (entryYMD && suggestedStartDate < entryYMD) {
+      suggestedStartDate = entryYMD;
+      startSource = 'entry_date';
+      startSourceLabel = `تاریخ ورود به کار پرسنل (${toPersianDigits(entryYMD)})`;
+    }
+
     const suggestedEndDate = hasDepartureRestriction
       ? (dayBeforeDep >= activePeriodStartDate ? dayBeforeDep : '')
       : activePeriodEndDate;
 
     let cannotRegisterReason = '';
-    if (hasDepartureRestriction && dayBeforeDep < activePeriodStartDate) {
+    if (hasMissingEntryDate) {
+      cannotRegisterReason = 'تاریخ ورود به کار برای این پرسنل در پرونده ثبت نشده است. تا زمان ثبت تاریخ ورود به کار، امکان صدور قرارداد وجود ندارد.';
+    } else if (entryYMD > activePeriodEndDate) {
+      cannotRegisterReason = `تاریخ ورود به کار این پرسنل (${toPersianDigits(entryYMD)}) پس از پایان دوره مالی فعال (${toPersianDigits(activePeriodEndDate)}) است و امکان ثبت قرارداد در این دوره وجود ندارد.`;
+    } else if (hasDepartureRestriction && dayBeforeDep < activePeriodStartDate) {
       cannotRegisterReason = `این پرسنل در تاریخ ${toPersianDigits(depYMD)} (پیش از شروع دوره مالی) ترک کار کرده است و امکان ثبت قرارداد در دوره «${activePeriodLabel}» وجود ندارد.`;
     } else if (suggestedStartDate > activePeriodEndDate) {
       cannotRegisterReason = `قرارداد قبلی این پرسنل تا تاریخ ${toPersianDigits(latestPriorContractEndDate)} ثبت شده و روز بعد (${toPersianDigits(suggestedStartDate)}) خارج از بازه دوره مالی فعال است.`;
@@ -10443,6 +10630,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       startSourceLabel,
       latestPriorContractEndDate,
       firstAttendanceDate,
+      firstAttendanceDateOverall,
+      entryDate: entryYMD,
+      hasMissingEntryDate,
+      minAllowedStartDate,
       departureDate: depYMD,
       dayBeforeDeparture: dayBeforeDep,
       maxAllowedEndDate,
@@ -10494,6 +10685,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         end: normEnd,
         message: `امکان ثبت قرارداد در تاریخ خارج از دوره مالی فعال «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وجود ندارد.`
       };
+    }
+
+    // Strict entry date (تاریخ ورود به کار) check
+    if (emp) {
+      const rawEntry = emp.entryDate || (emp as any).personnel?.entryDate || '';
+      const entryYMD = normalizeRateDateYMD(rawEntry);
+      if (!entryYMD) {
+        return {
+          ok: false,
+          start: normStart,
+          end: normEnd,
+          message: 'تاریخ ورود به کار برای این پرسنل در پرونده ثبت نشده است. لطفاً ابتدا تاریخ ورود به کار را ثبت یا اصلاح کنید.'
+        };
+      }
+      if (normStart < entryYMD) {
+        return {
+          ok: false,
+          start: normStart,
+          end: normEnd,
+          message: `امکان ثبت قرارداد قبل از تاریخ ورود به کار پرسنل (${toPersianDigits(entryYMD)}) وجود ندارد. تاریخ شروع قرارداد باید برابر یا بعد از ${toPersianDigits(entryYMD)} باشد.`
+        };
+      }
     }
 
     // Strict departure date check (max allowed = 1 day before departureDate)
@@ -10910,6 +11123,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConNotes('');
     setConIsActive(true);
     setContractFormValidationError('');
+    setIsEditingSingleEntryDate(false);
+    setSingleEntryDateSuccessMsg('');
   };
 
   const handleNewContract = () => {
@@ -10990,6 +11205,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         eligibleList: [] as Array<{
           emp: Personnel;
           empName: string;
+          entryDate: string;
           startYMD: string;
           endYMD: string;
           durationMonths: number;
@@ -10998,6 +11214,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           autoSeniorityDaily: number;
           autoSeniorityMonthly30: number;
         }>,
+        skippedMissingEntryDate: [] as Array<{
+          emp: Personnel;
+          empName: string;
+          firstAttendanceDate: string;
+        }>,
+        adjustedToEntryDateDetails: [] as string[],
         skippedAlreadyCovered: [] as string[],
         skippedDeparted: [] as string[],
         skippedInvalidRange: [] as string[],
@@ -11014,6 +11236,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         errorTitle: 'پرسنلی در این دوره یافت نشد',
         errorMessage: 'هیچ پرسنلی در این دوره جهت صدور قرارداد دسته‌جمعی ثبت نشده است.',
         eligibleList: [],
+        skippedMissingEntryDate: [],
+        adjustedToEntryDateDetails: [],
         skippedAlreadyCovered: [],
         skippedDeparted: [],
         skippedInvalidRange: [],
@@ -11031,6 +11255,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         errorTitle: 'عدم وجود نرخ پایه دستمزد',
         errorMessage: `امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || rawStart)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`,
         eligibleList: [],
+        skippedMissingEntryDate: [],
+        adjustedToEntryDateDetails: [],
         skippedAlreadyCovered: [],
         skippedDeparted: [],
         skippedInvalidRange: [],
@@ -11038,6 +11264,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       };
     }
 
+    const skippedMissingEntryDate: Array<{
+      emp: Personnel;
+      empName: string;
+      firstAttendanceDate: string;
+    }> = [];
+    const adjustedToEntryDateDetails: string[] = [];
     const skippedAlreadyCovered: string[] = [];
     const skippedDeparted: string[] = [];
     const skippedInvalidRange: string[] = [];
@@ -11045,6 +11277,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const eligibleList: Array<{
       emp: Personnel;
       empName: string;
+      entryDate: string;
       startYMD: string;
       endYMD: string;
       durationMonths: number;
@@ -11058,12 +11291,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const pName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode;
       const suggestion = resolveSuggestedContractDatesForPersonnel(p, null);
 
-      const empStartNorm =
+      if (suggestion.hasMissingEntryDate) {
+        skippedMissingEntryDate.push({
+          emp: p,
+          empName: pName,
+          firstAttendanceDate: suggestion.firstAttendanceDateOverall || suggestion.firstAttendanceDate || ''
+        });
+        return;
+      }
+
+      let empStartNorm =
         suggestion.startSource === 'prior_contract'
           ? suggestion.suggestedStartDate
           : suggestion.startSource === 'first_attendance'
             ? suggestion.suggestedStartDate
             : batchStartNorm;
+
+      if (suggestion.entryDate && empStartNorm < suggestion.entryDate) {
+        empStartNorm = suggestion.entryDate;
+        adjustedToEntryDateDetails.push(
+          `${pName} (تاریخ ورود: ${toPersianDigits(suggestion.entryDate)} ← شروع قرارداد: ${toPersianDigits(empStartNorm)})`
+        );
+      }
 
       let empEndNorm = batchEndNorm;
 
@@ -11085,6 +11334,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       if (empStartNorm > empEndNorm) {
         if (suggestion.startSource === 'prior_contract') {
           skippedAlreadyCovered.push(`${pName} (قرارداد قبلی تا ${toPersianDigits(suggestion.latestPriorContractEndDate)})`);
+        } else if (suggestion.entryDate && suggestion.entryDate > empEndNorm) {
+          skippedInvalidRange.push(`${pName} (تاریخ ورود ${toPersianDigits(suggestion.entryDate)} پس از پایان بازه دسته‌جمعی ${toPersianDigits(empEndNorm)})`);
         } else {
           skippedInvalidRange.push(`${pName} (شروع ${toPersianDigits(empStartNorm)} پس از پایان ${toPersianDigits(empEndNorm)})`);
         }
@@ -11108,6 +11359,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       eligibleList.push({
         emp: p,
         empName: pName,
+        entryDate: suggestion.entryDate,
         startYMD: finalCheck.start,
         endYMD: finalCheck.end,
         durationMonths: calcMonths > 0 ? calcMonths : 1,
@@ -11123,6 +11375,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       errorTitle: '',
       errorMessage: '',
       eligibleList,
+      skippedMissingEntryDate,
+      adjustedToEntryDateDetails,
       skippedAlreadyCovered,
       skippedDeparted,
       skippedInvalidRange,
@@ -11153,6 +11407,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const {
       eligibleList,
+      skippedMissingEntryDate,
+      adjustedToEntryDateDetails,
       skippedAlreadyCovered,
       skippedDeparted,
       skippedInvalidRange,
@@ -11161,6 +11417,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     if (eligibleList.length === 0) {
       const details: string[] = [];
+      if (skippedMissingEntryDate.length > 0) {
+        details.push(`فاقد تاریخ ورود به کار در پرونده (${toPersianDigits(skippedMissingEntryDate.length)} نفر — لطفاً ابتدا تاریخ ورود آن‌ها را ثبت کنید): ${skippedMissingEntryDate.map(x => x.empName).join('، ')}`);
+      }
       if (skippedAlreadyCovered.length > 0) {
         details.push(`دارای قرارداد تا پایان بازه (${toPersianDigits(skippedAlreadyCovered.length)} نفر): ${skippedAlreadyCovered.join('، ')}`);
       }
@@ -11173,7 +11432,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       setBatchContractNotice({
         type: 'error',
         title: 'هیچ قرارداد جدیدی برای صدور دسته‌جمعی واجد شرایط نبود',
-        details: details.length > 0 ? details : ['تمام پرسنل این دوره از قبل پوشش قراردادی دارند یا مشمول محدودیت ترک کار هستند.']
+        details: details.length > 0 ? details : ['تمام پرسنل این دوره از قبل پوشش قراردادی دارند یا فاقد تاریخ ورود به کار / مشمول محدودیت ترک کار هستند.']
       });
       return;
     }
@@ -11279,8 +11538,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setShowBatchContractForm(false);
 
     const summaryDetails: string[] = [];
+    if (adjustedToEntryDateDetails.length > 0) {
+      summaryDetails.push(`تنظیم خودکار شروع قرارداد از تاریخ ورود به کار (${toPersianDigits(adjustedToEntryDateDetails.length)} نفر): ${adjustedToEntryDateDetails.join(' | ')}`);
+    }
     if (cappedDepartedDetails.length > 0) {
       summaryDetails.push(`محدودسازی پایان قرارداد تا یک روز قبل از ترک کار (${toPersianDigits(cappedDepartedDetails.length)} نفر): ${cappedDepartedDetails.join(' | ')}`);
+    }
+    if (skippedMissingEntryDate.length > 0) {
+      summaryDetails.push(`عدم صدور به دلیل ثبت نشدن تاریخ ورود به کار (${toPersianDigits(skippedMissingEntryDate.length)} نفر): ${skippedMissingEntryDate.map(x => x.empName).join('، ')}`);
     }
     if (skippedDeparted.length > 0) {
       summaryDetails.push(`عدم صدور به دلیل تاریخ ترک کار (${toPersianDigits(skippedDeparted.length)} نفر): ${skippedDeparted.join(' | ')}`);
@@ -20458,15 +20723,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         filteredContracts.sort((a, b) => {
           if (groupByPersonnelContracts) {
-            const empA = db.personnel.find(e => e.employeeCode === a.employeeCode && e.periodId === a.periodId) || db.personnel.find(e => e.employeeCode === a.employeeCode);
-            const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && e.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
-            const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : (a.employeeCode || '');
-            const nameB = empB ? (empB.fullName || `${empB.firstName || ''} ${empB.lastName || ''}`) : (b.employeeCode || '');
-            const cmp = nameA.localeCompare(nameB, 'fa');
-            if (cmp !== 0) return cmp;
+            if (contractSortBy === 'employeeCode') {
+              const codeA = toEnglishDigits(String(a.employeeCode || '')).trim();
+              const codeB = toEnglishDigits(String(b.employeeCode || '')).trim();
+              const codeCmp = codeA.localeCompare(codeB, 'en', { numeric: true });
+              if (codeCmp !== 0) return contractSortOrder === 'asc' ? codeCmp : -codeCmp;
+            } else {
+              const empA = db.personnel.find(e => e.employeeCode === a.employeeCode && e.periodId === a.periodId) || db.personnel.find(e => e.employeeCode === a.employeeCode);
+              const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && e.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
+              const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : (a.employeeCode || '');
+              const nameB = empB ? (empB.fullName || `${empB.firstName || ''} ${empB.lastName || ''}`) : (b.employeeCode || '');
+              const cmp = nameA.localeCompare(nameB, 'fa');
+              if (cmp !== 0) return cmp;
+            }
           }
           let cmp = 0;
-          if (contractSortBy === 'name') {
+          if (contractSortBy === 'employeeCode') {
+            const codeA = toEnglishDigits(String(a.employeeCode || '')).trim();
+            const codeB = toEnglishDigits(String(b.employeeCode || '')).trim();
+            cmp = codeA.localeCompare(codeB, 'en', { numeric: true });
+          } else if (contractSortBy === 'name') {
             const empA = db.personnel.find(e => e.employeeCode === a.employeeCode);
             const empB = db.personnel.find(e => e.employeeCode === b.employeeCode);
             const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : (a.employeeCode || '');
@@ -20501,8 +20777,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 items={[
                   { label: 'کل قراردادهای دوره', value: toPersianDigits(periodContractsAll.length), sublabel: 'قرارداد ثبت‌شده', tone: 'default' },
                   { label: 'قراردادهای فعال جاری', value: toPersianDigits(activeContractsCount), sublabel: 'در حال اجرا', tone: 'success' },
-                  { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning' },
-                  { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info' }
+                  { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning', valueClassName: 'text-sm sm:text-base tracking-tight' },
+                  { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info', valueClassName: 'text-xs sm:text-sm md:text-[15px] tracking-tight break-all' }
                 ]}
               />
             )}
@@ -20631,6 +20907,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         className={`flex-grow ${UNIFIED_FILTER_SELECT_CLASS}`}
                       >
                         <option value="startDate">تاریخ شروع</option>
+                        <option value="employeeCode">کد پرسنلی</option>
                         <option value="name">نام پرسنل</option>
                         <option value="baseSalary">حقوق پایه روزانه</option>
                         <option value="netPayable">خالص پرداختی</option>
@@ -20804,151 +21081,294 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     const previewPlan = (batchStartDate && batchEndDate)
                       ? buildBatchContractPlan(batchStartDate, batchEndDate)
                       : null;
-                    if (!previewPlan || !previewPlan.ok || previewPlan.eligibleList.length === 0) return null;
+                    const missingEntryEmps = (previewPlan && previewPlan.ok)
+                      ? previewPlan.skippedMissingEntryDate
+                      : activeEmployees
+                          .map(p => ({
+                            emp: p,
+                            empName: p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode,
+                            info: resolveSuggestedContractDatesForPersonnel(p, null)
+                          }))
+                          .filter(x => x.info.hasMissingEntryDate)
+                          .map(x => ({
+                            emp: x.emp,
+                            empName: x.empName,
+                            firstAttendanceDate: x.info.firstAttendanceDateOverall || x.info.firstAttendanceDate || ''
+                          }));
+
+                    const missingWithAttendance = missingEntryEmps.filter(x => Boolean(x.firstAttendanceDate));
 
                     return (
-                      <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3 text-right">
-                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
-                          <div>
-                            <h5 className="text-[11px] font-black text-indigo-300">
-                              پیش‌نمایش و تنظیم حق پایه سنوات پرسنل واجد شرایط ({toPersianDigits(previewPlan.eligibleList.length)} نفر)
-                            </h5>
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              مبلغ پایه سنوات هر پرسنل بر اساس جدول سنوات (بیش از ۱ سال سابقه) به‌صورت خودکار تکمیل شده است؛ در صورت نیاز می‌توانید آن را اصلاح یا صفر کنید.
+                      <>
+                        {missingEntryEmps.length > 0 && (
+                          <div className="bg-rose-950/35 border border-rose-500/40 rounded-2xl p-4 space-y-3 text-right">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-500/20 pb-2.5">
+                              <div>
+                                <div className="flex items-center gap-1.5 text-xs font-black text-rose-300">
+                                  <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
+                                  <span>
+                                    هشدار: {toPersianDigits(missingEntryEmps.length)} پرسنل فاقد «تاریخ ورود به کار» هستند (امکان صدور قرارداد برای آن‌ها مسدود است)
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-rose-200/80 mt-1">
+                                  تا زمان ثبت تاریخ ورود به کار در پرونده، قرارداد برای این افراد صادر نمی‌شود. می‌توانید همین‌جا بر اساس اولین تردد ثبت‌شده یا تاریخ دلخواه، تاریخ ورود آن‌ها را ثبت کنید.
+                                </p>
+                              </div>
+                              {missingWithAttendance.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleBatchApplyFirstAttendanceEntryDates(missingWithAttendance)}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10.5px] font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
+                                >
+                                  ثبت تاریخ ورود از اولین تردد برای {toPersianDigits(missingWithAttendance.length)} نفر
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="max-h-56 overflow-y-auto overflow-x-auto rounded-xl border border-rose-500/25 bg-slate-950/70">
+                              <table className="w-full text-right text-[11px]">
+                                <thead className="bg-slate-900/90 sticky top-0 z-10 text-[10px] text-slate-400 border-b border-slate-800">
+                                  <tr>
+                                    <th className="py-2 px-3 font-extrabold">پرسنل</th>
+                                    <th className="py-2 px-2 font-extrabold text-center">اولین تردد ثبت‌شده</th>
+                                    <th className="py-2 px-3 font-extrabold text-center">ثبت تاریخ ورود به کار</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/60">
+                                  {missingEntryEmps.map(({ emp, empName, firstAttendanceDate }) => {
+                                    const code = emp.employeeCode;
+                                    const draftVal = Object.prototype.hasOwnProperty.call(quickEntryDateDrafts, code)
+                                      ? quickEntryDateDrafts[code]
+                                      : (firstAttendanceDate ? toPersianDigits(firstAttendanceDate) : '');
+                                    const rowErr = quickEntryDateErrorByEmp[code] || '';
+
+                                    return (
+                                      <tr key={code} className="hover:bg-slate-900/50">
+                                        <td className="py-2 px-3">
+                                          <span className="font-bold text-slate-100 block">{empName}</span>
+                                          <span className="text-[9.5px] text-slate-500 font-mono">کد: {toPersianDigits(code)}</span>
+                                        </td>
+                                        <td className="py-2 px-2 text-center whitespace-nowrap">
+                                          {firstAttendanceDate ? (
+                                            <div className="inline-flex items-center gap-1.5">
+                                              <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-mono font-bold text-[10px]">
+                                                {toPersianDigits(firstAttendanceDate)}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setQuickEntryDateDrafts(prev => ({ ...prev, [code]: toPersianDigits(firstAttendanceDate) }));
+                                                  setQuickEntryDateErrorByEmp(prev => { const n = { ...prev }; delete n[code]; return n; });
+                                                }}
+                                                className="text-[9.5px] text-cyan-300 hover:text-cyan-200 underline cursor-pointer font-bold"
+                                              >
+                                                جایگذاری
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <span className="text-[10px] text-slate-500">ترددی ثبت نشده</span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 px-3">
+                                          <div className="flex flex-col items-center gap-1">
+                                            <div className="flex items-center justify-center gap-1.5">
+                                              <input
+                                                type="text"
+                                                placeholder="۱۴۰۵/۰۱/۰۱"
+                                                value={draftVal}
+                                                onChange={(e) => {
+                                                  setQuickEntryDateDrafts(prev => ({
+                                                    ...prev,
+                                                    [code]: toPersianDigits(e.target.value)
+                                                  }));
+                                                  if (rowErr) {
+                                                    setQuickEntryDateErrorByEmp(prev => { const n = { ...prev }; delete n[code]; return n; });
+                                                  }
+                                                }}
+                                                className="w-28 bg-slate-900 border border-slate-700 focus:border-emerald-500 rounded-lg px-2 py-1 text-[11px] font-mono text-center text-white font-bold focus:outline-none"
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() => handleQuickSavePersonnelEntryDate(code, draftVal)}
+                                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap"
+                                              >
+                                                ثبت ورود
+                                              </button>
+                                            </div>
+                                            {rowErr && (
+                                              <span className="text-[9.5px] text-rose-300 font-bold">{rowErr}</span>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {previewPlan && previewPlan.ok && previewPlan.adjustedToEntryDateDetails.length > 0 && (
+                          <div className="bg-cyan-950/30 border border-cyan-500/35 rounded-xl p-3 space-y-1 text-[10.5px] text-cyan-100 text-right">
+                            <div className="font-extrabold text-cyan-300">
+                              تنظیم خودکار شروع قرارداد از تاریخ ورود به کار ({toPersianDigits(previewPlan.adjustedToEntryDateDetails.length)} نفر):
+                            </div>
+                            <p className="text-cyan-100/85 leading-relaxed">
+                              {previewPlan.adjustedToEntryDateDetails.join(' | ')}
                             </p>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const allZero: Record<string, string> = {};
-                                previewPlan.eligibleList.forEach(item => {
-                                  allZero[item.emp.employeeCode] = '۰';
-                                });
-                                setBatchSeniorityOverrides(allZero);
-                              }}
-                              className="px-2.5 py-1 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                            >
-                              صفر کردن پایه سنوات همه
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setBatchSeniorityOverrides({})}
-                              className="px-2.5 py-1 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                            >
-                              بازنشانی به محاسبه خودکار
-                            </button>
-                          </div>
-                        </div>
+                        )}
 
-                        <div className="max-h-64 overflow-y-auto overflow-x-auto rounded-xl border border-slate-800/70">
-                          <table className="w-full text-right text-[11px]">
-                            <thead className="bg-slate-900/90 sticky top-0 z-10 text-[10px] text-slate-400 border-b border-slate-800">
-                              <tr>
-                                <th className="py-2 px-3 font-extrabold">پرسنل</th>
-                                <th className="py-2 px-2 font-extrabold text-center">بازه قرارداد</th>
-                                <th className="py-2 px-2 font-extrabold text-center">سابقه مشمول</th>
-                                <th className="py-2 px-3 font-extrabold text-center">پایه سنوات ماهانه (ریال)</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/60">
-                              {previewPlan.eligibleList.map(item => {
-                                const code = item.emp.employeeCode;
-                                const hasOverride = Object.prototype.hasOwnProperty.call(batchSeniorityOverrides, code);
-                                const displayVal = hasOverride
-                                  ? batchSeniorityOverrides[code]
-                                  : formatWithCommas(item.autoSeniorityMonthly30);
-                                const numericCurrent = Math.max(0, parseFloat(toEnglishDigits(displayVal).replace(/,/g, '')) || 0);
-                                const isChanged = numericCurrent !== item.autoSeniorityMonthly30;
+                        {previewPlan && previewPlan.ok && previewPlan.eligibleList.length > 0 && (
+                          <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3 text-right">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+                              <div>
+                                <h5 className="text-[11px] font-black text-indigo-300">
+                                  پیش‌نمایش و تنظیم حق پایه سنوات پرسنل واجد شرایط ({toPersianDigits(previewPlan.eligibleList.length)} نفر)
+                                </h5>
+                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                  مبلغ پایه سنوات هر پرسنل بر اساس جدول سنوات (بیش از ۱ سال سابقه) به‌صورت خودکار تکمیل شده است؛ در صورت نیاز می‌توانید آن را اصلاح یا صفر کنید.
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allZero: Record<string, string> = {};
+                                    previewPlan.eligibleList.forEach(item => {
+                                      allZero[item.emp.employeeCode] = '۰';
+                                    });
+                                    setBatchSeniorityOverrides(allZero);
+                                  }}
+                                  className="px-2.5 py-1 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                >
+                                  صفر کردن پایه سنوات همه
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setBatchSeniorityOverrides({})}
+                                  className="px-2.5 py-1 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                >
+                                  بازنشانی به محاسبه خودکار
+                                </button>
+                              </div>
+                            </div>
 
-                                return (
-                                  <tr key={code} className="hover:bg-slate-900/50">
-                                    <td className="py-2 px-3">
-                                      <span className="font-bold text-slate-100 block">{item.empName}</span>
-                                      <span className="text-[9.5px] text-slate-500 font-mono">کد: {toPersianDigits(code)}</span>
-                                    </td>
-                                    <td className="py-2 px-2 text-center font-mono text-[10px] text-slate-300 whitespace-nowrap">
-                                      {toPersianDigits(item.startYMD)} تا {toPersianDigits(item.endYMD)}
-                                    </td>
-                                    <td className="py-2 px-2 text-center">
-                                      {item.autoSeniorityYears > 0 ? (
-                                        <span className="inline-block bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-md text-[9.5px] font-bold">
-                                          {toPersianDigits(item.autoSeniorityYears)} سال ({toPersianDigits(formatWithCommas(item.autoSeniorityMonthly30))})
-                                        </span>
-                                      ) : (
-                                        <span className="text-[10px] text-slate-500">فاقد سابقه مشمول</span>
-                                      )}
-                                    </td>
-                                    <td className="py-2 px-3">
-                                      <div className="flex items-center justify-center gap-1.5">
-                                        <input
-                                          type="text"
-                                          value={displayVal}
-                                          onChange={(e) => {
-                                            const eng = toEnglishDigits(e.target.value);
-                                            const cleanVal = eng.replace(/,/g, '');
-                                            if (!isNaN(Number(cleanVal)) || cleanVal === '') {
-                                              setBatchSeniorityOverrides(prev => ({
-                                                ...prev,
-                                                [code]: cleanVal === '' ? '۰' : formatWithCommas(cleanVal)
-                                              }));
-                                            }
-                                          }}
-                                          className={`w-32 bg-slate-950 border rounded-lg px-2 py-1 text-[11px] font-mono text-center font-bold focus:outline-none transition-colors ${
-                                            isChanged
-                                              ? 'border-amber-500/60 text-amber-300'
-                                              : 'border-slate-700 text-indigo-300 focus:border-indigo-500'
-                                          }`}
-                                        />
-                                        {numericCurrent > 0 && (
-                                          <button
-                                            type="button"
-                                            title="صفر کردن پایه سنوات این پرسنل"
-                                            onClick={() =>
-                                              setBatchSeniorityOverrides(prev => ({
-                                                ...prev,
-                                                [code]: '۰'
-                                              }))
-                                            }
-                                            className="px-1.5 py-1 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded-md text-[9.5px] font-bold cursor-pointer"
-                                          >
-                                            صفر
-                                          </button>
-                                        )}
-                                        {isChanged && (
-                                          <button
-                                            type="button"
-                                            title="بازگردانی به مبلغ خودکار"
-                                            onClick={() =>
-                                              setBatchSeniorityOverrides(prev => {
-                                                const next = { ...prev };
-                                                delete next[code];
-                                                return next;
-                                              })
-                                            }
-                                            className="px-1.5 py-1 bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[9.5px] font-bold cursor-pointer"
-                                          >
-                                            خودکار
-                                          </button>
-                                        )}
-                                      </div>
-                                    </td>
+                            <div className="max-h-64 overflow-y-auto overflow-x-auto rounded-xl border border-slate-800/70">
+                              <table className="w-full text-right text-[11px]">
+                                <thead className="bg-slate-900/90 sticky top-0 z-10 text-[10px] text-slate-400 border-b border-slate-800">
+                                  <tr>
+                                    <th className="py-2 px-3 font-extrabold">پرسنل</th>
+                                    <th className="py-2 px-2 font-extrabold text-center">تاریخ ورود</th>
+                                    <th className="py-2 px-2 font-extrabold text-center">بازه قرارداد</th>
+                                    <th className="py-2 px-2 font-extrabold text-center">سابقه مشمول</th>
+                                    <th className="py-2 px-3 font-extrabold text-center">پایه سنوات ماهانه (ریال)</th>
                                   </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/60">
+                                  {previewPlan.eligibleList.map(item => {
+                                    const code = item.emp.employeeCode;
+                                    const hasOverride = Object.prototype.hasOwnProperty.call(batchSeniorityOverrides, code);
+                                    const displayVal = hasOverride
+                                      ? batchSeniorityOverrides[code]
+                                      : formatWithCommas(item.autoSeniorityMonthly30);
+                                    const numericCurrent = Math.max(0, parseFloat(toEnglishDigits(displayVal).replace(/,/g, '')) || 0);
+                                    const isChanged = numericCurrent !== item.autoSeniorityMonthly30;
+
+                                    return (
+                                      <tr key={code} className="hover:bg-slate-900/50">
+                                        <td className="py-2 px-3">
+                                          <span className="font-bold text-slate-100 block">{item.empName}</span>
+                                          <span className="text-[9.5px] text-slate-500 font-mono">کد: {toPersianDigits(code)}</span>
+                                        </td>
+                                        <td className="py-2 px-2 text-center font-mono text-[10px] text-emerald-300 whitespace-nowrap font-bold">
+                                          {toPersianDigits(item.entryDate)}
+                                        </td>
+                                        <td className="py-2 px-2 text-center font-mono text-[10px] text-slate-300 whitespace-nowrap">
+                                          {toPersianDigits(item.startYMD)} تا {toPersianDigits(item.endYMD)}
+                                        </td>
+                                        <td className="py-2 px-2 text-center">
+                                          {item.autoSeniorityYears > 0 ? (
+                                            <span className="inline-block bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-md text-[9.5px] font-bold">
+                                              {toPersianDigits(item.autoSeniorityYears)} سال ({toPersianDigits(formatWithCommas(item.autoSeniorityMonthly30))})
+                                            </span>
+                                          ) : (
+                                            <span className="text-[10px] text-slate-500">فاقد سابقه مشمول</span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 px-3">
+                                          <div className="flex items-center justify-center gap-1.5">
+                                            <input
+                                              type="text"
+                                              value={displayVal}
+                                              onChange={(e) => {
+                                                const eng = toEnglishDigits(e.target.value);
+                                                const cleanVal = eng.replace(/,/g, '');
+                                                if (!isNaN(Number(cleanVal)) || cleanVal === '') {
+                                                  setBatchSeniorityOverrides(prev => ({
+                                                    ...prev,
+                                                    [code]: cleanVal === '' ? '۰' : formatWithCommas(cleanVal)
+                                                  }));
+                                                }
+                                              }}
+                                              className={`w-32 bg-slate-950 border rounded-lg px-2 py-1 text-[11px] font-mono text-center font-bold focus:outline-none transition-colors ${
+                                                isChanged
+                                                  ? 'border-amber-500/60 text-amber-300'
+                                                  : 'border-slate-700 text-indigo-300 focus:border-indigo-500'
+                                              }`}
+                                            />
+                                            {numericCurrent > 0 && (
+                                              <button
+                                                type="button"
+                                                title="صفر کردن پایه سنوات این پرسنل"
+                                                onClick={() =>
+                                                  setBatchSeniorityOverrides(prev => ({
+                                                    ...prev,
+                                                    [code]: '۰'
+                                                  }))
+                                                }
+                                                className="px-1.5 py-1 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded-md text-[9.5px] font-bold cursor-pointer"
+                                              >
+                                                صفر
+                                              </button>
+                                            )}
+                                            {isChanged && (
+                                              <button
+                                                type="button"
+                                                title="بازگردانی به مبلغ خودکار"
+                                                onClick={() =>
+                                                  setBatchSeniorityOverrides(prev => {
+                                                    const next = { ...prev };
+                                                    delete next[code];
+                                                    return next;
+                                                  })
+                                                }
+                                                className="px-1.5 py-1 bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[9.5px] font-bold cursor-pointer"
+                                              >
+                                                خودکار
+                                              </button>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     );
                   })()}
 
                   <div className="bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10 text-[11px] text-slate-300 space-y-1.5 leading-relaxed text-right">
                     <p className="font-extrabold text-emerald-400">قوانین صدور دسته‌جمعی قراردادها در دوره «{activePeriodLabel}»:</p>
-                    <p>۱. تاریخ شروع هر پرسنل به‌صورت هوشمند تعیین می‌شود: در صورت داشتن قرارداد قبلی در این دوره «روز بعد از پایان قرارداد قبلی»، در غیر این صورت «اولین روز تردد ثبت‌شده» و در نبود تردد، تاریخ شروع بالا (پیش‌فرض اولین روز دوره مالی) لحاظ می‌گردد.</p>
-                    <p>۲. برای پرسنلی که در طول دوره ترک کار کرده‌اند، تاریخ پایان قرارداد به‌صورت خودکار حداکثر تا یک روز قبل از تاریخ ترک کار محدود می‌شود.</p>
-                    <p>۳. ثبت قرارداد در تاریخ خارج از بازه دوره مالی فعال مجاز نیست.</p>
-                    <p>۴. حق پایه سنوات هر پرسنل به‌صورت خودکار از جدول پایه سنوات تکمیل می‌شود و پیش از صدور نهایی قابل اصلاح یا صفر کردن است.</p>
+                    <p>۱. تاریخ شروع هر پرسنل به‌صورت هوشمند تعیین می‌شود: در صورت داشتن قرارداد قبلی در این دوره «روز بعد از پایان قرارداد قبلی»، در غیر این صورت «اولین روز تردد ثبت‌شده» و در نبود تردد، تاریخ شروع بالا لحاظ می‌گردد؛ همچنین هیچ قراردادی پیش از «تاریخ ورود به کار» پرسنل صادر نمی‌شود و در صورت نیاز تاریخ شروع به‌صورت خودکار روی تاریخ ورود تنظیم می‌گردد.</p>
+                    <p>۲. برای پرسنلی که «تاریخ ورود به کار» در پرونده آن‌ها ثبت نشده است، صدور قرارداد تا زمان تکمیل تاریخ ورود مسدود است (در کادر بالا می‌توانید بر اساس اولین تردد، تاریخ ورود را مستقیماً ثبت کنید).</p>
+                    <p>۳. برای پرسنلی که در طول دوره ترک کار کرده‌اند، تاریخ پایان قرارداد به‌صورت خودکار حداکثر تا یک روز قبل از تاریخ ترک کار محدود می‌شود.</p>
+                    <p>۴. ثبت قرارداد در تاریخ خارج از بازه دوره مالی فعال مجاز نیست و حق پایه سنوات هر پرسنل به‌صورت خودکار از جدول سنوات تکمیل شده و قابل اصلاح یا صفر کردن است.</p>
                   </div>
 
                   <div className="flex justify-end gap-2.5 pt-2">
@@ -21081,6 +21501,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       onChange={(e) => {
                         const code = e.target.value;
                         setContractFormValidationError('');
+                        setIsEditingSingleEntryDate(false);
+                        setSingleEntryDateSuccessMsg('');
                         setSelContractEmpCode(code);
                         setConEmployeeCode(code);
                         setOriginalEmpCode(code);
@@ -21147,32 +21569,63 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 {/* Loaded Personnel Information display (Reassures the user, meeting constraints!) */}
-                {selectedEmployee && (
-                  <div className="bg-rose-500/5 p-4 rounded-xl border border-rose-500/10 space-y-2 text-[10px] animate-scaleIn">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-1.5">
-                      <span className="font-extrabold text-rose-400">اطلاعات پرونده شناسایی پرسنل (فراخوانی هوشمند):</span>
-                      <span className="text-[9px] bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded-full font-mono">متصل</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-slate-300 leading-normal">
-                      <div>کد ملی: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.nationalId || 'ثبت نشده')}</span></div>
-                      <div>نام پدر: <span className="font-bold text-white">{selectedEmployee.fatherName || 'ثبت نشده'}</span></div>
-                      <div>ش شناسنامه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.accountCode || selectedEmployee.employeeCode || 'ثبت نشده')}</span></div>
-                      <div>تاریخ تولد: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.birthDate || 'ثبت نشده')}</span></div>
-                      <div>شماره بیمه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.insuranceCode || 'ثبت نشده')}</span></div>
-                      <div>تلفن همراه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.mobile || 'ثبت نشده')}</span></div>
-                      <div>نظام وظیفه: <span className="font-bold text-white">{selectedEmployee.militaryStatus || 'ثبت نشده'}</span></div>
-                      <div>وضعیت تاهل: <span className="font-bold text-white">{selectedEmployee.maritalStatus || 'ثبت نشده'}</span></div>
-                      <div className="col-span-2 border-t border-slate-800/50 pt-1.5 mt-0.5">
-                        آدرس مسکونی: <span className="font-medium text-white">{selectedEmployee.address || 'ثبت نشده'}</span>
+                {selectedEmployee && (() => {
+                  const selectedEntryYMD = normalizeRateDateYMD(selectedEmployee.entryDate || '');
+                  const firstAttOverall = findFirstAttendanceDateForPersonnelOverall(selectedEmployee);
+                  return (
+                    <div className="bg-rose-500/5 p-4 rounded-xl border border-rose-500/10 space-y-2 text-[10px] animate-scaleIn">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-1.5">
+                        <span className="font-extrabold text-rose-400">اطلاعات پرونده شناسایی پرسنل (فراخوانی هوشمند):</span>
+                        <span className="text-[9px] bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded-full font-mono">متصل</span>
                       </div>
-                      <div className="col-span-2 border-t border-slate-800/50 pt-1.5">
-                        سفته ضمانت: <span className="font-bold text-emerald-400">
-                          {selectedEmployee.promissoryNoteNumber ? `شماره سفته ${toPersianDigits(selectedEmployee.promissoryNoteNumber)} به مبلغ ${toPersianDigits(formatWithCommas(selectedEmployee.promissoryNoteAmount || 0))} ریال` : 'ثبت نشده'}
-                        </span>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-slate-300 leading-normal">
+                        <div>کد ملی: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.nationalId || 'ثبت نشده')}</span></div>
+                        <div>نام پدر: <span className="font-bold text-white">{selectedEmployee.fatherName || 'ثبت نشده'}</span></div>
+                        <div>ش شناسنامه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.accountCode || selectedEmployee.employeeCode || 'ثبت نشده')}</span></div>
+                        <div>تاریخ تولد: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.birthDate || 'ثبت نشده')}</span></div>
+                        <div className="flex items-center flex-wrap gap-1.5">
+                          <span>تاریخ ورود به کار:</span>
+                          {selectedEntryYMD ? (
+                            <span className="font-bold text-emerald-400 font-mono">{toPersianDigits(selectedEntryYMD)}</span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/35 font-bold text-[9.5px]">ثبت نشده</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSingleEntryDateSuccessMsg('');
+                              setQuickEntryDateDrafts(prev => ({
+                                ...prev,
+                                [selectedEmployee.employeeCode]: selectedEntryYMD
+                                  ? toPersianDigits(selectedEntryYMD)
+                                  : (firstAttOverall ? toPersianDigits(firstAttOverall) : '')
+                              }));
+                              setIsEditingSingleEntryDate(prev => !prev);
+                            }}
+                            className="text-[9.5px] text-amber-300 hover:text-amber-200 underline font-bold cursor-pointer"
+                          >
+                            {selectedEntryYMD ? 'اصلاح' : 'ثبت سریع'}
+                          </button>
+                        </div>
+                        <div>
+                          اولین تردد: <span className="font-bold text-cyan-300 font-mono">{firstAttOverall ? toPersianDigits(firstAttOverall) : 'ثبت نشده'}</span>
+                        </div>
+                        <div>شماره بیمه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.insuranceCode || 'ثبت نشده')}</span></div>
+                        <div>تلفن همراه: <span className="font-bold text-white font-mono">{toPersianDigits(selectedEmployee.mobile || 'ثبت نشده')}</span></div>
+                        <div>نظام وظیفه: <span className="font-bold text-white">{selectedEmployee.militaryStatus || 'ثبت نشده'}</span></div>
+                        <div>وضعیت تاهل: <span className="font-bold text-white">{selectedEmployee.maritalStatus || 'ثبت نشده'}</span></div>
+                        <div className="col-span-2 sm:col-span-3 border-t border-slate-800/50 pt-1.5 mt-0.5">
+                          آدرس مسکونی: <span className="font-medium text-white">{selectedEmployee.address || 'ثبت نشده'}</span>
+                        </div>
+                        <div className="col-span-2 sm:col-span-3 border-t border-slate-800/50 pt-1.5">
+                          سفته ضمانت: <span className="font-bold text-emerald-400">
+                            {selectedEmployee.promissoryNoteNumber ? `شماره سفته ${toPersianDigits(selectedEmployee.promissoryNoteNumber)} به مبلغ ${toPersianDigits(formatWithCommas(selectedEmployee.promissoryNoteAmount || 0))} ریال` : 'ثبت نشده'}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Step 2: Contract Fields */}
                 {(() => {
@@ -21180,9 +21633,128 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   const liveDateValidation = (selectedEmployee && conStartDate && conEndDate)
                     ? validateContractDateRangeForPersonnel(selectedEmployee, conStartDate, conEndDate)
                     : null;
+                  const conStartNormCheck = normalizeRateDateYMD(conStartDate);
+                  const isStartBeforeEntryDate = Boolean(
+                    selectedEmployee && dateSuggestion.entryDate && conStartNormCheck && conStartNormCheck < dateSuggestion.entryDate
+                  );
+                  const singleEmpCode = selectedEmployee?.employeeCode || '';
+                  const singleEntryDraft = singleEmpCode
+                    ? (Object.prototype.hasOwnProperty.call(quickEntryDateDrafts, singleEmpCode)
+                        ? quickEntryDateDrafts[singleEmpCode]
+                        : (dateSuggestion.entryDate
+                            ? toPersianDigits(dateSuggestion.entryDate)
+                            : (dateSuggestion.firstAttendanceDateOverall ? toPersianDigits(dateSuggestion.firstAttendanceDateOverall) : '')))
+                    : '';
+                  const singleEntryErr = singleEmpCode ? (quickEntryDateErrorByEmp[singleEmpCode] || '') : '';
 
                   return (
                     <div className="grid grid-cols-2 gap-3.5">
+                      {/* Entry date missing / inline quick-edit alert */}
+                      {selectedEmployee && (dateSuggestion.hasMissingEntryDate || isEditingSingleEntryDate) && (
+                        <div className={`col-span-2 rounded-xl p-3.5 space-y-2.5 text-right border ${
+                          dateSuggestion.hasMissingEntryDate
+                            ? 'bg-rose-950/40 border-rose-500/45'
+                            : 'bg-cyan-950/35 border-cyan-500/40'
+                        }`}>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className={`flex items-center gap-2 text-xs font-black ${
+                              dateSuggestion.hasMissingEntryDate ? 'text-rose-300' : 'text-cyan-300'
+                            }`}>
+                              <AlertTriangle className="h-4 w-4 shrink-0" />
+                              <span>
+                                {dateSuggestion.hasMissingEntryDate
+                                  ? 'تاریخ ورود به کار برای این پرسنل ثبت نشده است — ثبت قرارداد مسدود است'
+                                  : 'اصلاح سریع تاریخ ورود به کار پرسنل در پرونده'}
+                              </span>
+                            </div>
+                            {!dateSuggestion.hasMissingEntryDate && (
+                              <button
+                                type="button"
+                                onClick={() => setIsEditingSingleEntryDate(false)}
+                                className="text-[10px] text-slate-300 hover:text-white px-2 py-0.5 rounded-lg bg-slate-800/80 cursor-pointer font-bold"
+                              >
+                                بستن
+                              </button>
+                            )}
+                          </div>
+
+                          <p className="text-[10.5px] text-slate-200 leading-relaxed">
+                            {dateSuggestion.hasMissingEntryDate
+                              ? 'برای ثبت قرارداد، ابتدا باید «تاریخ ورود به کار» پرسنل مشخص باشد. می‌توانید همین‌جا تاریخ ورود به کار را وارد و ذخیره کنید.'
+                              : 'با ثبت تاریخ جدید، تاریخ ورود به کار در پرونده این پرسنل به‌روزرسانی می‌شود.'}
+                          </p>
+
+                          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                            <div className="inline-flex items-center gap-1.5 bg-slate-950/70 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[10.5px]">
+                              <span className="text-slate-400 font-bold">اولین تردد ثبت‌شده:</span>
+                              <span className="font-mono font-black text-cyan-300">
+                                {dateSuggestion.firstAttendanceDateOverall ? toPersianDigits(dateSuggestion.firstAttendanceDateOverall) : 'ترددی ثبت نشده'}
+                              </span>
+                              {dateSuggestion.firstAttendanceDateOverall && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setQuickEntryDateDrafts(prev => ({
+                                      ...prev,
+                                      [singleEmpCode]: toPersianDigits(dateSuggestion.firstAttendanceDateOverall)
+                                    }));
+                                    setQuickEntryDateErrorByEmp(prev => { const n = { ...prev }; delete n[singleEmpCode]; return n; });
+                                  }}
+                                  className="mr-1 px-2 py-0.5 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-500/35 rounded-md text-[9.5px] font-bold cursor-pointer transition-colors"
+                                >
+                                  استفاده از اولین تردد
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="۱۴۰۵/۰۱/۰۱"
+                                value={singleEntryDraft}
+                                onChange={(e) => {
+                                  setQuickEntryDateDrafts(prev => ({
+                                    ...prev,
+                                    [singleEmpCode]: toPersianDigits(e.target.value)
+                                  }));
+                                  if (singleEntryErr) {
+                                    setQuickEntryDateErrorByEmp(prev => { const n = { ...prev }; delete n[singleEmpCode]; return n; });
+                                  }
+                                }}
+                                className="w-32 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs font-mono text-center text-white font-bold focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleQuickSavePersonnelEntryDate(singleEmpCode, singleEntryDraft)}
+                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10.5px] font-bold transition-colors cursor-pointer whitespace-nowrap shadow-sm"
+                              >
+                                ثبت تاریخ ورود در پرونده
+                              </button>
+                            </div>
+                          </div>
+
+                          {singleEntryErr && (
+                            <p className="text-[10px] text-rose-300 font-bold">{singleEntryErr}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {singleEntryDateSuccessMsg && (
+                        <div className="col-span-2 bg-emerald-950/35 border border-emerald-500/40 rounded-xl px-3.5 py-2 flex items-center justify-between gap-2 text-[11px] font-bold text-emerald-200">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                            <span>{singleEntryDateSuccessMsg}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSingleEntryDateSuccessMsg('')}
+                            className="text-emerald-300 hover:text-white cursor-pointer"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+
                       {/* Departure date & fiscal period restriction alerts */}
                       {selectedEmployee && dateSuggestion.hasDepartureRestriction && (
                         <div className="col-span-2 bg-amber-950/35 border border-amber-500/40 rounded-xl p-3.5 space-y-2 text-right">
@@ -21216,7 +21788,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ شروع قرارداد:</label>
                         <input
                           type="text"
-                          placeholder={toPersianDigits(activePeriodStartDate)}
+                          placeholder={toPersianDigits(dateSuggestion.minAllowedStartDate)}
                           value={conStartDate}
                           onChange={(e) => {
                             setContractFormValidationError('');
@@ -21262,18 +21834,47 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
                         />
                         <p className="text-[9.5px] text-slate-400 leading-tight">
-                          محدوده مجاز دوره: <span className="font-mono text-slate-300">{toPersianDigits(activePeriodStartDate)}</span> تا <span className="font-mono text-slate-300">{toPersianDigits(dateSuggestion.maxAllowedEndDate)}</span>
+                          محدوده مجاز: <span className="font-mono text-slate-300">{toPersianDigits(dateSuggestion.minAllowedStartDate)}</span> تا <span className="font-mono text-slate-300">{toPersianDigits(dateSuggestion.maxAllowedEndDate)}</span>
                         </p>
                       </div>
 
                       {((liveDateValidation && !liveDateValidation.ok) || contractFormValidationError || (selectedEmployee && !editContractId && dateSuggestion.cannotRegisterReason)) && (
-                        <div className="col-span-2 bg-rose-950/45 border border-rose-500/45 rounded-xl p-3 flex items-start gap-2 text-[11px] font-bold text-rose-200 text-right">
-                          <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
-                          <span>
-                            {contractFormValidationError
-                              || (liveDateValidation && !liveDateValidation.ok ? liveDateValidation.message : '')
-                              || dateSuggestion.cannotRegisterReason}
-                          </span>
+                        <div className="col-span-2 bg-rose-950/45 border border-rose-500/45 rounded-xl p-3 space-y-2 text-[11px] font-bold text-rose-200 text-right">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+                            <span>
+                              {contractFormValidationError
+                                || (liveDateValidation && !liveDateValidation.ok ? liveDateValidation.message : '')
+                                || dateSuggestion.cannotRegisterReason}
+                            </span>
+                          </div>
+                          {isStartBeforeEntryDate && dateSuggestion.entryDate && (
+                            <div className="flex flex-wrap items-center gap-2 pr-6">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContractFormValidationError('');
+                                  setConStartDate(toPersianDigits(dateSuggestion.entryDate));
+                                }}
+                                className="px-2.5 py-1 bg-emerald-600/25 hover:bg-emerald-600/35 text-emerald-200 border border-emerald-400/40 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                              >
+                                تنظیم شروع قرارداد روی تاریخ ورود ({toPersianDigits(dateSuggestion.entryDate)})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickEntryDateDrafts(prev => ({
+                                    ...prev,
+                                    [singleEmpCode]: toPersianDigits(dateSuggestion.entryDate)
+                                  }));
+                                  setIsEditingSingleEntryDate(true);
+                                }}
+                                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                              >
+                                اصلاح تاریخ ورود به کار
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -21291,7 +21892,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         const clampDateToAllowedRange = (rawD: string | undefined, fallbackD: string) => {
                           const n = normalizeRateDateYMD(rawD);
                           if (!n) return fallbackD;
-                          if (n < activePeriodStartDate) return activePeriodStartDate;
+                          if (n < dateSuggestion.minAllowedStartDate) return dateSuggestion.minAllowedStartDate;
                           if (n > dateSuggestion.maxAllowedEndDate) return dateSuggestion.maxAllowedEndDate;
                           return n;
                         };
@@ -21307,7 +21908,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   type="button"
                                   onClick={() => {
                                     setContractFormValidationError('');
-                                    const clampedStart = clampDateToAllowedRange(activeSelectedRate.startDate, activePeriodStartDate);
+                                    const clampedStart = clampDateToAllowedRange(activeSelectedRate.startDate, dateSuggestion.minAllowedStartDate);
                                     const clampedEnd = clampDateToAllowedRange(activeSelectedRate.endDate, dateSuggestion.maxAllowedEndDate);
                                     setConStartDate(toPersianDigits(clampedStart));
                                     setConEndDate(toPersianDigits(clampedEnd));
@@ -22493,6 +23094,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </th>
                           <th className="font-extrabold pb-2.5">نام و مشخصات پرسنل</th>
                           <th className="font-extrabold pb-2.5">سمت شغلی</th>
+                          <th className="font-extrabold pb-2.5 text-center">تاریخ ورود به کار</th>
                           <th className="font-extrabold pb-2.5 text-center">بازه و مدت</th>
                           <th className="font-extrabold pb-2.5 text-center">وضعیت قرارداد</th>
                           <th className="font-extrabold pb-2.5 text-center">حقوق پایه روزانه (ریال)</th>
@@ -22505,6 +23107,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         {filteredContracts.map((c, idx) => {
                           const emp = activeEmployees.find(e => e.employeeCode === c.employeeCode) || db.personnel.find(e => e.employeeCode === c.employeeCode);
                           const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : 'پرسنل حذف شده';
+                          const empEntryYMD = normalizeRateDateYMD(emp?.entryDate || '');
                           const isCurrentlyActive = isContractActive(c, db.personnelContracts || []);
                           const isSelectedRow = selectedSet.has(c.id);
 
@@ -22515,7 +23118,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <React.Fragment key={c.id}>
                               {isNewPersonnel && (
                                 <tr className="bg-slate-950/80">
-                                  <td colSpan={9} className="py-2.5 px-3">
+                                  <td colSpan={10} className="py-2.5 px-3">
                                     <div className="flex items-center gap-3">
                                       <div className="h-0.5 flex-1 bg-gradient-to-r from-rose-500/60 via-amber-500/40 to-transparent"></div>
                                       <span className="text-[10px] font-extrabold text-rose-400 bg-rose-500/10 px-3 py-1 rounded-full border border-rose-500/20 shadow-xs flex items-center gap-1.5">
@@ -22549,6 +23152,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               </td>
                               <td className="py-3 font-semibold text-slate-300">
                                 {c.role}
+                              </td>
+                              <td className="py-3 text-center whitespace-nowrap">
+                                {empEntryYMD ? (
+                                  <span className="font-mono text-[10.5px] font-bold text-cyan-300">
+                                    {toPersianDigits(empEntryYMD)}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-rose-400/90 font-bold">ثبت نشده</span>
+                                )}
                               </td>
                               <td className="py-3 text-center">
                                 <span className="block font-mono text-[10px] text-slate-300">
