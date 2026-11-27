@@ -8,11 +8,19 @@ import {
   AppDatabase, Product, Item, DibalScaleConfig, DibalPLUMapping, DibalWeighingTicket
 } from '../types';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, matchPersianString, toEnglishDigits
+  toPersianDigits, formatWithCommas, parseNumber, matchPersianString, toEnglishDigits, printElement
 } from '../utils/persianUtils';
 import { nextSimpleId, getPrefixForCollection } from '../utils/simpleId';
 import { CopySectionKey } from '../utils/periodCopyEngine';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+} from './ui/UnifiedErpUi';
+import { downloadTemplateExcel } from '../utils/tableIoUtils';
 import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import { 
   Scale, Wifi, WifiOff, RefreshCw, Send, Download, Settings, Database, CheckCircle, 
@@ -21,7 +29,7 @@ import {
   Clock, Check, X, Search, Sparkles, Printer, Copy, BarChart3, Hash, Eye, EyeOff,
   Move, AlignRight, AlignCenter, AlignLeft, Sliders, ChevronDown, ChevronUp, RotateCcw, Type, Barcode,
   BookOpen, HelpCircle, Info, CheckCircle2, ShoppingBag, Users, TrendingUp, PieChart, Code,
-  Calendar, FileSpreadsheet, Filter, DownloadCloud, DollarSign, Award, ArrowUp, ArrowDown, Upload
+  Calendar, FileSpreadsheet, Filter, DownloadCloud, DollarSign, Award, ArrowUp, ArrowDown, Upload, ArrowRight
 } from 'lucide-react';
 import { exportDibalDataToExcel, importDibalDataFromExcel } from '../utils/excelService';
 
@@ -349,6 +357,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
 
   // Modal State for New/Edit PLU
   const [editingPlu, setEditingPlu] = useState<DibalPLUMapping | null>(null);
+  const [isPluFormOpen, setIsPluFormOpen] = useState(false);
   const [newPlu, setNewPlu] = useState<Partial<DibalPLUMapping>>({
     pluCode: (pluList.length > 0 ? Math.max(...pluList.map(p => p.pluCode)) + 1 : 1),
     name: '',
@@ -607,6 +616,7 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
         ingredientsText: ''
       });
     }
+    setIsPluFormOpen(false);
   };
 
   const handleDeletePlu = (id: string) => {
@@ -933,77 +943,99 @@ export default function DibalScaleManagement({ db, onUpdateDb, activePeriodId }:
     activeTab === 'tickets' || activeTab === 'reports' ? 'dibalTickets' :
     'dibalPLUs';
 
-  return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl min-h-[600px] shadow-xl font-sans p-3 sm:p-6 text-right space-y-5 animate-fade-in selection:bg-emerald-500 selection:text-white" dir="rtl">
-      
-      {/* Unified Header */}
-      <ModuleHeader
-        title={`مدیریت ترازوی دیبال (${configForm.model || 'Dibal 500-SW'})`}
-        subtitle="ارتباط شبکه Ethernet TCP/IP، مدیریت کاتالوگ کالاها (PLU)، کیپد مستقیم و قبوض وزن‌کشی"
-        icon={<Scale className="w-5 h-5" />}
-        actions={
-          <>
-            <ErpButton
-              variant="secondary"
-              size="sm"
-              icon={<Copy className="w-4 h-4" />}
-              onClick={() => setShowCopyModal(true)}
-            >
-              {ERP_BUTTON_LABELS.copyFromPeriod}
-            </ErpButton>
-            <ErpButton
-              variant="secondary"
-              size="sm"
-              icon={<FileSpreadsheet className="w-4 h-4" />}
-              onClick={handleExportToExcel}
-            >
-              {ERP_BUTTON_LABELS.exportExcel}
-            </ErpButton>
-            <label
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-lg text-xs font-bold border border-slate-700 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-              title="دریافت اطلاعات فرم مدیریت ترازو از فایل اکسل"
-            >
-              <Upload className="h-3.5 w-3.5 shrink-0" />
-              <span>{ERP_BUTTON_LABELS.importExcel}</span>
-              <input
-                type="file"
-                accept=".xlsx, .xls"
-                onChange={handleImportFromExcel}
-                className="hidden"
-              />
-            </label>
-            <ErpButton
-              variant="primary"
-              size="sm"
-              icon={<RefreshCw className={`w-4 h-4 ${isTestingConnection ? 'animate-spin' : ''}`} />}
-              onClick={handleTestConnection}
-              disabled={isTestingConnection}
-            >
-              {isTestingConnection ? 'تست پکت...' : 'تست PING'}
-            </ErpButton>
-          </>
-        }
-      />
+  const handleDownloadDibalTemplate = () => {
+    downloadTemplateExcel(
+      ['کد PLU', 'نام کالا', 'قیمت واحد (ریال)', 'نوع فروش', 'کلید مستقیم'],
+      [
+        { 'کد PLU': 101, 'نام کالا': 'شیرینی تر مخلوط', 'قیمت واحد (ریال)': 4500000, 'نوع فروش': 'وزنی', 'کلید مستقیم': 1 },
+        { 'کد PLU': 102, 'نام کالا': 'نان باگت', 'قیمت واحد (ریال)': 350000, 'نوع فروش': 'تعدادی', 'کلید مستقیم': 2 },
+      ],
+      'PLU',
+      'نمونه_حافظه_کالاهای_ترازو_دیبال'
+    );
+  };
 
-      {/* Unified Primary Tabs */}
-      <ModulePrimaryTabs
-        activeTab={activeTab}
-        onChange={(id) => setActiveTab(id as typeof activeTab)}
-        tabs={[
-          { id: 'config', label: 'تنظیمات شبکه و پورت', icon: <Settings className="w-4 h-4" /> },
-          { id: 'plus', label: 'حافظه کالاها (PLU)', icon: <Tag className="w-4 h-4" />, count: pluList.length },
-          { id: 'keypad', label: 'کلیدهای مستقیم کیپد', icon: <Grid3x3 className="w-4 h-4" /> },
-          { id: 'tickets', label: 'قبوض وزن‌کشی', icon: <FileText className="w-4 h-4" />, count: ticketList.length },
-          { id: 'reports', label: 'گزارشات ترازو', icon: <BarChart3 className="w-4 h-4" /> },
-          { id: 'label_design', label: 'طراحی قالب لیبل', icon: <Printer className="w-4 h-4" /> },
-          { id: 'terminal', label: 'ترمینال پروتکل', icon: <Terminal className="w-4 h-4" /> },
-          { id: 'manual', label: 'راهنمای Dibal', icon: <BookOpen className="w-4 h-4" /> },
-        ]}
-      />
+  return (
+    <div className="space-y-6 animate-fadeIn pb-12 font-sans text-right selection:bg-rose-500 selection:text-white" dir="rtl">
+      
+      {/* Unified Header + Primary Tabs */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          title={`مدیریت ترازوی دیبال (${configForm.model || 'Dibal 500-SW'})`}
+          subtitle="ارتباط شبکه Ethernet TCP/IP، مدیریت کاتالوگ کالاها (PLU)، کیپد مستقیم و قبوض وزن‌کشی"
+          icon={<Scale className="w-5 h-5" />}
+          recordCount={pluList.length}
+          recordLabel="کالای PLU"
+          actions={
+            <>
+              <ErpButton
+                variant="secondary"
+                size="sm"
+                icon={<Copy className="w-3.5 h-3.5" />}
+                onClick={() => setShowCopyModal(true)}
+              >
+                {ERP_BUTTON_LABELS.copyFromPeriod}
+              </ErpButton>
+              <ErpButton
+                variant="primary"
+                size="sm"
+                icon={<RefreshCw className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />}
+                onClick={handleTestConnection}
+                disabled={isTestingConnection}
+              >
+                {isTestingConnection ? 'تست پکت...' : 'تست PING'}
+              </ErpButton>
+            </>
+          }
+        />
+
+        <ModulePrimaryTabs
+          activeTab={activeTab}
+          onChange={(id) => {
+            setActiveTab(id as typeof activeTab);
+            setIsPluFormOpen(false);
+          }}
+          tabs={[
+            { id: 'config', label: 'تنظیمات شبکه و پورت', icon: <Settings className="w-4 h-4" /> },
+            { id: 'plus', label: 'حافظه کالاها (PLU)', icon: <Tag className="w-4 h-4" />, count: pluList.length },
+            { id: 'keypad', label: 'کلیدهای مستقیم کیپد', icon: <Grid3x3 className="w-4 h-4" /> },
+            { id: 'tickets', label: 'قبوض وزن‌کشی', icon: <FileText className="w-4 h-4" />, count: ticketList.length },
+            { id: 'reports', label: 'گزارشات ترازو', icon: <BarChart3 className="w-4 h-4" /> },
+            { id: 'label_design', label: 'طراحی قالب لیبل', icon: <Printer className="w-4 h-4" /> },
+            { id: 'terminal', label: 'ترمینال پروتکل', icon: <Terminal className="w-4 h-4" /> },
+            { id: 'manual', label: 'راهنمای Dibal', icon: <BookOpen className="w-4 h-4" /> },
+          ]}
+        />
+      </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        {!(activeTab === 'plus' && isPluFormOpen) && (
+          <>
+            <KpiStrip
+              items={[
+                { label: 'کالاهای حافظه ترازو (PLU)', value: toPersianDigits(pluList.length), sublabel: `${toPersianDigits(auditMetrics.weighted)} وزنی / ${toPersianDigits(auditMetrics.unit)} تعدادی`, tone: 'default' },
+                { label: 'سلامت و عدم تداخل حافظه', value: auditMetrics.isCompliant ? 'تایید ۱۰۰٪' : `${toPersianDigits(auditMetrics.duplicatePluCount + auditMetrics.duplicateKeyCount)} تداخل`, sublabel: 'بررسی خودکار PLU و کلیدها', tone: auditMetrics.isCompliant ? 'success' : 'danger' },
+                { label: 'قبوض وزن‌کشی ثبت‌شده', value: toPersianDigits(ticketList.length), sublabel: 'رکوردهای ترازو در دوره', tone: 'info' },
+                { label: 'آدرس شبکه ترازو', value: configForm.ipAddress || '192.168.1.50', sublabel: `پورت ${toPersianDigits(configForm.txPort || 3000)}`, tone: 'warning' },
+              ]}
+            />
+
+            <UnifiedToolbar
+              onAdd={activeTab === 'plus' ? () => { setEditingPlu(null); setIsPluFormOpen(true); } : undefined}
+              addLabel="افزودن کالای PLU جدید"
+              onDownloadTemplate={handleDownloadDibalTemplate}
+              onImportExcel={handleImportFromExcel}
+              importAccept=".xlsx,.xls,.csv"
+              onExportExcel={handleExportToExcel}
+              onPrint={() => printElement('dibal-active-printable', `مدیریت ترازوی دیبال — ${configForm.model || 'Dibal'}`)}
+            />
+          </>
+        )}
 
       {/* ================= TAB 1: NETWORK & PORT CONFIG ================= */}
       {activeTab === 'config' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           <form onSubmit={handleSaveConfig} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
             {/* Main Network Configuration */}
@@ -1600,9 +1632,10 @@ app.listen(8080, () => {
 
       {/* ================= TAB 2: PLU CATALOG & SCALE SYNC ================= */}
       {activeTab === 'plus' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           
-          {/* Dibal M-525 Memory Audit & Conflict Banner */}
+          {!isPluFormOpen && (
+          /* Dibal M-525 Memory Audit & Conflict Banner */
           <div className="bg-slate-850/80 border border-slate-800 p-4 rounded-2xl backdrop-blur-md shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className={`p-2.5 rounded-xl border ${auditMetrics.isCompliant ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400' : 'bg-rose-950/60 border-rose-500/40 text-rose-400'}`}>
@@ -1652,6 +1685,7 @@ app.listen(8080, () => {
               </div>
             </div>
           </div>
+          )}
 
           {/* Progress Bar during Batch Sync */}
           {isSendingPlus && (
@@ -1672,19 +1706,32 @@ app.listen(8080, () => {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Create / Edit PLU Form with Standard Dibal Fields */}
-            <div className="bg-slate-850/60 border border-slate-800 backdrop-blur-md p-5 rounded-2xl h-fit space-y-4 shadow-xl">
-              <h3 className="text-xs font-black text-slate-100 border-b border-slate-800 pb-3 flex items-center justify-between">
-                <span className="flex items-center gap-2">
-                  <Tag className="h-4.5 w-4.5 text-rose-500" />
-                  {editingPlu ? 'ویرایش کالا در حافظه PLU ترازو' : 'تعریف کالا / کد جدید در حافظه PLU'}
-                </span>
-                <span className="text-[10px] font-mono font-bold text-rose-400 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-800/80">
-                  Dibal M-525 Spec
-                </span>
-              </h3>
+          {isPluFormOpen ? (
+            /* Create / Edit PLU Form - Full Width Toggleable View */
+            <div className="bg-slate-850/60 border border-slate-800 backdrop-blur-md p-5 sm:p-6 rounded-2xl h-fit space-y-4 shadow-xl">
+              <div className="border-b border-slate-800 pb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                    <Tag className="h-4.5 w-4.5 text-rose-500" />
+                    {editingPlu ? 'ویرایش کالا در حافظه PLU ترازو' : 'تعریف کالا / کد جدید در حافظه PLU'}
+                  </h3>
+                  <span className="text-[10px] font-mono font-bold text-rose-400 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-800/80">
+                    Dibal M-525 Spec
+                  </span>
+                </div>
+                <ErpButton
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  icon={<ArrowRight className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    setEditingPlu(null);
+                    setIsPluFormOpen(false);
+                  }}
+                >
+                  انصراف و بازگشت
+                </ErpButton>
+              </div>
 
               <form onSubmit={handleSavePlu} className="space-y-4">
                 
@@ -2066,21 +2113,22 @@ app.listen(8080, () => {
                     <CheckCircle className="h-4 w-4" />
                     {editingPlu ? 'ثبت ویرایش PLU' : 'افزودن به لیست PLU'}
                   </button>
-                  {editingPlu && (
-                    <button
-                      type="button"
-                      onClick={() => setEditingPlu(null)}
-                      className="px-4 py-2.5 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
-                    >
-                      انصراف
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingPlu(null);
+                      setIsPluFormOpen(false);
+                    }}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                  >
+                    انصراف و بازگشت
+                  </button>
                 </div>
               </form>
             </div>
-
-            {/* PLUs Table & Batch Operations */}
-            <div className="lg:col-span-2 space-y-4">
+          ) : (
+            /* PLUs Table & Batch Operations (Full Width) */
+            <div className="space-y-4">
               
               {/* Table Action Bar */}
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-850/60 p-4 rounded-2xl border border-slate-800 backdrop-blur-md">
@@ -2302,7 +2350,7 @@ app.listen(8080, () => {
                             <td className="px-3 py-3.5 text-center">
                               <div className="flex justify-center gap-1.5">
                                 <button
-                                  onClick={() => setEditingPlu(plu)}
+                                  onClick={() => { setEditingPlu(plu); setIsPluFormOpen(true); }}
                                   className="p-1 px-2 border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-all cursor-pointer"
                                   title="ویرایش PLU"
                                 >
@@ -2326,14 +2374,13 @@ app.listen(8080, () => {
               </div>
 
             </div>
-
-          </div>
+          )}
         </div>
       )}
 
       {/* ================= TAB 3: KEYPAD PRESET KEYS ================= */}
       {activeTab === 'keypad' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           <div className="bg-slate-850/60 border border-slate-800 backdrop-blur-md p-6 rounded-2xl space-y-6 shadow-xl">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
               <div>
@@ -2486,7 +2533,7 @@ app.listen(8080, () => {
 
       {/* ================= TAB 4: WEIGHING TICKETS ================= */}
       {activeTab === 'tickets' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-850/60 p-4 rounded-2xl border border-slate-800 backdrop-blur-md">
             <div className="relative w-full sm:w-72">
               <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
@@ -2600,7 +2647,7 @@ app.listen(8080, () => {
 
       {/* ================= TAB: LABEL & PRINT LAYOUT DESIGNER ================= */}
       {activeTab === 'label_design' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           
           {/* Read Stored Formats from Dibal M-525 Flash Memory Panel */}
           <div className="bg-slate-850/60 border border-slate-800 backdrop-blur-md p-5 rounded-2xl space-y-4 shadow-xl">
@@ -3697,7 +3744,7 @@ app.listen(8080, () => {
 
       {/* ================= TAB 5: TERMINAL & PROTOCOL INSPECTOR ================= */}
       {activeTab === 'terminal' && (
-        <div className="space-y-6">
+        <div id="dibal-active-printable" className="space-y-6">
           
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
@@ -3848,7 +3895,7 @@ app.listen(8080, () => {
 
       {/* ================= TAB 7: FULL DIBAL 500-SW & SERIES 500 MANUAL ================= */}
       {activeTab === 'manual' && (
-        <div className="space-y-6 animate-fade-in">
+        <div id="dibal-active-printable" className="space-y-6 animate-fade-in">
           
           {/* Header Banner */}
           <div className="bg-gradient-to-r from-slate-900 via-rose-950/40 to-slate-900 border border-rose-500/30 p-6 rounded-2xl shadow-xl space-y-3">
@@ -4345,7 +4392,7 @@ app.listen(8080, () => {
 
       {/* ================= TAB 4: SALES REPORTS & DIBAL AUDIT ================= */}
       {activeTab === 'reports' && (
-        <div className="space-y-6 animate-fade-in">
+        <div id="dibal-active-printable" className="space-y-6 animate-fade-in">
           
           {/* Top Bar / Command Actions */}
           <div className="bg-slate-850/60 border border-slate-800 backdrop-blur-md p-5 rounded-2xl shadow-xl flex flex-wrap items-center justify-between gap-4">
@@ -4837,6 +4884,8 @@ app.listen(8080, () => {
 
         </div>
       )}
+
+      </div>
 
       <CopyFromPeriodModal
         isOpen={showCopyModal}

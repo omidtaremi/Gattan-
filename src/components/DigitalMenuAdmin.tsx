@@ -46,6 +46,15 @@ import {
   Product,
 } from '../types';
 import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  KpiStrip,
+  UnifiedToolbar,
+  ErpButton,
+} from './ui/UnifiedErpUi';
+import { printElement } from '../utils/persianUtils';
+import { exportRowsToExcel } from '../utils/tableIoUtils';
+import {
   ALLERGEN_OPTIONS,
   DIETARY_OPTIONS,
   DEFAULT_DIGITAL_MENU_CATEGORIES,
@@ -941,80 +950,94 @@ export default function DigitalMenuAdmin({
     return `${toPersianDigits(val.toLocaleString('en-US'))} ${unit}`;
   };
 
+  const handleExportDigitalMenuExcel = () => {
+    const catMap = new Map<string, string>(menuCategories.map(c => [c.id, c.nameFa]));
+    const rows = Object.entries(config.products || {}).map(([prodId, setting], idx) => {
+      const p = erpProductsInPeriod.find(pr => pr.id === prodId);
+      const s = setting as DigitalMenuProductSetting;
+      return {
+        'ردیف': idx + 1,
+        'کد محصول': p?.code || prodId,
+        'نام فارسی': s.nameFaOverride || p?.name || '',
+        'نام انگلیسی': s.nameEn || '',
+        'دسته‌بندی منو': s.menuCategoryId ? (catMap.get(s.menuCategoryId) || '') : '',
+        'قیمت (ریال)': p?.salesPrice || 0,
+        'وضعیت نمایش': s.visible !== false ? 'فعال' : 'مخفی',
+        'پیشنهاد سرآشپز': s.featured ? 'بله' : 'خیر',
+      };
+    });
+    exportRowsToExcel(rows, 'منوی دیجیتال', 'منوی_دیجیتال_گاتان');
+  };
+
   return (
-    <div className="space-y-5 font-sans" dir="rtl">
-      {/* ================= HEADER BAR ================= */}
-      <div className="bg-white dark:bg-[#11131a] border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 shadow-xs">
-        <div className="flex items-start gap-3">
-          <div className="h-11 w-11 rounded-2xl bg-emerald-600/15 border border-emerald-500/25 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
-            <QrCode className="h-6 w-6" />
-          </div>
-          <div>
-            <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
-              <span>مدیریت منوی دیجیتال عمومی (QR)</span>
-              <span
-                className={`text-[10.5px] font-bold px-2.5 py-0.5 rounded-full border ${
-                  config.enabled
-                    ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-700/40'
-                    : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-700/40'
-                }`}
+    <div className="space-y-6 animate-fadeIn pb-12 font-sans text-right" dir="rtl">
+      {/* ================= UNIFIED MODULE HEADER + PRIMARY TABS ================= */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          icon={<QrCode className="h-5 w-5" />}
+          title="مدیریت منوی دیجیتال عمومی (QR)"
+          subtitle={`دسته‌بندی‌های اختصاصی منو + انتخاب دلخواه از محصولات ERP با قیمت زنده — ${config.enabled ? 'فعال و عمومی' : 'موقتاً غیرفعال'}`}
+          periodName={resolvedPeriod.name || 'نامشخص'}
+          recordCount={overviewStats.selectedMenuProducts}
+          recordLabel="محصول در منو"
+          actions={
+            <>
+              <ErpButton
+                variant="secondary"
+                size="sm"
+                onClick={handleOpenPreview}
+                icon={<ExternalLink className="h-3.5 w-3.5 text-emerald-400" />}
               >
-                {config.enabled ? 'فعال و عمومی (فقط مشاهده)' : 'موقتاً غیرفعال'}
-              </span>
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-              دسته‌بندی‌های اختصاصی منو + انتخاب دلخواه از محصولات ERP با قیمت زنده (دوره منبع:{' '}
-              <strong className="text-slate-700 dark:text-zinc-200">
-                {resolvedPeriod.name || 'نامشخص'}
-              </strong>
-              )
-            </p>
-          </div>
-        </div>
+                پیش‌نمایش زنده /menu
+              </ErpButton>
+              <ErpButton
+                variant="primary"
+                size="sm"
+                onClick={handleSaveConfig}
+                disabled={isSaving}
+                icon={isSaving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              >
+                {isSaving ? 'در حال ذخیره...' : hasUnsavedChanges ? 'ذخیره و انتشار تغییرات' : 'ذخیره تنظیمات'}
+              </ErpButton>
+            </>
+          }
+        />
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleOpenPreview}
-            className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 hover:bg-slate-100 dark:hover:bg-zinc-800 text-xs font-bold text-slate-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer transition-colors"
-          >
-            <ExternalLink className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-            <span>پیش‌نمایش زنده /menu</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSaveConfig}
-            disabled={isSaving}
-            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-xs ${
-              hasUnsavedChanges
-                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                : 'bg-slate-800 dark:bg-zinc-800 hover:bg-slate-700 dark:hover:bg-zinc-700 text-white'
-            } disabled:opacity-60`}
-          >
-            {isSaving ? (
-              <RefreshCw className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            <span>
-              {isSaving
-                ? 'در حال ذخیره...'
-                : hasUnsavedChanges
-                ? 'ذخیره و انتشار تغییرات'
-                : 'ذخیره تنظیمات'}
-            </span>
-          </button>
-        </div>
+        <ModulePrimaryTabs
+          activeId={subTab}
+          onChange={(id) => setSubTab(id as AdminSubTab)}
+          tabs={subTabs.map((tab) => ({
+            id: tab.id,
+            label: tab.label,
+            icon: tab.icon,
+            count: typeof tab.badge === 'number' ? tab.badge : undefined,
+          }))}
+        />
       </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        <KpiStrip
+          items={[
+            { label: 'محصولات انتخاب‌شده در منو', value: `${toPersianDigits(overviewStats.selectedMenuProducts)} / ${toPersianDigits(overviewStats.totalErpProducts)}`, sublabel: `${toPersianDigits(overviewStats.visibleProducts)} مورد فعال نمایشی`, tone: 'default' },
+            { label: 'دسته‌بندی‌های اختصاصی منو', value: `${toPersianDigits(overviewStats.activeCategories)} / ${toPersianDigits(overviewStats.totalCategories)}`, sublabel: `${toPersianDigits(overviewStats.featuredCount)} پیشنهاد ویژه سرآشپز`, tone: 'info' },
+            { label: 'محصولات بدون تصویر', value: toPersianDigits(overviewStats.missingImages), sublabel: 'نیازمند بارگذاری تصویر', tone: overviewStats.missingImages > 0 ? 'warning' : 'success' },
+            { label: 'محصولات بدون ترجمه EN', value: toPersianDigits(overviewStats.missingEnglish), sublabel: 'تکمیل نسخه انگلیسی', tone: overviewStats.missingEnglish > 0 ? 'warning' : 'success' },
+          ]}
+        />
+
+        <UnifiedToolbar
+          onExportExcel={handleExportDigitalMenuExcel}
+          onPrint={() => printElement('digital-menu-admin-printable', 'مدیریت منوی دیجیتال عمومی گاتان')}
+        />
 
       {/* Feedback Toast */}
       {toast && (
         <div
           className={`p-3.5 rounded-xl border text-xs font-bold flex items-center gap-2 ${
             toast.type === 'success'
-              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700/40 text-emerald-800 dark:text-emerald-200'
-              : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-700/40 text-rose-800 dark:text-rose-200'
+              ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-200'
+              : 'bg-rose-950/40 border-rose-500/30 text-rose-200'
           }`}
         >
           {toast.type === 'success' ? (
@@ -1026,44 +1049,11 @@ export default function DigitalMenuAdmin({
         </div>
       )}
 
-      {/* ================= SUB-TABS NAVIGATION ================= */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-        {subTabs.map((tab) => {
-          const active = subTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setSubTab(tab.id)}
-              className={`px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer border ${
-                active
-                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                  : 'bg-white dark:bg-[#11131a] text-slate-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-800/70'
-              }`}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-              {typeof tab.badge === 'number' && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums ${
-                    active
-                      ? 'bg-white/20 text-white'
-                      : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400'
-                  }`}
-                >
-                  {toPersianDigits(tab.badge)}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
       {/* ===================================================================== */}
       {/* TAB 1: OVERVIEW                                                        */}
       {/* ===================================================================== */}
       {subTab === 'overview' && (
-        <div className="space-y-5">
+        <div id="digital-menu-admin-printable" className="space-y-5">
           {/* Quick Onboarding Banner when zero products added yet */}
           {overviewStats.selectedMenuProducts === 0 && (
             <div className="bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-700/40 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1266,7 +1256,7 @@ export default function DigitalMenuAdmin({
       {/* TAB 2: STANDALONE DIGITAL MENU CATEGORIES (CRUD)                       */}
       {/* ===================================================================== */}
       {subTab === 'categories' && (
-        <div className="space-y-4">
+        <div id="digital-menu-admin-printable" className="space-y-4">
           {/* Add New Category Form */}
           <form
             onSubmit={handleAddMenuCategory}
@@ -1504,7 +1494,7 @@ export default function DigitalMenuAdmin({
       {/* TAB 3: OPT-IN MENU PRODUCTS MANAGEMENT                                 */}
       {/* ===================================================================== */}
       {subTab === 'products' && (
-        <div className="space-y-4">
+        <div id="digital-menu-admin-printable" className="space-y-4">
           {/* Action & Filter Bar */}
           <div className="bg-white dark:bg-[#11131a] border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1960,7 +1950,7 @@ export default function DigitalMenuAdmin({
       {/* TAB 4: BILINGUAL TRANSLATIONS (ONLY OPT-IN MENU PRODUCTS)              */}
       {/* ===================================================================== */}
       {subTab === 'translations' && (
-        <div className="space-y-4">
+        <div id="digital-menu-admin-printable" className="space-y-4">
           {menuProductEntries.length === 0 ? (
             <div className="bg-white dark:bg-[#11131a] border border-slate-200 dark:border-zinc-800 rounded-2xl p-8 text-center space-y-3">
               <p className="text-xs text-slate-500 dark:text-zinc-400">
@@ -2089,7 +2079,7 @@ export default function DigitalMenuAdmin({
       {/* TAB 5: MENU APPEARANCE & SETTINGS                                      */}
       {/* ===================================================================== */}
       {subTab === 'appearance' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div id="digital-menu-admin-printable" className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Branding & Texts */}
           <div className="bg-white dark:bg-[#11131a] border border-slate-200 dark:border-zinc-800 rounded-2xl p-5 space-y-4">
             <h3 className="text-sm font-black text-slate-900 dark:text-white border-b border-slate-100 dark:border-zinc-800 pb-2.5">
@@ -2636,7 +2626,7 @@ export default function DigitalMenuAdmin({
       {/* TAB 6: SINGLE GENERAL CAFÉ QR CODE MANAGEMENT                          */}
       {/* ===================================================================== */}
       {subTab === 'qr' && (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+        <div id="digital-menu-admin-printable" className="grid grid-cols-1 lg:grid-cols-5 gap-5">
           <div className="lg:col-span-2 bg-white dark:bg-[#11131a] border border-slate-200 dark:border-zinc-800 rounded-2xl p-6 flex flex-col items-center text-center space-y-4">
             <div
               className="w-full max-w-[290px] rounded-2xl border border-[#E5DDD3] p-6 space-y-3 shadow-sm"
@@ -3115,6 +3105,7 @@ export default function DigitalMenuAdmin({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

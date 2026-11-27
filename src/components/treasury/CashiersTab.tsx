@@ -11,9 +11,22 @@ import {
   Vault, Shield, KeyRound, Phone, Clock, Percent, Eye, RefreshCw
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
+  toPersianDigits, parseNumber, printElement, matchPersianString 
 } from '../../utils/persianUtils';
-import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface CashiersTabProps {
   db: AppDatabase;
@@ -216,69 +229,106 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['کد پرسنلی صندوق‌دار', 'نام و نام خانوادگی', 'کد ملی', 'شماره تماس', 'صندوق پیش‌فرض', 'شیفت کاری', 'سقف تخفیف (%)', 'تعداد تسویه شیفت', 'وضعیت'];
+  const handleExportExcel = () => {
     const rows = filteredCashiers.map(c => {
       const info = cashierStats[c.id] || { closeoutsCount: 0, receiptsCount: 0 };
-      return [
-        c.code,
-        c.fullName,
-        c.nationalId || '-',
-        c.phone || '-',
-        c.defaultCashDrawerId ? (cashDrawerMap[c.defaultCashDrawerId] || '-') : '-',
-        c.shiftType,
-        c.maxDiscountPercent || 0,
-        info.closeoutsCount,
-        c.isActive ? 'فعال' : 'غیرفعال'
-      ];
+      return {
+        'کد پرسنلی صندوق‌دار': c.code,
+        'نام و نام خانوادگی': c.fullName,
+        'کد ملی': c.nationalId || '',
+        'شماره تماس': c.phone || '',
+        'صندوق پیش‌فرض': c.defaultCashDrawerId ? (cashDrawerMap[c.defaultCashDrawerId] || '') : '',
+        'شیفت کاری': c.shiftType,
+        'سقف تخفیف (%)': c.maxDiscountPercent || 0,
+        'تعداد تسویه شیفت': info.closeoutsCount,
+        'وضعیت': c.isActive ? 'فعال' : 'غیرفعال',
+      };
     });
-    downloadCSV('گزارش_صندوق_داران.csv', headers, rows);
+    exportRowsToExcel(rows, 'صندوق‌داران', 'گزارش_صندوق_داران');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['کد پرسنلی صندوق‌دار', 'نام و نام خانوادگی', 'کد ملی', 'شماره تماس', 'شیفت کاری', 'سقف تخفیف (%)', 'وضعیت', 'توضیحات'],
+      [{
+        'کد پرسنلی صندوق‌دار': 'CSHR-101',
+        'نام و نام خانوادگی': 'فاطمه رستمی',
+        'کد ملی': '0019876543',
+        'شماره تماس': '09121234567',
+        'شیفت کاری': 'صبح',
+        'سقف تخفیف (%)': 5,
+        'وضعیت': 'فعال',
+        'توضیحات': '',
+      }],
+      'قالب_صندوق‌داران',
+      'نمونه_صندوق_داران'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.cashiers || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('cashiers'));
+      const imported: Cashier[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const nameVal = pickRowField(row, ['نام و نام خانوادگی', 'نام', 'fullName']);
+        if (!nameVal) continue;
+        const codeVal = pickRowField(row, ['کد پرسنلی صندوق‌دار', 'کد', 'code']) || `CSHR-${cashiers.length + 101 + i}`;
+        const rawShift = pickRowField(row, ['شیفت کاری', 'شیفت', 'shiftType']);
+        const shiftVal: Cashier['shiftType'] =
+          rawShift === 'عصر' || rawShift === 'شب' || rawShift === 'گردشی'
+            ? rawShift
+            : rawShift === 'چرخشی'
+            ? 'گردشی'
+            : 'صبح';
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          code: codeVal,
+          fullName: nameVal,
+          nationalId: pickRowField(row, ['کد ملی', 'nationalId']),
+          phone: pickRowField(row, ['شماره تماس', 'موبایل', 'phone']),
+          defaultCashDrawerId: cashDrawers[0]?.id || undefined,
+          shiftType: shiftVal,
+          maxDiscountPercent: parseNumber(pickRowField(row, ['سقف تخفیف (%)', 'سقف تخفیف', 'maxDiscountPercent'])) || 5,
+          permissions: ['cash_receipt', 'pos_receipt', 'shift_closeout'],
+          pinCode: '1234',
+          startDate: new Date().toLocaleDateString('fa-IR'),
+          isActive: statusRaw !== 'غیرفعال',
+          notes: pickRowField(row, ['توضیحات', 'یادداشت', 'notes']),
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, cashiers: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('Cashiers import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || shiftFilter !== 'all' || statusFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setShiftFilter('all');
+    setStatusFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">کل صندوق‌داران تعریف‌شده</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-            <Users className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">صندوق‌داران فعال</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">{toPersianDigits(stats.activeCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">صندوق‌داران شیفت صبح</span>
-            <span className="text-2xl font-black text-amber-300 mt-1 block">{toPersianDigits(stats.morningCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <Clock className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">صندوق‌داران شیفت عصر / شب</span>
-            <span className="text-2xl font-black text-indigo-300 mt-1 block">{toPersianDigits(stats.eveningCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <Clock className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'کل صندوق‌داران تعریف‌شده', value: stats.totalCount, sublabel: 'نفر' },
+          { label: 'صندوق‌داران فعال', value: stats.activeCount, sublabel: 'فعال', tone: 'success' },
+          { label: 'صندوق‌داران شیفت صبح', value: stats.morningCount, sublabel: 'صبح', tone: 'warning' },
+          { label: 'صندوق‌داران شیفت عصر / شب', value: stats.eveningCount, sublabel: 'عصر', tone: 'info' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -501,7 +551,7 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingCashier ? 'ذخیره تغییرات' : 'ثبت صندوق‌دار'}
@@ -512,24 +562,28 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
       ) : (
         /* List View */
         <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو بر اساس نام، کد پرسنلی، شماره موبایل یا کد ملی..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-purple-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو بر اساس نام، کد پرسنلی، شماره موبایل یا کد ملی..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('cashiers-table-print', 'فهرست صندوق‌داران')}
+            onAdd={handleOpenNew}
+            addLabel="تعریف صندوق‌دار جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>نوبت کاری (شیفت)</label>
               <select
                 value={shiftFilter}
                 onChange={(e) => setShiftFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-purple-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه شیفت‌ها</option>
                 <option value="صبح">شیفت صبح</option>
@@ -537,46 +591,20 @@ export default function CashiersTab({ db, onUpdateDb, activePeriodId, askConfirm
                 <option value="شب">شیفت شب</option>
                 <option value="چرخشی">شیفت چرخشی</option>
               </select>
-
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت حساب</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-purple-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="active">فقط فعال</option>
                 <option value="inactive">غیرفعال</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('cashiers-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست صندوق‌داران"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>تعریف صندوق‌دار جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Cashiers Table */}
           <div id="cashiers-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

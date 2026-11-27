@@ -11,7 +11,15 @@ import { toPersianDigits, formatWithCommas, getTodayJalali, printElement, getDef
 import * as XLSX from 'xlsx';
 import { getPeriodProductionSettings, setPeriodProductionSettings } from '../utils/periodIsolation';
 import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+} from './ui/UnifiedErpUi';
+import { downloadTemplateExcel } from '../utils/tableIoUtils';
 import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import { CopySectionKey } from '../utils/periodCopyEngine';
 
@@ -2266,11 +2274,32 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
     return suggestions;
   }, [orders, settings, timelineData]);
 
+  const handleDownloadPlanningTemplate = () => {
+    downloadTemplateExcel(
+      ['تاریخ', 'شماره راک', 'تکنیک پخت', 'کد محصول (شناسه)', 'نام محصول', 'تعداد تولید واقعی', 'سینی‌های مورد نیاز', 'اولویت تولید', 'توضیحات پس از پخت'],
+      [
+        {
+          'تاریخ': selectedDate,
+          'شماره راک': 1,
+          'تکنیک پخت': 'مستقیم',
+          'کد محصول (شناسه)': '',
+          'نام محصول': 'نان باگت فرانسوی',
+          'تعداد تولید واقعی': 40,
+          'سینی‌های مورد نیاز': 4,
+          'اولویت تولید': 1,
+          'توضیحات پس از پخت': '',
+        },
+      ],
+      'برنامه ریزی تولید',
+      'نمونه_برنامه_ریزی_تولید'
+    );
+  };
+
   return (
-    <div className="space-y-6 font-sans text-right" dir="rtl">
+    <div className="space-y-6 animate-fadeIn pb-12 font-sans text-right" dir="rtl">
       
-      {/* ================= UNIFIED MODULE HEADER & PRIMARY TABS ================= */}
-      <div className="bg-white dark:bg-[#0d0d0f] p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-zinc-800/80 shadow-sm">
+      {/* ================= UNIFIED MODULE HEADER + PRIMARY TABS ================= */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <ModuleHeader
           icon={<Sliders className="h-5 w-5" />}
           title="برنامه‌ریزی تولید و سفارشات کارگاه"
@@ -2299,6 +2328,27 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
           ]}
         />
       </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        <KpiStrip
+          items={[
+            { label: 'راک‌های برنامه‌ریزی‌شده', value: toPersianDigits(orders.length), sublabel: `تاریخ ${toPersianDigits(selectedDate)}`, tone: 'default' },
+            { label: 'فرهای تعریف‌شده کارگاه', value: toPersianDigits((settings.ovens || []).length), sublabel: 'ظرفیت پخت فعال', tone: 'info' },
+            { label: 'سینی‌ها و انتساب‌ها', value: `${toPersianDigits((settings.trays || []).length)} / ${toPersianDigits((settings.productAssignments || []).length)}`, sublabel: 'سینی / انتساب محصول', tone: 'success' },
+            { label: 'پیشنهادهای بهینه‌سازی', value: toPersianDigits(optimizationSuggestions.length), sublabel: 'تحلیل تداخل و زمان‌بندی', tone: optimizationSuggestions.length > 0 ? 'warning' : 'success' },
+          ]}
+        />
+
+      <UnifiedToolbar
+        onDownloadTemplate={activeTab === 'planning' ? handleDownloadPlanningTemplate : undefined}
+        onImportExcel={activeTab === 'settings' ? handleImportSettingsExcel : activeTab === 'planning' ? handleImportPlanningExcel : undefined}
+        importAccept=".xlsx,.xls,.csv"
+        onExportExcel={activeTab === 'settings' ? handleExportSettingsExcel : handleExportPlanningExcel}
+        onPrint={() => setShowPrintModal(true)}
+        onAdd={activeTab === 'planning' ? handleAddRackOrder : undefined}
+        addLabel="ایجاد راک تولیدی جدید"
+      />
 
       {/* ================= MAIN CONTENT VIEWPORT ================= */}
       <AnimatePresence mode="wait">
@@ -5134,6 +5184,8 @@ export default function ProductionPlanning({ db, onUpdateDb, activePeriodId }: P
           </motion.div>
         </div>
       )}
+
+      </div>
 
       {copySection && (
         <CopyFromPeriodModal

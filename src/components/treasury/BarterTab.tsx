@@ -11,11 +11,24 @@ import {
   Save, X, Calendar, User, Banknote, ShieldCheck, Scale
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString,
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString,
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
-import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface BarterTabProps {
   db: AppDatabase;
@@ -28,6 +41,7 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
   const [activeSubView, setActiveSubView] = useState<'list' | 'form'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [partyFilter, setPartyFilter] = useState<string>('all');
   const [editingBarter, setEditingBarter] = useState<BarterTransaction | null>(null);
 
   // Unified Date Filter State (Default to 'today')
@@ -63,8 +77,9 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
   const stats = useMemo(() => {
     const totalCount = barters.length;
     const completedCount = barters.filter(b => b.status === 'completed').length;
+    const inProgressCount = barters.filter(b => b.status === 'in_progress').length;
     const totalVolume = barters.filter(b => b.status === 'completed').reduce((sum, b) => sum + (b.amount || 0), 0);
-    return { totalCount, completedCount, totalVolume };
+    return { totalCount, completedCount, inProgressCount, totalVolume };
   }, [barters]);
 
   const filteredBarters = useMemo(() => {
@@ -99,9 +114,10 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
         if (!matches) return false;
       }
       if (statusFilter !== 'all' && b.status !== statusFilter) return false;
+      if (partyFilter !== 'all' && b.partyAType !== partyFilter && b.partyBType !== partyFilter) return false;
       return true;
     });
-  }, [barters, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter]);
+  }, [barters, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter, partyFilter]);
 
   const handleOpenNew = () => {
     setEditingBarter(null);
@@ -227,57 +243,106 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['شماره سند تهاتر', 'تاریخ', 'طرف اول', 'طرف دوم', 'ارزش مبادله (ریال)', 'شرح کالاها و خدمات مبادله شده', 'مابه‌التفاوت', 'وضعیت'];
-    const rows = filteredBarters.map(b => [
-      b.barterNo,
-      b.date,
-      b.partyAName,
-      b.partyBName,
-      b.amount,
-      b.itemsDescription,
-      b.settlementDiffAmount || 0,
-      b.status === 'completed' ? 'تکمیل شده' : b.status === 'in_progress' ? 'در حال اجرا' : 'لغو شده'
-    ]);
-    downloadCSV('گزارش_اسناد_تهاتر_خزانه.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredBarters.map(b => ({
+      'شماره سند تهاتر': b.barterNo,
+      'تاریخ': b.date,
+      'طرف اول': b.partyAName,
+      'طرف دوم': b.partyBName,
+      'ارزش مبادله (ریال)': b.amount,
+      'شرح کالاها و خدمات': b.itemsDescription,
+      'شماره قرارداد': b.contractNo || '',
+      'مابه‌التفاوت (ریال)': b.settlementDiffAmount || 0,
+      'وضعیت': b.status === 'completed' ? 'تکمیل شده' : b.status === 'in_progress' ? 'در حال اجرا' : 'لغو شده',
+    }));
+    exportRowsToExcel(rows, 'اسناد تهاتر', 'گزارش_اسناد_تهاتر_خزانه');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['شماره سند تهاتر', 'تاریخ', 'طرف اول', 'طرف دوم', 'ارزش مبادله (ریال)', 'شرح کالاها و خدمات', 'شماره قرارداد', 'توضیحات', 'وضعیت'],
+      [{
+        'شماره سند تهاتر': 'BTR-1405-001',
+        'تاریخ': getTodayJalali(),
+        'طرف اول': 'مشتری طرف قرارداد',
+        'طرف دوم': 'تامین‌کننده مواد اولیه',
+        'ارزش مبادله (ریال)': 50000000,
+        'شرح کالاها و خدمات': 'تحویل محصولات نهایی در قبال دریافت مواد اولیه',
+        'شماره قرارداد': 'CTR-BTR-001',
+        'توضیحات': '',
+        'وضعیت': 'تکمیل شده',
+      }],
+      'قالب_تهاتر',
+      'نمونه_اسناد_تهاتر'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.barterTransactions || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('barterTransactions'));
+      const imported: BarterTransaction[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const partyA = pickRowField(row, ['طرف اول', 'partyAName']);
+        const partyB = pickRowField(row, ['طرف دوم', 'partyBName']);
+        const amt = parseNumber(pickRowField(row, ['ارزش مبادله (ریال)', 'ارزش مبادله', 'مبلغ', 'amount']));
+        if (!partyA || !partyB || amt <= 0) continue;
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        const statusVal: BarterTransaction['status'] =
+          statusRaw.includes('اجرا') || statusRaw === 'in_progress'
+            ? 'in_progress'
+            : statusRaw.includes('لغو') || statusRaw === 'cancelled'
+            ? 'cancelled'
+            : 'completed';
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          barterNo: pickRowField(row, ['شماره سند تهاتر', 'شماره سند', 'barterNo']) || `BTR-IMP-${barters.length + i + 1}`,
+          date: pickRowField(row, ['تاریخ', 'date']) || getTodayJalali(),
+          partyAType: 'customer',
+          partyAName: partyA,
+          partyBType: 'supplier',
+          partyBName: partyB,
+          amount: amt,
+          itemsDescription: pickRowField(row, ['شرح کالاها و خدمات', 'شرح اقلام', 'itemsDescription']) || 'مبادله تهاتری',
+          settlementDiffAmount: 0,
+          settlementDiffMethod: 'on_account',
+          contractNo: pickRowField(row, ['شماره قرارداد', 'contractNo']),
+          description: pickRowField(row, ['توضیحات', 'description']),
+          registeredBy: 'ورود از اکسل',
+          status: statusVal,
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, barterTransactions: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('Barter import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || statusFilter !== 'all' || partyFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setPartyFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد قراردادهای تهاتر</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <Repeat className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تهاترهای نهایی و تسویه‌شده</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">{toPersianDigits(stats.completedCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">ارزش ریالی مبادلات تهاتری</span>
-            <span className="text-lg font-black text-cyan-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalVolume))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Scale className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'تعداد قراردادهای تهاتر', value: stats.totalCount, sublabel: 'سند' },
+          { label: 'تهاترهای نهایی و تسویه‌شده', value: stats.completedCount, sublabel: 'تکمیل‌شده', tone: 'success' },
+          { label: 'در حال اجرا / تدریجی', value: stats.inProgressCount, sublabel: 'جاری', tone: 'warning' },
+          { label: 'ارزش ریالی مبادلات تهاتری', value: toPersianDigits(formatWithCommas(stats.totalVolume)), sublabel: 'ریال', tone: 'info' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -502,7 +567,7 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingBarter ? 'ذخیره تغییرات' : 'ثبت سند تهاتر'}
@@ -527,24 +592,41 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
             colorScheme="indigo"
           />
 
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو در قراردادهای تهاتر، نام طرفین، شرح اقلام..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-indigo-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو در قراردادهای تهاتر، نام طرفین، شرح اقلام..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('barter-table-print', 'فهرست اسناد تهاتر')}
+            onAdd={handleOpenNew}
+            addLabel="ثبت سند تهاتر جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>نوع طرفین معامله</label>
+              <select
+                value={partyFilter}
+                onChange={(e) => setPartyFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه طرف‌های معامله</option>
+                <option value="customer">دارای طرف مشتری</option>
+                <option value="supplier">دارای طرف تامین‌کننده</option>
+                <option value="other">طرف متفرقه</option>
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت تهاتر</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-indigo-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="completed">تکمیل شده</option>
@@ -552,35 +634,7 @@ export default function BarterTab({ db, onUpdateDb, activePeriodId, askConfirm }
                 <option value="cancelled">لغو شده</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('barter-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست تهاترها"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>ثبت سند تهاتر جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Barters Table */}
           <div id="barter-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

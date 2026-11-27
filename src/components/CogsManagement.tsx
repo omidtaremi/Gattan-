@@ -26,7 +26,15 @@ import {
 import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
 import { CopySectionKey } from '../utils/periodCopyEngine';
 import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+} from './ui/UnifiedErpUi';
+import { downloadTemplateExcel } from '../utils/tableIoUtils';
 
 interface CogsManagementProps {
   db: AppDatabase;
@@ -4181,55 +4189,92 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
   }, [payrollItems, departments, allocationLookupByEmpCode, isSharedDeptId, resolveCanonicalCategoryId, sharedCanonicalCatId]);
 
 
+  const downloadSampleFormulasExcel = () => {
+    downloadTemplateExcel(
+      ['کد محصول', 'نام محصول', 'کد ماده اولیه', 'نام ماده اولیه', 'مقدار مصرف', 'واحد'],
+      [
+        { 'کد محصول': '1001', 'نام محصول': 'نان باگت فرانسوی', 'کد ماده اولیه': 'M-101', 'نام ماده اولیه': 'آرد نانوایی', 'مقدار مصرف': 0.35, 'واحد': 'کیلوگرم' },
+      ],
+      'فرمولاسیون',
+      'نمونه_فرمولاسیون_محصولات'
+    );
+  };
+
+  const downloadSampleConversionsExcel = () => {
+    downloadTemplateExcel(
+      ['نام ماده اولیه', 'واحد خرید', 'واحد مصرف', 'ضریب تبدیل'],
+      [
+        { 'نام ماده اولیه': 'آرد نانوایی', 'واحد خرید': 'کیسه', 'واحد مصرف': 'کیلوگرم', 'ضریب تبدیل': 40 },
+      ],
+      'ضرایب تبدیل',
+      'نمونه_ضرایب_تبدیل'
+    );
+  };
+
+  const downloadSampleTimelineExcel = () => {
+    downloadTemplateExcel(
+      ['تاریخ شروع', 'تاریخ پایان', 'عنوان بازه'],
+      [
+        { 'تاریخ شروع': '1404/01/01', 'تاریخ پایان': '1404/01/31', 'عنوان بازه': 'بازه اول فروردین' },
+      ],
+      'تولید زمان‌محور',
+      'نمونه_تولید_زمان_محور'
+    );
+  };
+
+  const downloadSampleWipExcel = () => {
+    downloadTemplateExcel(
+      ['کد محصول', 'نام نیمه‌ساخته', 'واحد', 'مقدار تولید'],
+      [
+        { 'کد محصول': 'WIP-101', 'نام نیمه‌ساخته': 'خمیر پایه شیرینی', 'واحد': 'کیلوگرم', 'مقدار تولید': 10 },
+      ],
+      'WIP',
+      'نمونه_نیمه_ساخته_WIP'
+    );
+  };
+
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-5 selection:bg-rose-500 selection:text-white" dir="rtl">
-      <ModuleHeader
-        icon={<Calculator className="w-5 h-5" />}
-        title={`کنترل و محاسبات بهای تمام شده کارگاهی (COGS) — ${PERSIAN_MONTHS[selectedCogsMonth - 1]} ${toPersianDigits(selectedCogsYear)}`}
-        subtitle="فرآوری آنلاین مواد مصرفی (BOM)، حقوق مستقیم دپارتمانی، سهم حقوق مشترک و سربار تولید بر مبنای دوره فعال"
-        periodName={activePeriodObj?.name}
-        recordCount={globalCOGSStats.formulatedCount}
-        recordLabel="فرمول فعال"
-        actions={
-          <ErpButton variant="neutral" icon={<Copy className="w-4 h-4" />} onClick={() => setShowCopyModal(true)}>
-            {ERP_BUTTON_LABELS.copyFromPeriod}
-          </ErpButton>
-        }
-      />
+    <div className="space-y-6 animate-fadeIn pb-12 text-right font-sans selection:bg-rose-500 selection:text-white" dir="rtl">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          icon={<Calculator className="w-5 h-5" />}
+          title={`کنترل و محاسبات بهای تمام شده کارگاهی (COGS) — ${PERSIAN_MONTHS[selectedCogsMonth - 1]} ${toPersianDigits(selectedCogsYear)}`}
+          subtitle="فرآوری آنلاین مواد مصرفی (BOM)، حقوق مستقیم دپارتمانی، سهم حقوق مشترک و سربار تولید بر مبنای دوره فعال"
+          periodName={activePeriodObj?.name}
+          recordCount={globalCOGSStats.formulatedCount}
+          recordLabel="فرمول فعال"
+          actions={
+            <ErpButton variant="secondary" size="sm" icon={<Copy className="w-3.5 h-3.5" />} onClick={() => setShowCopyModal(true)}>
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+          }
+        />
 
-      {/* 1. GLOBAL STATS OVERVIEW */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-end gap-4">
-        {/* Global Stats Overview Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
-          <div className="bg-slate-850 p-2.5 rounded-2xl border border-slate-800/80 min-w-[130px] flex flex-col justify-center">
-            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
-              <Building className="h-3 w-3 text-blue-400" /> سربار تولید ({PERSIAN_MONTHS[selectedCogsMonth - 1]})
-            </span>
-            <span className="text-xs font-black text-slate-100 font-mono mt-0.5">{formatWithCommas(Math.round(globalCOGSStats.totalOverheadCost))} <span className="text-[8px] text-slate-400">ریال</span></span>
-          </div>
-
-          <div className="bg-slate-850 p-2.5 rounded-2xl border border-slate-800/80 min-w-[130px] flex flex-col justify-center">
-            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
-              <Users className="h-3 w-3 text-teal-400" /> حقوق و دستمزد ({PERSIAN_MONTHS[selectedCogsMonth - 1]})
-            </span>
-            <span className="text-xs font-black text-slate-100 font-mono mt-0.5">{formatWithCommas(Math.round(globalCOGSStats.totalPayrollCost))} <span className="text-[8px] text-slate-400">ریال</span></span>
-          </div>
-
-          <div className="bg-slate-850 p-2.5 rounded-2xl border border-slate-800/80 min-w-[130px] flex flex-col justify-center">
-            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
-              <Layers className="h-3 w-3 text-orange-400" /> فرآورده فرموله‌شده
-            </span>
-            <span className="text-xs font-black text-slate-100 mt-0.5">{toPersianDigits(globalCOGSStats.formulatedCount)} <span className="text-[8px] text-slate-400">از {products.length} کالا</span></span>
-          </div>
-
-          <div className="bg-slate-850 p-2.5 rounded-2xl border border-slate-800/80 min-w-[130px] flex flex-col justify-center">
-            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
-              <Percent className="h-3 w-3 text-rose-400" /> میانگین سود ناخالص
-            </span>
-            <span className="text-xs font-black text-emerald-400 font-mono mt-0.5">{toPersianDigits(globalCOGSStats.averageMargin.toFixed(1))}%</span>
-          </div>
-        </div>
+        <ModulePrimaryTabs
+          activeTab={activeTab}
+          onChange={(id) => setActiveTab(id as typeof activeTab)}
+          tabs={[
+            { id: 'formulas', label: 'فرمولاسیون و بهای تمام‌شده', icon: <Calculator className="h-4 w-4" />, count: formulas.length },
+            { id: 'timeline', label: 'تولید و تسهیم زمان‌محور', icon: <Clock className="h-4 w-4" />, count: periodSegments.length },
+            { id: 'conversions', label: 'ضریب تبدیل واحدها', icon: <ArrowLeftRight className="h-4 w-4" />, count: conversions.length },
+            { id: 'analytics', label: 'تحلیل سود و زیان', icon: <DollarSign className="h-4 w-4" /> },
+            { id: 'comparison', label: 'مقایسه عملکرد', icon: <Activity className="h-4 w-4" /> },
+            { id: 'pricing', label: 'شبیه‌ساز قیمت‌گذاری', icon: <TrendingUp className="h-4 w-4" /> },
+            { id: 'wip', label: 'کالای در جریان ساخت (WIP)', icon: <Layers className="h-4 w-4" />, count: products.filter(p => p.isWip).length }
+          ]}
+        />
       </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        <KpiStrip
+          items={[
+            { label: `سربار تولید (${PERSIAN_MONTHS[selectedCogsMonth - 1]})`, value: formatWithCommas(Math.round(globalCOGSStats.totalOverheadCost)), sublabel: 'ریال', tone: 'info' },
+            { label: `حقوق و دستمزد (${PERSIAN_MONTHS[selectedCogsMonth - 1]})`, value: formatWithCommas(Math.round(globalCOGSStats.totalPayrollCost)), sublabel: 'ریال', tone: 'default' },
+            { label: 'فرآورده فرموله‌شده', value: `${toPersianDigits(globalCOGSStats.formulatedCount)} / ${toPersianDigits(products.length)}`, sublabel: 'کالاهای دارای فرمول', tone: 'warning' },
+            { label: 'میانگین سود ناخالص', value: `${toPersianDigits(globalCOGSStats.averageMargin.toFixed(1))}%`, sublabel: 'حاشیه سود دوره', tone: 'success' },
+          ]}
+        />
 
       {/* 0. 12-MONTH COGS SELECTOR HEADER (Positioned directly above the Cost & Payroll Allocation Table button) */}
       <div className="bg-slate-950 border border-slate-850 rounded-3xl p-5 shadow-xl space-y-4 mb-4" dir="rtl">
@@ -4437,165 +4482,75 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* 2. NAVIGATION AND INTERACTIVE CONTROLS */}
       <div className="space-y-3">
-        <ModulePrimaryTabs
-          activeTab={activeTab}
-          onChange={(id) => setActiveTab(id as typeof activeTab)}
-          tabs={[
-            { id: 'formulas', label: 'فرمولاسیون و بهای تمام‌شده', icon: <Calculator className="h-4 w-4" />, count: formulas.length },
-            { id: 'timeline', label: 'تولید و تسهیم زمان‌محور', icon: <Clock className="h-4 w-4" />, count: periodSegments.length },
-            { id: 'conversions', label: 'ضریب تبدیل واحدها', icon: <ArrowLeftRight className="h-4 w-4" />, count: conversions.length },
-            { id: 'analytics', label: 'تحلیل سود و زیان', icon: <DollarSign className="h-4 w-4" /> },
-            { id: 'comparison', label: 'مقایسه عملکرد', icon: <Activity className="h-4 w-4" /> },
-            { id: 'pricing', label: 'شبیه‌ساز قیمت‌گذاری', icon: <TrendingUp className="h-4 w-4" /> },
-            { id: 'wip', label: 'کالای در جریان ساخت (WIP)', icon: <Layers className="h-4 w-4" />, count: products.filter(p => p.isWip).length }
-          ]}
-        />
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="space-y-3">
           {activeTab === 'formulas' && (
-            <>
-              <button
-                onClick={exportFormulasCSV}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="دانلود کل فرمولاسیون‌های دوره فعال به فایل اکسل/CSV"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                <span>ارسال فرمول‌ها به اکسل</span>
-              </button>
-
-              <label
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="بارگذاری فرمولاسیون‌های کاتالوگ از فایل اکسل/CSV"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
-                <span>دریافت فرمول‌ها از اکسل</span>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleImportFormulasCSV}
-                  className="hidden"
-                />
-              </label>
-
-              <button
-                onClick={handleCopyFormulasFromPriorPeriod}
-                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-slate-850 border border-slate-850 hover:bg-slate-800 hover:border-slate-700 text-slate-350 hover:text-white rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-              >
-                <Copy className="h-3.5 w-3.5 shrink-0" />
-                <span>کپی فرمول ساخت از دوره‌های پیشین</span>
-              </button>
-
-              <button
-                onClick={applyCogsPricesToProductCatalog}
-                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-rose-600 border border-rose-500 hover:bg-rose-700 text-white rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-md shadow-rose-900/10 text-center"
-                title="ثبت بهای تمام شده محاسبه شده بر اساس فرمول در کاتالوگ (کالاهای بدون فرمول بهای صفر می‌گیرند)"
-              >
-                <Save className="h-3.5 w-3.5 shrink-0" />
-                <span>ثبت نهایی بهای تمام شده در کاتالوگ</span>
-              </button>
-            </>
+            <UnifiedToolbar
+              onDownloadTemplate={downloadSampleFormulasExcel}
+              onImportExcel={handleImportFormulasCSV}
+              importAccept=".csv,.xlsx,.xls"
+              onExportExcel={exportFormulasCSV}
+              onPrint={() => printElement('cogs-formulas-printable', `فرمولاسیون و بهای تمام‌شده — ${PERSIAN_MONTHS[selectedCogsMonth - 1]}`)}
+              extraSecondaryActions={
+                <ErpButton
+                  variant="primary"
+                  size="sm"
+                  onClick={applyCogsPricesToProductCatalog}
+                  icon={<Save className="h-3.5 w-3.5" />}
+                  title="ثبت بهای تمام شده محاسبه شده بر اساس فرمول در کاتالوگ (کالاهای بدون فرمول بهای صفر می‌گیرند)"
+                >
+                  ثبت نهایی بهای تمام شده در کاتالوگ
+                </ErpButton>
+              }
+            />
           )}
 
           {activeTab === 'timeline' && (
-            <>
-              <button
-                onClick={exportTimelineCSV}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="دانلود اطلاعات تولید زمان‌محور کل دوره به فایل اکسل"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                <span>ارسال برنامه تولید به اکسل</span>
-              </button>
-
-              <label
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="بارگذاری اطلاعات تولید از فایل اکسل"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
-                <span>دریافت برنامه تولید از اکسل</span>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleImportTimelineCSV}
-                  className="hidden"
-                />
-              </label>
-            </>
+            <UnifiedToolbar
+              onDownloadTemplate={downloadSampleTimelineExcel}
+              onImportExcel={handleImportTimelineCSV}
+              importAccept=".csv,.xlsx,.xls"
+              onExportExcel={exportTimelineCSV}
+              onPrint={() => printElement('cogs-timeline-printable', `برنامه تولید زمان‌محور — ${PERSIAN_MONTHS[selectedCogsMonth - 1]}`)}
+            />
           )}
 
           {activeTab === 'conversions' && (
-            <>
-              <button
-                onClick={exportConversionsCSV}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="دانلود ضرایب تبدیل واحد کالاها به فایل اکسل"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                <span>ارسال ضرایب تبدیل به اکسل</span>
-              </button>
+            <UnifiedToolbar
+              onDownloadTemplate={downloadSampleConversionsExcel}
+              onImportExcel={handleImportConversionsCSV}
+              importAccept=".csv,.xlsx,.xls"
+              onExportExcel={exportConversionsCSV}
+              onPrint={() => printElement('cogs-conversions-printable', 'ضریب تبدیل واحدها')}
+            />
+          )}
 
-              <label
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="بارگذاری ضرایب تبدیل واحد از فایل اکسل"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
-                <span>دریافت ضرایب تبدیل از اکسل</span>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleImportConversionsCSV}
-                  className="hidden"
-                />
-              </label>
-            </>
+          {activeTab === 'analytics' && (
+            <UnifiedToolbar
+              onPrint={() => printElement('cogs-analytics-printable', `تحلیل سود و زیان — ${PERSIAN_MONTHS[selectedCogsMonth - 1]}`)}
+            />
+          )}
+
+          {activeTab === 'comparison' && (
+            <UnifiedToolbar
+              onPrint={() => printElement('cogs-comparison-printable', 'مقایسه عملکرد دوره‌ای بهای تمام‌شده')}
+            />
           )}
 
           {activeTab === 'pricing' && (
-            <>
-              <button
-                onClick={exportPricingToExcel}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-lg shadow-emerald-500/5 text-center"
-                title="دانلود گزارش جامع قیمت‌گذاری و سود حاصله به اکسل"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                <span>ارسال گزارش به اکسل</span>
-              </button>
-
-              <button
-                onClick={printPricingReport}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-500/5 text-center"
-                title="چاپ برگه رسمی قیمت مصوب جدید"
-              >
-                <Printer className="h-3.5 w-3.5 shrink-0" />
-                <span>چاپ برگه تغییر قیمت</span>
-              </button>
-            </>
+            <UnifiedToolbar
+              onExportExcel={exportPricingToExcel}
+              onPrint={printPricingReport}
+            />
           )}
 
           {activeTab === 'wip' && (
-            <>
-              <button
-                onClick={exportWipToCSV}
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="دانلود محصولات نیمه‌ساخته فعال به فایل اکسل/CSV"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
-                <span>ارسال نیمه‌ساخته‌ها به اکسل</span>
-              </button>
-
-              <label
-                className="flex-1 sm:flex-none min-w-[140px] sm:min-w-0 flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer text-center"
-                title="بارگذاری محصولات نیمه‌ساخته از فایل اکسل/CSV"
-              >
-                <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
-                <span>دریافت نیمه‌ساخته‌ها از اکسل</span>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleImportWipCSV}
-                  className="hidden"
-                />
-              </label>
-            </>
+            <UnifiedToolbar
+              onDownloadTemplate={downloadSampleWipExcel}
+              onImportExcel={handleImportWipCSV}
+              importAccept=".csv,.xlsx,.xls"
+              onExportExcel={exportWipToCSV}
+              onPrint={() => printElement('cogs-wip-printable', 'کالای در جریان ساخت (WIP)')}
+            />
           )}
         </div>
       </div>
@@ -4642,7 +4597,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ======================= TAB 1: FORMULAS AND COGS MATRIX ======================= */}
       {activeTab === 'formulas' && (
-        <div className="space-y-6">
+        <div id="cogs-formulas-printable" className="space-y-6">
           {/* Formula Excel Export/Import Header Bar */}
           <div className="flex flex-col sm:flex-row justify-between items-center gap-3 bg-slate-950 p-4 rounded-2xl border border-slate-850 shadow-md" dir="rtl">
             <div className="text-right space-y-0.5">
@@ -6355,7 +6310,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ======================= TAB 2: UNIT CONVERSION MANAGEMENT MATRIX ======================= */}
       {activeTab === 'conversions' && (
-        <div className="space-y-6">
+        <div id="cogs-conversions-printable" className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             
             {/* Left conversion formula addition */}
@@ -6545,7 +6500,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ===================== TIMELINE-BASED PRODUCTION PLANNER & ALLOCATOR ===================== */}
       {activeTab === 'timeline' && (
-        <div className="space-y-6 animate-fade-in text-right">
+        <div id="cogs-timeline-printable" className="space-y-6 animate-fade-in text-right">
           
           <div className="bg-slate-950 p-5 rounded-3xl border border-slate-850">
             <h2 className="text-sm font-black text-rose-450 border-b border-slate-850 pb-3 mb-3 flex items-center gap-2">
@@ -6863,7 +6818,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ================= TAB 4: ADVANCED PROFIT AND ANALYSIS REPORT ================= */}
       {activeTab === 'analytics' && (
-        <div className="space-y-6">
+        <div id="cogs-analytics-printable" className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <h3 className="text-base font-bold text-white flex items-center gap-1.5">
               <DollarSign className="h-5 w-5 text-rose-500" /> بررسی قیمت تمام شده نسبت به قیمت فروش فرآورده‌ها
@@ -7299,7 +7254,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ================= TAB 4.5: PERIOD PERFORMANCE COMPARISON ================= */}
       {activeTab === 'comparison' && (
-        <div className="space-y-6">
+        <div id="cogs-comparison-printable" className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black text-white flex items-center gap-1.5">
@@ -8093,7 +8048,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
       {/* ================= TAB 6: WIP (SEMI-FINISHED) PRODUCTS MANAGER ================= */}
       {activeTab === 'wip' && (
-        <div className="space-y-6 animate-fadeIn">
+        <div id="cogs-wip-printable" className="space-y-6 animate-fadeIn">
           {/* Header Card */}
           <div className="bg-slate-950 p-5 rounded-3xl border border-slate-850 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-900 pb-4">
@@ -9355,6 +9310,8 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
           </motion.div>
         </div>
       )}
+
+      </div>
 
       <CopyFromPeriodModal
         isOpen={showCopyModal}

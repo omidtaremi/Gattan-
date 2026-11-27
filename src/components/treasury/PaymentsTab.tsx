@@ -12,11 +12,24 @@ import {
   Sparkles, CreditCard, AlertCircle, CheckCircle2, ChevronDown, BookOpen
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString,
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString,
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate, numberToWordsPersian
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
 import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface PaymentsTabProps {
   db: AppDatabase;
@@ -526,71 +539,114 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['شماره سند', 'تاریخ', 'زمان', 'ذینفع / دریافت‌کننده', 'روش پرداخت', 'مبلغ (ریال)', 'بابت / سرفصل', 'وضعیت'];
-    const rows = filteredPayments.map(p => [
-      p.paymentNo,
-      p.date,
-      p.time || '-',
-      p.beneficiaryName,
-      p.paymentMethod === 'bank_transfer' ? 'حواله بانکی' : p.paymentMethod === 'cash' ? 'نقدی از صندوق' : 'چک صیادی',
-      p.amount,
-      p.category,
-      p.status === 'confirmed' ? 'تایید شده' : p.status === 'pending' ? 'در انتظار' : 'لغو شده'
-    ]);
-    downloadCSV('گزارش_اسناد_پرداختی_خزانه.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredPayments.map(p => ({
+      'شماره سند': p.paymentNo,
+      'تاریخ': p.date,
+      'زمان': p.time || '',
+      'ذینفع / دریافت‌کننده': p.beneficiaryName,
+      'روش پرداخت': p.paymentMethod === 'bank_transfer' ? 'حواله بانکی' : p.paymentMethod === 'cash' ? 'نقدی از صندوق' : 'چک صیادی',
+      'مبلغ (ریال)': p.amount,
+      'بابت / سرفصل': p.category || '',
+      'توضیحات': p.description || '',
+      'وضعیت': p.status === 'confirmed' ? 'تایید شده' : p.status === 'pending' ? 'در انتظار' : 'لغو شده',
+    }));
+    exportRowsToExcel(rows, 'اسناد پرداختی', 'گزارش_اسناد_پرداختی_خزانه');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['شماره سند', 'تاریخ', 'ذینفع / دریافت‌کننده', 'روش پرداخت', 'مبلغ (ریال)', 'بابت / سرفصل', 'کد پیگیری', 'توضیحات', 'وضعیت'],
+      [{
+        'شماره سند': 'PAY-140501-001',
+        'تاریخ': getTodayJalali(),
+        'ذینفع / دریافت‌کننده': 'تامین‌کننده مواد اولیه',
+        'روش پرداخت': 'حواله بانکی',
+        'مبلغ (ریال)': 45000000,
+        'بابت / سرفصل': PAYMENT_CATEGORIES[0],
+        'کد پیگیری': 'PY-8839210',
+        'توضیحات': '',
+        'وضعیت': 'تایید شده',
+      }],
+      'قالب_پرداخت',
+      'نمونه_اسناد_پرداختی_خزانه'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.treasuryPayments || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('treasuryPayments'));
+      const imported: TreasuryPayment[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const beneficiary = pickRowField(row, ['ذینفع / دریافت‌کننده', 'ذینفع', 'طرف مقابل', 'beneficiaryName']);
+        const amt = parseNumber(pickRowField(row, ['مبلغ (ریال)', 'مبلغ', 'amount']));
+        if (!beneficiary || amt <= 0) continue;
+        const methodRaw = pickRowField(row, ['روش پرداخت', 'روش', 'paymentMethod']);
+        const method: TreasuryPayment['paymentMethod'] =
+          methodRaw.includes('نقد') || methodRaw === 'cash'
+            ? 'cash'
+            : methodRaw.includes('چک') || methodRaw === 'cheque'
+            ? 'cheque'
+            : 'bank_transfer';
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        const statusVal: TreasuryPayment['status'] =
+          statusRaw.includes('انتظار') || statusRaw === 'pending'
+            ? 'pending'
+            : statusRaw.includes('لغو') || statusRaw.includes('باطل') || statusRaw === 'cancelled'
+            ? 'cancelled'
+            : 'confirmed';
+        const refCode = pickRowField(row, ['کد پیگیری', 'شماره پیگیری', 'ref']);
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          paymentNo: pickRowField(row, ['شماره سند', 'paymentNo']) || `PAY-IMP-${payments.length + i + 1}`,
+          date: pickRowField(row, ['تاریخ', 'date']) || getTodayJalali(),
+          time: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+          beneficiaryType: 'supplier',
+          beneficiaryName: beneficiary,
+          paymentMethod: method,
+          amount: amt,
+          bankAccountId: method === 'bank_transfer' ? bankAccounts[0]?.id : undefined,
+          bankTransferRef: method === 'bank_transfer' ? refCode : undefined,
+          cashDrawerId: method === 'cash' ? cashDrawers[0]?.id : undefined,
+          category: pickRowField(row, ['بابت / سرفصل', 'بابت', 'category']) || PAYMENT_CATEGORIES[0],
+          description: pickRowField(row, ['توضیحات', 'شرح', 'description']),
+          registeredBy: 'ورود از اکسل',
+          status: statusVal,
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, treasuryPayments: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('Payments import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || methodFilter !== 'all' || categoryFilter !== 'all' || statusFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setMethodFilter('all');
+    setCategoryFilter('all');
+    setStatusFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">کل اسناد پرداختی</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-            <ArrowUpRight className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع پرداخت تاییدشده</span>
-            <span className="text-lg font-black text-rose-400 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalAmount))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-            <Banknote className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">پرداخت با حواله پایا/ساتنا</span>
-            <span className="text-lg font-black text-cyan-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.bankAmount))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Landmark className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">پرداخت نقدی / تنخواه</span>
-            <span className="text-lg font-black text-amber-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.cashAmount))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <Vault className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'کل اسناد پرداختی', value: stats.totalCount, sublabel: 'سند' },
+          { label: 'مجموع پرداخت تاییدشده', value: toPersianDigits(formatWithCommas(stats.totalAmount)), sublabel: 'ریال', tone: 'danger' },
+          { label: 'پرداخت با حواله پایا/ساتنا', value: toPersianDigits(formatWithCommas(stats.bankAmount)), sublabel: 'ریال', tone: 'info' },
+          { label: 'پرداخت نقدی / تنخواه', value: toPersianDigits(formatWithCommas(stats.cashAmount)), sublabel: 'ریال', tone: 'warning' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -1084,73 +1140,62 @@ export default function PaymentsTab({ db, onUpdateDb, activePeriodId, askConfirm
             colorScheme="rose"
           />
 
-          {/* Controls Bar - Single Line with Graceful Wrapping */}
-          <div className="flex flex-wrap items-center gap-3 bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl">
-            {/* Search Input */}
-            <div className="relative flex-1 min-w-[220px]">
-              <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="جستجو با شماره سند، نام ذینفع، کد پیگیری، شرح..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full h-10 bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 text-xs text-white focus:border-rose-500 outline-none transition-colors placeholder:text-slate-500"
-              />
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو با شماره سند، نام ذینفع، کد پیگیری، شرح..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('payments-table-print', 'فهرست اسناد پرداختی')}
+            onAdd={handleOpenNew}
+            addLabel="ثبت سند پرداخت جدید"
+          />
+
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>روش پرداخت وجه</label>
+              <select
+                value={methodFilter}
+                onChange={(e) => setMethodFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه روش‌های پرداخت</option>
+                <option value="bank_transfer">حواله بانکی</option>
+                <option value="cash">نقدی از صندوق</option>
+                <option value="cheque">صدور چک</option>
+              </select>
             </div>
-
-            {/* Method Filter Combobox */}
-            <select
-              value={methodFilter}
-              onChange={(e) => setMethodFilter(e.target.value)}
-              className="h-10 bg-slate-950 border border-slate-800 rounded-xl px-3 text-xs text-slate-300 focus:border-rose-500 outline-none transition-colors shrink-0 cursor-pointer"
-            >
-              <option value="all">همه روش‌های پرداخت</option>
-              <option value="bank_transfer">حواله بانکی</option>
-              <option value="cash">نقدی از صندوق</option>
-              <option value="cheque">صدور چک</option>
-            </select>
-
-            {/* Status Filter Combobox */}
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-10 bg-slate-950 border border-slate-800 rounded-xl px-3 text-xs text-slate-300 focus:border-rose-500 outline-none transition-colors shrink-0 cursor-pointer"
-            >
-              <option value="all">همه وضعیت‌ها</option>
-              <option value="confirmed">تایید شده</option>
-              <option value="pending">در انتظار</option>
-              <option value="cancelled">لغو شده</option>
-            </select>
-
-            {/* Export Excel Button */}
-            <button
-              onClick={handleExportCSV}
-              className="h-10 px-3.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold shrink-0 cursor-pointer"
-              title="خروجی فایل CSV اکسل"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              <span>اکسل</span>
-            </button>
-
-            {/* Print Button */}
-            <button
-              onClick={() => printElement('payments-table-print')}
-              className="h-10 px-3.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold shrink-0 cursor-pointer"
-              title="چاپ لیست پرداخت‌ها"
-            >
-              <Printer className="w-4 h-4 text-cyan-400" />
-              <span>چاپ</span>
-            </button>
-
-            {/* New Payment Button */}
-            <button
-              onClick={handleOpenNew}
-              className="h-10 px-4 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all shrink-0 cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" />
-              <span>ثبت سند پرداخت جدید</span>
-            </button>
-          </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>بابت / سرفصل هزینه</label>
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه سرفصل‌ها</option>
+                {PAYMENT_CATEGORIES.map(cat => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت سند</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه وضعیت‌ها</option>
+                <option value="confirmed">تایید شده</option>
+                <option value="pending">در انتظار</option>
+                <option value="cancelled">لغو شده</option>
+              </select>
+            </div>
+          </UnifiedFilterBar>
 
           {/* Payments Table */}
           <div id="payments-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

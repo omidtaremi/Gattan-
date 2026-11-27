@@ -25,7 +25,23 @@ import SearchableSelect from './SearchableSelect';
 import ShamsiDatePicker from './ShamsiDatePicker';
 import { generateCode128SvgString, generateNextSystemBarcode } from '../utils/barcodeSvg';
 import { nextSimpleId, createSimpleIdGenerator } from '../utils/simpleId';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from './ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../utils/tableIoUtils';
 import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import { CopySectionKey } from '../utils/periodCopyEngine';
 import { useErpFeedback } from './ui/ToastContext';
@@ -444,6 +460,8 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   const [bulkEditFeedback, setBulkEditFeedback] = useState<string>('');
 
   const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [isItemFormOpen, setIsItemFormOpen] = useState<boolean>(false);
+  const [isPurchaseFormOpen, setIsPurchaseFormOpen] = useState<boolean>(false);
   const [itemBarcodeScanValue, setItemBarcodeScanValue] = useState<string>('');
   const [itemBarcodeScanFeedback, setItemBarcodeScanFeedback] = useState<{ type: 'warning'; text: string } | null>(null);
   const itemBarcodeScanInputRef = React.useRef<HTMLInputElement>(null);
@@ -476,7 +494,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
   }, []);
 
   React.useEffect(() => {
-    if (activeTab === 'items') {
+    if (activeTab === 'items' && isItemFormOpen) {
       focusItemBarcodeScannerInput();
     }
     return () => {
@@ -485,7 +503,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
         itemBarcodeScanDebounceRef.current = null;
       }
     };
-  }, [activeTab, focusItemBarcodeScannerInput]);
+  }, [activeTab, isItemFormOpen, focusItemBarcodeScannerInput]);
 
   const openScannedItemForEdit = (matched: Item) => {
     if (itemBarcodeScanDebounceRef.current) {
@@ -493,6 +511,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       itemBarcodeScanDebounceRef.current = null;
     }
     setEditingItem(matched);
+    setIsItemFormOpen(true);
     setItemBarcodeScanValue('');
     setItemBarcodeScanFeedback(null);
     window.setTimeout(() => {
@@ -964,7 +983,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     onUpdateDb({ ...db, items: updatedItems, stockCounts: updatedStockCounts, productFormulas: updatedFormulas });
     setItemBarcodeScanValue('');
     setItemBarcodeScanFeedback(null);
-    focusItemBarcodeScannerInput();
+    setIsItemFormOpen(false);
   };
 
   const deleteItem = (id: string) => {
@@ -1762,6 +1781,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     // Clear builder states
     setInvoiceItems([]);
     setInvoiceNo('');
+    setIsPurchaseFormOpen(false);
     alert('فاکتور خرید کالا با موفقیت ثبت گردید و آخرین قیمت خرید مرجع کالاها به‌روزرسانی شد.');
   };
 
@@ -3326,79 +3346,249 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
     }));
   }, [activeCounts, itemMap]);
 
+  const activeItemsCount = useMemo(() => items.filter(i => i.isActive !== false).length, [items]);
+  const totalPurchasesAmount = useMemo(
+    () => purchases.reduce((sum, p) => sum + p.items.reduce((acc, it) => acc + it.qty * it.price, 0), 0),
+    [purchases]
+  );
+
+  // Units Excel Template / Import / Export
+  const downloadSampleUnitsExcel = () => {
+    downloadTemplateExcel(
+      ['نام واحد سنجش', 'نماد اختصاری', 'توضیحات'],
+      [
+        { 'نام واحد سنجش': 'کیلوگرم', 'نماد اختصاری': 'kg', 'توضیحات': 'واحد وزنی پایه' },
+        { 'نام واحد سنجش': 'بسته', 'نماد اختصاری': 'pack', 'توضیحات': 'بسته‌بندی انبار' },
+      ],
+      'واحدهای سنجش',
+      'نمونه_واحدهای_سنجش'
+    );
+  };
+
+  const exportUnitsExcel = () => {
+    exportRowsToExcel(
+      searchedUnits.map((u, idx) => ({
+        'ردیف': idx + 1,
+        'نام واحد سنجش': u.name,
+        'نماد اختصاری': u.symbol || '',
+        'توضیحات': u.description || '',
+      })),
+      'واحدهای_سنجش_انبار',
+      'واحدهای سنجش'
+    );
+  };
+
+  const importUnitsFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        toast('فایل اکسل خالی است یا سطر معتبری یافت نشد.', 'error');
+        return;
+      }
+      const existing = db.unitsOfMeasurement || [];
+      const genId = createSimpleIdGenerator(existing, 'uom');
+      const existingNames = new Set(existing.filter(u => u.periodId === activePeriodId).map(u => u.name.trim().toLowerCase()));
+      const added: UnitOfMeasurement[] = [];
+      for (const row of rows) {
+        const name = String(pickRowField(row, ['نام واحد سنجش', 'نام واحد', 'واحد', 'name']) || '').trim();
+        if (!name || existingNames.has(name.toLowerCase())) continue;
+        existingNames.add(name.toLowerCase());
+        added.push({
+          id: genId(),
+          periodId: activePeriodId,
+          name,
+          symbol: String(pickRowField(row, ['نماد اختصاری', 'نماد', 'symbol']) || '').trim(),
+          description: String(pickRowField(row, ['توضیحات', 'description']) || '').trim(),
+        });
+      }
+      if (added.length === 0) {
+        toast('هیچ واحد سنجش جدیدی در فایل یافت نشد.', 'info');
+        return;
+      }
+      onUpdateDb({ ...db, unitsOfMeasurement: [...existing, ...added] });
+      toast(`${toPersianDigits(added.length)} واحد سنجش جدید با موفقیت وارد شد.`, 'success');
+    } catch {
+      toast('خطا در خواندن فایل اکسل واحدهای سنجش.', 'error');
+    }
+  };
+
+  // Warehouses Excel Template / Import / Export
+  const downloadSampleWarehousesExcel = () => {
+    downloadTemplateExcel(
+      ['کد انبار', 'نام انبار', 'موقعیت فیزیکی'],
+      [
+        { 'کد انبار': 'WH-101', 'نام انبار': 'انبار مرکزی مواد خشک', 'موقعیت فیزیکی': 'طبقه همکف - سالن ۱' },
+        { 'کد انبار': 'WH-102', 'نام انبار': 'سردخانه لبنیات و خامه', 'موقعیت فیزیکی': 'کارگاه قنادی' },
+      ],
+      'انبارها',
+      'نمونه_انبارها'
+    );
+  };
+
+  const exportWarehousesExcel = () => {
+    exportRowsToExcel(
+      searchedWarehouses.map((w, idx) => ({
+        'ردیف': idx + 1,
+        'کد انبار': w.code || '',
+        'نام انبار': w.name,
+        'موقعیت فیزیکی': w.location || '',
+      })),
+      'لیست_انبارها',
+      'انبارها'
+    );
+  };
+
+  const importWarehousesFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        toast('فایل اکسل خالی است.', 'error');
+        return;
+      }
+      const existing = db.warehouses || [];
+      const genId = createSimpleIdGenerator(existing, 'wh');
+      const existingNames = new Set(existing.filter(w => w.periodId === activePeriodId).map(w => w.name.trim().toLowerCase()));
+      const added: any[] = [];
+      let nextIdx = existing.filter(w => w.periodId === activePeriodId).length + 1;
+      for (const row of rows) {
+        const name = String(pickRowField(row, ['نام انبار', 'عنوان انبار', 'انبار', 'name']) || '').trim();
+        if (!name || existingNames.has(name.toLowerCase())) continue;
+        existingNames.add(name.toLowerCase());
+        const code = String(pickRowField(row, ['کد انبار', 'کد', 'code']) || '').trim() || `WH-${100 + nextIdx++}`;
+        const location = String(pickRowField(row, ['موقعیت فیزیکی', 'موقعیت', 'آدرس', 'location']) || '').trim();
+        added.push({
+          id: genId(),
+          periodId: activePeriodId,
+          name,
+          code,
+          location,
+          isActive: true,
+        });
+      }
+      if (added.length === 0) {
+        toast('هیچ انبار جدیدی در فایل یافت نشد.', 'info');
+        return;
+      }
+      onUpdateDb({ ...db, warehouses: [...existing, ...added] });
+      toast(`${toPersianDigits(added.length)} انبار جدید با موفقیت وارد شد.`, 'success');
+    } catch {
+      toast('خطا در خواندن فایل اکسل انبارها.', 'error');
+    }
+  };
+
   return (
     <div
-      className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right"
+      className="space-y-6 animate-fadeIn pb-12 text-right font-sans"
       dir="rtl"
       onFocusCapture={handleContainerFocusCapture}
       onMouseUpCapture={handleContainerMouseUpCapture}
     >
       {/* Unified Module Header + Primary Tabs */}
-      <ModuleHeader
-        icon={<Package className="h-5 w-5" />}
-        title="مدیریت کالاها، خرید و انبارداری"
-        subtitle="تعریف شناسنامه مواد اولیه، دسته‌بندی‌ها، واحدهای سنجش، ثبت فاکتور خرید، انبارگردانی و مدیریت انبارها"
-        periodName={db.periods.find(p => p.id === activePeriodId)?.name}
-        recordCount={
-          activeTab === 'items' ? items.length
-            : activeTab === 'categories' ? categories.length
-            : activeTab === 'units' ? unitsOfMeasurementList.length
-            : activeTab === 'purchases' ? purchases.length
-            : activeTab === 'inventory' ? audits.length
-            : warehouses.length
-        }
-        recordLabel={
-          activeTab === 'items' ? 'کالا'
-            : activeTab === 'categories' ? 'دسته‌بندی'
-            : activeTab === 'units' ? 'واحد'
-            : activeTab === 'purchases' ? 'فاکتور'
-            : activeTab === 'inventory' ? 'دوره انبارگردانی'
-            : 'انبار'
-        }
-        actions={
-          <ErpButton
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              const map: Record<typeof activeTab, CopySectionKey> = {
-                items: 'items',
-                categories: 'itemCategories',
-                units: 'unitsOfMeasurement',
-                purchases: 'purchaseInvoices',
-                inventory: 'stockCountAudits',
-                warehouses: 'warehouses',
-              };
-              setCopySection(map[activeTab]);
-            }}
-          >
-            {ERP_BUTTON_LABELS.copyFromPeriod}
-          </ErpButton>
-        }
-      />
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          icon={<Package className="h-5 w-5" />}
+          title="مدیریت کالاها، خرید و انبارداری"
+          subtitle="تعریف شناسنامه مواد اولیه، دسته‌بندی‌ها، واحدهای سنجش، ثبت فاکتور خرید، انبارگردانی و مدیریت انبارها"
+          periodName={db.periods.find(p => p.id === activePeriodId)?.name}
+          recordCount={
+            activeTab === 'items' ? items.length
+              : activeTab === 'categories' ? categories.length
+              : activeTab === 'units' ? unitsOfMeasurementList.length
+              : activeTab === 'purchases' ? purchases.length
+              : activeTab === 'inventory' ? audits.length
+              : warehouses.length
+          }
+          recordLabel={
+            activeTab === 'items' ? 'کالا'
+              : activeTab === 'categories' ? 'دسته‌بندی'
+              : activeTab === 'units' ? 'واحد'
+              : activeTab === 'purchases' ? 'فاکتور'
+              : activeTab === 'inventory' ? 'دوره انبارگردانی'
+              : 'انبار'
+          }
+          actions={
+            <ErpButton
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const map: Record<typeof activeTab, CopySectionKey> = {
+                  items: 'items',
+                  categories: 'itemCategories',
+                  units: 'unitsOfMeasurement',
+                  purchases: 'purchaseInvoices',
+                  inventory: 'stockCountAudits',
+                  warehouses: 'warehouses',
+                };
+                setCopySection(map[activeTab]);
+              }}
+            >
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+          }
+        />
 
-      <ModulePrimaryTabs
-        className="mb-5"
-        activeId={activeTab}
-        onChange={(id) => setActiveTab(id as typeof activeTab)}
-        tabs={[
-          { id: 'items', label: 'تعریف و شناسنامه کالا', count: items.length },
-          { id: 'categories', label: 'دسته‌بندی مواد اولیه', count: categories.length },
-          { id: 'units', label: 'واحدهای سنجش', count: unitsOfMeasurementList.length },
-          { id: 'purchases', label: 'فاکتور خرید کالا', count: purchases.length },
-          { id: 'inventory', label: 'انبارگردانی و شمارش', count: audits.length },
-          { id: 'warehouses', label: 'مدیریت انبارها', count: warehouses.length },
-        ]}
-      />
+        <ModulePrimaryTabs
+          activeId={activeTab}
+          onChange={(id) => {
+            setActiveTab(id as typeof activeTab);
+            setIsItemFormOpen(false);
+            setIsPurchaseFormOpen(false);
+          }}
+          tabs={[
+            { id: 'items', label: 'تعریف و شناسنامه کالا', count: items.length },
+            { id: 'categories', label: 'دسته‌بندی مواد اولیه', count: categories.length },
+            { id: 'units', label: 'واحدهای سنجش', count: unitsOfMeasurementList.length },
+            { id: 'purchases', label: 'فاکتور خرید کالا', count: purchases.length },
+            { id: 'inventory', label: 'انبارگردانی و شمارش', count: audits.length },
+            { id: 'warehouses', label: 'مدیریت انبارها', count: warehouses.length },
+          ]}
+        />
+      </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        {!(activeTab === 'items' && isItemFormOpen) && !(activeTab === 'purchases' && isPurchaseFormOpen) && (
+          <KpiStrip
+            items={[
+              { label: 'کل مواد اولیه و کالاها', value: toPersianDigits(items.length), sublabel: `${toPersianDigits(activeItemsCount)} قلم فعال`, tone: 'default' },
+              { label: 'دسته‌بندی‌ها و انبارها', value: `${toPersianDigits(categories.length)} / ${toPersianDigits(warehouses.length)}`, sublabel: 'گروه / انبار فعال', tone: 'info' },
+              { label: 'فاکتورهای خرید دوره', value: toPersianDigits(purchases.length), sublabel: `${formatWithCommas(totalPurchasesAmount)} ریال`, tone: 'success' },
+              { label: 'دوره‌های انبارگردانی', value: toPersianDigits(audits.length), sublabel: totalSystemValue > 0 ? `${formatWithCommas(Math.round(totalSystemValue))} ریال ارزش` : 'ثبت شمارش', tone: 'warning' },
+            ]}
+          />
+        )}
 
       {/* ==================== TAB 1: DEFINE ITEMS ==================== */}
       {activeTab === 'items' && (
         <div className="space-y-6">
-          {/* Form Side - Placed on Top */}
+          {isItemFormOpen ? (
+          /* Form Side - Full Width Toggleable */
           <div className="bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-6 rounded-2xl space-y-4 shadow-xl">
-            <h3 className="text-sm font-extrabold text-[#fafafa] flex items-center gap-2 mb-1.5 border-b border-zinc-800 pb-3">
-              {editingItem ? <Edit2 className="h-4.5 w-4.5 text-rose-500 animate-pulse" /> : <Plus className="h-4.5 w-4.5 text-rose-500" />}
-              {editingItem ? 'ویرایش شناسنامه کالا' : 'تعریف کالای جدید خط تولید'}
-            </h3>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5 border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-extrabold text-[#fafafa] flex items-center gap-2">
+                {editingItem ? <Edit2 className="h-4.5 w-4.5 text-rose-500 animate-pulse" /> : <Plus className="h-4.5 w-4.5 text-rose-500" />}
+                {editingItem ? 'ویرایش شناسنامه کالا' : 'تعریف کالای جدید خط تولید'}
+              </h3>
+              <ErpButton
+                type="button"
+                variant="secondary"
+                size="sm"
+                icon={<ArrowRight className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  setEditingItem(null);
+                  setItemBarcodeScanFeedback(null);
+                  setIsItemFormOpen(false);
+                }}
+              >
+                انصراف و بازگشت
+              </ErpButton>
+            </div>
 
             {/* Auto-focused Barcode Scanner Search Bar for Item Definition */}
             <div className="bg-sky-950/25 border border-sky-500/35 p-3.5 rounded-xl space-y-2">
@@ -3737,19 +3927,17 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                 </div>
 
                 <div className="flex items-center gap-2.5 w-full sm:w-auto">
-                  {editingItem && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingItem(null);
-                        setItemBarcodeScanFeedback(null);
-                        focusItemBarcodeScannerInput();
-                      }}
-                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs font-semibold rounded-xl transition-all cursor-pointer"
-                    >
-                      انصراف
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingItem(null);
+                      setItemBarcodeScanFeedback(null);
+                      setIsItemFormOpen(false);
+                    }}
+                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs font-semibold rounded-xl transition-all cursor-pointer"
+                  >
+                    انصراف و بازگشت
+                  </button>
                   <button
                     type="submit"
                     className="flex-1 sm:flex-initial px-6 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold py-2.5 rounded-xl shadow-lg hover:shadow-rose-600/10 cursor-pointer flex items-center justify-center gap-1.5 transition-all"
@@ -3761,133 +3949,48 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               </div>
             </form>
           </div>
-
-          {/* List Section - Placed Below Form */}
-          <div className="space-y-4">
-            <div className="flex flex-col xl:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-800 backdrop-blur-md">
-                <div className="flex flex-wrap items-center gap-2.5 w-full xl:w-auto">
-                  <div className="relative w-full sm:w-64">
-                    <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                      <Search className="h-4 w-4 text-zinc-500" />
-                    </span>
-                    <input
-                      id="item-search-input"
-                      type="text"
-                      value={itemSearch}
-                      onChange={(e) => setItemSearch(e.target.value)}
-                      placeholder="جستجو بر اساس نام، گروه، کد کالا..."
-                      className="w-full pl-3 pr-10 py-2 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all font-medium"
-                    />
-                  </div>
-
-                  {/* Category Filter Dropdown */}
-                  <div className="w-full sm:w-auto">
-                    <select
-                      id="item-category-filter-select"
-                      value={itemCategoryFilter}
-                      onChange={(e) => setItemCategoryFilter(e.target.value)}
-                      className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-rose-500 cursor-pointer font-bold"
-                    >
-                      <option value="all">همه دسته‌بندی‌های مواد اولیه</option>
-                      {categories.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Warehouse Filter Dropdown */}
-                  <div className="w-full sm:w-auto">
-                    <select
-                      id="item-warehouse-filter-select"
-                      value={itemWarehouseFilter}
-                      onChange={(e) => setItemWarehouseFilter(e.target.value)}
-                      className="w-full bg-zinc-950 border border-zinc-800 text-sky-200 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-sky-500 cursor-pointer font-bold"
-                    >
-                      <option value="all">همه انبارها</option>
-                      {itemWarehouseOptions.map(wh => (
-                        <option key={wh} value={wh}>{wh}</option>
-                      ))}
-                      <option value="none">فاقد انبار مشخص</option>
-                    </select>
-                  </div>
-
-                  {/* View Mode Toggle: List vs Category Grouped vs Warehouse Grouped */}
-                  <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-zinc-800 text-xs font-bold shadow-inner">
-                    <button
-                      type="button"
-                      onClick={() => setItemViewGroupMode('flat')}
-                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${itemViewGroupMode === 'flat' ? 'bg-rose-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'}`}
-                      title="نمایش یکپارچه و لیستی"
-                    >
-                      لیستی
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setItemViewGroupMode('grouped')}
-                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${itemViewGroupMode === 'grouped' ? 'bg-rose-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'}`}
-                      title="تفکیک کالا بر اساس دسته‌بندی مواد اولیه"
-                    >
-                      تفکیک دسته‌بندی
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setItemViewGroupMode('warehouse')}
-                      className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${itemViewGroupMode === 'warehouse' ? 'bg-sky-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'}`}
-                      title="دسته‌بندی و نمایش کالاها به تفکیک انبار"
-                    >
-                      تفکیک انبار
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                  <button
-                    type="button"
+          ) : (
+          /* List Section */
+          <div className="space-y-3">
+            <UnifiedToolbar
+              searchValue={itemSearch}
+              onSearchChange={setItemSearch}
+              searchPlaceholder="جستجو بر اساس نام، گروه، کد کالا، بارکد..."
+              onAdd={() => {
+                setEditingItem(null);
+                setItemBarcodeScanFeedback(null);
+                setIsItemFormOpen(true);
+              }}
+              addLabel={ERP_BUTTON_LABELS.add}
+              hasActiveFilters={Boolean(itemSearch || itemCategoryFilter !== 'all' || itemWarehouseFilter !== 'all' || itemViewGroupMode !== 'flat')}
+              onClearFilters={() => {
+                setItemSearch('');
+                setItemCategoryFilter('all');
+                setItemWarehouseFilter('all');
+                setItemViewGroupMode('flat');
+              }}
+              onDownloadTemplate={downloadSampleItemsCSV}
+              onImportExcel={importItemsCSV}
+              importAccept=".xlsx,.xls,.csv,.txt"
+              onExportExcel={exportItemsCSV}
+              onPrint={() => printElement('items-printable-section', 'فهرست کالاها و مواد اولیه')}
+              extraSecondaryActions={
+                <>
+                  <ErpButton
+                    variant="secondary"
+                    size="sm"
                     onClick={handleAssignMissingSystemBarcodes}
-                    className={`flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all border ${
-                      itemsMissingSystemBarcodeCount > 0
-                        ? 'bg-sky-600 hover:bg-sky-500 text-white border-sky-500 shadow-lg shadow-sky-600/15'
-                        : 'bg-sky-950/30 text-sky-400 border-sky-800/60 hover:bg-sky-900/40'
-                    }`}
+                    icon={<ScanLine className="h-3.5 w-3.5 text-sky-400" />}
                     title="تخصیص خودکار بارکد شناسه سیستمی یکتا به تمامی کالاهایی که هنوز بارکد سیستمی ندارند"
                   >
-                    <ScanLine className="h-4 w-4" />
-                    <span>تخصیص بارکد سیستمی</span>
-                    {itemsMissingSystemBarcodeCount > 0 && (
-                      <span className="bg-white/20 text-white text-[10px] px-1.5 py-0.5 rounded-md font-mono">
-                        {toPersianDigits(itemsMissingSystemBarcodeCount)}
-                      </span>
-                    )}
-                  </button>
-                  <button
-                    onClick={downloadSampleItemsCSV}
-                    className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 border border-zinc-700 rounded-xl text-xs font-bold cursor-pointer transition-all"
-                    title="دانلود فایل اکسل نمونه برای وارد کردن کالاها"
+                    بارکد سیستمی{itemsMissingSystemBarcodeCount > 0 ? ` (${toPersianDigits(itemsMissingSystemBarcodeCount)})` : ''}
+                  </ErpButton>
+                  <label
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-xl text-[11px] font-bold cursor-pointer transition-all"
+                    title="بروزرسانی قیمت‌های خرید و شناسایی ردیف‌های جدید بر اساس فایل اکسل"
                   >
-                    <Download className="h-4 w-4 text-zinc-400" />
-                    نمونه اکسل
-                  </button>
-                  <button
-                    onClick={exportItemsCSV}
-                    className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                  >
-                    <FileSpreadsheet className="h-4 w-4" />
-                    خروجی اکسل
-                  </button>
-                  <label className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold cursor-pointer transition-all">
-                    <Plus className="h-4 w-4" />
-                    واردات کالا
-                    <input
-                      id="item-import-file"
-                      type="file"
-                      accept=".csv, .txt, .xlsx"
-                      onChange={importItemsCSV}
-                      className="hidden"
-                    />
-                  </label>
-                  <label className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-rose-700/20 border border-rose-500/20 hover:bg-rose-700 hover:text-white text-rose-400 rounded-xl text-xs font-bold cursor-pointer transition-all" title="بروزرسانی قیمت‌های خرید و شناسایی ردیف‌های جدید بر اساس فایل اکسل">
-                    <RefreshCw className="h-4 w-4" />
-                    بروزرسانی قیمت خرید (اکسل)
+                    <RefreshCw className="h-3.5 w-3.5 text-amber-400" />
+                    <span>بروزرسانی قیمت (اکسل)</span>
                     <input
                       id="item-price-updater-file"
                       type="file"
@@ -3896,28 +3999,74 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                       className="hidden"
                     />
                   </label>
-                  <button
-                    type="button"
+                  <ErpButton
+                    variant="danger"
+                    size="sm"
                     onClick={clearAllItems}
-                    className="flex-grow sm:flex-initial flex items-center justify-center gap-1 px-3 py-2 bg-rose-950/45 text-rose-400 border border-rose-900/60 hover:bg-rose-900/40 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                    icon={<Trash2 className="h-3.5 w-3.5" />}
                     title="حذف کلی تمامی رکوردهای کالا"
                   >
-                    <Trash2 className="h-4 w-4" />
-                    حذف کلی اقلام
-                  </button>
+                    حذف کلی
+                  </ErpButton>
                   {selectedItemIds.length > 0 && (
-                    <button
-                      type="button"
+                    <ErpButton
+                      variant="primary"
+                      size="sm"
                       onClick={handleBatchDeleteItems}
-                      className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-rose-650 hover:bg-rose-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-lg shadow-rose-600/10"
-                      title="حذف کارهای انتخاب شده به صورت گروهی"
+                      icon={<Trash2 className="h-3.5 w-3.5" />}
                     >
-                      <Trash2 className="h-4 w-4" />
                       حذف دسته‌ای ({toPersianDigits(selectedItemIds.length)})
-                    </button>
+                    </ErpButton>
                   )}
-                </div>
+                </>
+              }
+            />
+
+            <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>دسته‌بندی مواد اولیه</label>
+                <select
+                  id="item-category-filter-select"
+                  value={itemCategoryFilter}
+                  onChange={(e) => setItemCategoryFilter(e.target.value)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="all">همه دسته‌بندی‌های مواد اولیه</option>
+                  {categories.map(cat => (
+                    <option key={cat.id} value={cat.id}>{cat.name}</option>
+                  ))}
+                </select>
               </div>
+
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>انبار نگهداری</label>
+                <select
+                  id="item-warehouse-filter-select"
+                  value={itemWarehouseFilter}
+                  onChange={(e) => setItemWarehouseFilter(e.target.value)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="all">همه انبارها</option>
+                  {itemWarehouseOptions.map(wh => (
+                    <option key={wh} value={wh}>{wh}</option>
+                  ))}
+                  <option value="none">فاقد انبار مشخص</option>
+                </select>
+              </div>
+
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>نحوه نمایش جدول</label>
+                <select
+                  value={itemViewGroupMode}
+                  onChange={(e) => setItemViewGroupMode(e.target.value as 'flat' | 'grouped' | 'warehouse')}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="flat">نمایش لیستی یکپارچه</option>
+                  <option value="grouped">تفکیک بر اساس دسته‌بندی</option>
+                  <option value="warehouse">تفکیک بر اساس انبار</option>
+                </select>
+              </div>
+            </UnifiedFilterBar>
 
               {/* Feedback Toast Banner for System Barcodes & Bulk Edits */}
               {bulkEditFeedback && (
@@ -4181,10 +4330,10 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               )}
 
               {/* Items Table container */}
-              <div className="border border-zinc-800/80 rounded-2xl bg-zinc-950/20 backdrop-blur-md overflow-hidden">
+              <div id="items-printable-section" className="border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-zinc-850 text-right">
-                    <thead className="bg-zinc-900/60 text-zinc-400">
+                  <table className="min-w-full divide-y divide-slate-800 text-right">
+                    <thead className="bg-slate-900/90 text-slate-400">
                       <tr>
                         <th className="px-3.5 py-3 text-center" style={{ width: '40px' }}>
                           <input
@@ -4330,7 +4479,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                                     <td className="px-3.5 py-4 text-center">
                                       <div className="flex justify-center gap-2">
                                         <button
-                                          onClick={() => setEditingItem(i)}
+                                          onClick={() => { setEditingItem(i); setIsItemFormOpen(true); }}
                                           className="p-1 px-2 border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-all cursor-pointer"
                                           title="ویرایش کالا"
                                         >
@@ -4456,7 +4605,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                                     <td className="px-3.5 py-4 text-center">
                                       <div className="flex justify-center gap-2">
                                         <button
-                                          onClick={() => setEditingItem(i)}
+                                          onClick={() => { setEditingItem(i); setIsItemFormOpen(true); }}
                                           className="p-1 px-2 border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-all cursor-pointer"
                                           title="ویرایش کالا"
                                         >
@@ -4528,7 +4677,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             <td className="px-3.5 py-4.5 text-center">
                               <div className="flex justify-center gap-2">
                                 <button
-                                  onClick={() => setEditingItem(i)}
+                                  onClick={() => { setEditingItem(i); setIsItemFormOpen(true); }}
                                   className="p-1 px-2 border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-all cursor-pointer"
                                   title="ویرایش کالا"
                                 >
@@ -4562,6 +4711,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                 />
               </div>
             </div>
+          )}
         </div>
       )}
 
@@ -4600,58 +4750,30 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
             {/* List */}
             <div className="md:col-span-2 space-y-4">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-800 backdrop-blur-md">
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-zinc-500" />
-                  </span>
-                  <input
-                    id="cat-search-input"
-                    type="text"
-                    value={catSearch}
-                    onChange={(e) => setCatSearch(e.target.value)}
-                    placeholder="جستجو در فولدربندی و دسته‌ها..."
-                    className="w-full pl-3 pr-10 py-2 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all"
-                  />
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={downloadSampleCategoriesCSV}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 border border-zinc-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                    title="دانلود فایل اکسل نمونه برای وارد کردن دسته‌بندی‌ها"
-                  >
-                    <Download className="h-4 w-4 text-zinc-400" /> نمونه اکسل
-                  </button>
-                  <button
-                    onClick={exportCategoryCSV}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold cursor-pointer transition-all"
-                  >
-                    <FileSpreadsheet className="h-4 w-4" /> خروجی اکسل
-                  </button>
-                  <label className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold cursor-pointer transition-all">
-                    <Plus className="h-4 w-4" /> وارد کردن داده
-                    <input
-                      id="cat-import-file"
-                      type="file"
-                      accept=".csv"
-                      onChange={importCategoryCSV}
-                      className="hidden"
-                    />
-                  </label>
-                  <button
-                    type="button"
+              <UnifiedToolbar
+                searchValue={catSearch}
+                onSearchChange={setCatSearch}
+                searchPlaceholder="جستجو در دسته‌بندی مواد اولیه..."
+                onDownloadTemplate={downloadSampleCategoriesCSV}
+                onImportExcel={importCategoryCSV}
+                importAccept=".xlsx,.xls,.csv"
+                onExportExcel={exportCategoryCSV}
+                onPrint={() => printElement('item-categories-printable-section', 'فهرست دسته‌بندی مواد اولیه')}
+                extraSecondaryActions={
+                  <ErpButton
+                    variant="danger"
+                    size="sm"
                     onClick={clearAllCategories}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-rose-950/45 text-rose-400 border border-rose-900/60 hover:bg-rose-900/40 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                    icon={<Trash2 className="h-3.5 w-3.5" />}
                   >
-                    <Trash2 className="h-4 w-4" /> حذف کلی دسته‌ها
-                  </button>
-                </div>
-              </div>
+                    حذف کلی دسته‌ها
+                  </ErpButton>
+                }
+              />
 
-              <div className="overflow-x-auto border border-zinc-800/80 rounded-2xl bg-zinc-950/20 backdrop-blur-md">
-                <table className="min-w-full divide-y divide-zinc-850 text-right">
-                  <thead className="bg-zinc-900/60 text-zinc-400">
+              <div id="item-categories-printable-section" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md">
+                <table className="min-w-full divide-y divide-slate-800 text-right">
+                  <thead className="bg-slate-900/90 text-slate-400">
                     <tr>
                       <th className="px-5 py-3.5 text-2xs font-bold tracking-wider text-zinc-400">عنوان دسته‌بندی انبار</th>
                       <th className="px-5 py-3.5 text-2xs font-bold tracking-wider text-zinc-400 text-center">عملیات مدیریت</th>
@@ -4799,29 +4921,20 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
             {/* Units List Side */}
             <div className="md:col-span-2 space-y-4">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-800 backdrop-blur-md">
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-zinc-500" />
-                  </span>
-                  <input
-                    id="unit-search-input"
-                    type="text"
-                    value={unitSearch}
-                    onChange={(e) => setUnitSearch(e.target.value)}
-                    placeholder="جستجو در واحدهای سنجش انبار..."
-                    className="w-full pl-3 pr-10 py-2 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all font-medium"
-                  />
-                </div>
+              <UnifiedToolbar
+                searchValue={unitSearch}
+                onSearchChange={setUnitSearch}
+                searchPlaceholder="جستجو در واحدهای سنجش انبار..."
+                onDownloadTemplate={downloadSampleUnitsExcel}
+                onImportExcel={importUnitsFile}
+                importAccept=".xlsx,.xls,.csv"
+                onExportExcel={exportUnitsExcel}
+                onPrint={() => printElement('item-units-printable-section', 'فهرست واحدهای سنجش انبار')}
+              />
 
-                <div className="text-xs text-zinc-400 bg-zinc-950 px-3 py-1.5 rounded-xl border border-zinc-800 font-bold">
-                  تعداد واحدهای سنجش: <span className="text-rose-400">{toPersianDigits(searchedUnits.length)}</span>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto border border-zinc-800/80 rounded-2xl bg-zinc-950/20 backdrop-blur-md">
-                <table className="min-w-full divide-y divide-zinc-850 text-right">
-                  <thead className="bg-zinc-900/60 text-zinc-400">
+              <div id="item-units-printable-section" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md">
+                <table className="min-w-full divide-y divide-slate-800 text-right">
+                  <thead className="bg-slate-900/90 text-slate-400">
                     <tr>
                       <th className="px-4 py-3.5 text-2xs font-bold tracking-wider text-zinc-400">نام واحد سنجش اصلی</th>
                       <th className="px-4 py-3.5 text-2xs font-bold tracking-wider text-zinc-400">نماد اختصاری</th>
@@ -4893,11 +5006,23 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
       {/* ==================== TAB 3: REGISTER PURCHASE FACTOR ==================== */}
       {activeTab === 'purchases' && (
         <div className="space-y-6 animate-fade-in">
+          {isPurchaseFormOpen ? (
           <div className="relative z-20 bg-zinc-900/40 border border-zinc-800 backdrop-blur-md p-6 rounded-2xl space-y-4 shadow-xl">
-            <h3 className="text-xs font-black text-zinc-100 border-b border-zinc-800 pb-3 flex items-center gap-1.5">
-              <Plus className="h-4.5 w-4.5 text-rose-500" />
-              ثبت و الحاق فاکتور خرید تدارکات و مواد اولیه
-            </h3>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-3">
+              <h3 className="text-xs font-black text-zinc-100 flex items-center gap-1.5">
+                <Plus className="h-4.5 w-4.5 text-rose-500" />
+                ثبت و الحاق فاکتور خرید تدارکات و مواد اولیه
+              </h3>
+              <ErpButton
+                type="button"
+                variant="secondary"
+                size="sm"
+                icon={<ArrowRight className="h-3.5 w-3.5" />}
+                onClick={() => setIsPurchaseFormOpen(false)}
+              >
+                انصراف و بازگشت
+              </ErpButton>
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
@@ -5232,35 +5357,29 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               </div>
             )}
           </div>
-
-          {/* List of Registered Purchases in Gatan */}
+          ) : (
+          /* List of Registered Purchases in Gatan */
           <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <h3 className="text-xs font-black text-zinc-100 flex items-center gap-1.5">
-                <FileText className="h-4.5 w-4.5 text-rose-500 animate-pulse" />
-                آرشیو فاکتورهای فیزیکی ثبت‌شده کالا در این دوره
-              </h3>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={exportPurchasesCSV}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700/20 border border-emerald-500/20 hover:bg-emerald-700 hover:text-white text-emerald-400 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                >
-                  <FileSpreadsheet className="h-4 w-4" /> خروجی اکسل
-                </button>
-                <button
-                  type="button"
+            <UnifiedToolbar
+              onAdd={() => setIsPurchaseFormOpen(true)}
+              addLabel="ثبت فاکتور خرید جدید"
+              onExportExcel={exportPurchasesCSV}
+              onPrint={() => printElement('item-purchases-printable-section', 'آرشیو فاکتورهای خرید دوره')}
+              extraSecondaryActions={
+                <ErpButton
+                  variant="danger"
+                  size="sm"
                   onClick={clearAllPurchases}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-rose-955/30 text-rose-455 border border-rose-900 rounded-xl text-xs font-bold hover:text-rose-450 hover:bg-rose-900/20 transition-all cursor-pointer animate-pulse"
+                  icon={<Trash2 className="h-3.5 w-3.5" />}
                 >
-                  <Trash2 className="h-4 w-4" /> حذف گروهی فاکتورها
-                </button>
-              </div>
-            </div>
+                  حذف گروهی فاکتورها
+                </ErpButton>
+              }
+            />
 
-            <div className="overflow-x-auto border border-zinc-800 rounded-xl bg-zinc-950/20 backdrop-blur-md">
-              <table className="min-w-full divide-y divide-zinc-850 text-right text-xs">
-                <thead className="bg-zinc-900/60 text-zinc-400">
+            <div id="item-purchases-printable-section" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md">
+              <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
+                <thead className="bg-slate-900/90 text-slate-400">
                   <tr>
                     <th className="px-4 py-3.5 text-2xs font-bold tracking-wider text-zinc-400">شماره فاکتور خرید</th>
                     <th className="px-4 py-3.5 text-2xs font-bold tracking-wider text-zinc-400">تاریخ ثبتی</th>
@@ -5306,6 +5425,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
               </table>
             </div>
           </div>
+          )}
         </div>
       )}
 
@@ -6233,28 +6353,20 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
             {/* List side */}
             <div className="md:col-span-2 space-y-4">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-850 backdrop-blur-md">
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-zinc-500" />
-                  </span>
-                  <input
-                    id="wh-search-input"
-                    type="text"
-                    value={whSearch}
-                    onChange={(e) => setWhSearch(e.target.value)}
-                    placeholder="جستجو در انبارها..."
-                    className="w-full pl-3 pr-10 py-2 text-xs bg-zinc-950 border border-zinc-805 rounded-xl text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all text-right"
-                  />
-                </div>
-                <div className="text-2xs text-zinc-400 font-bold">
-                  تعداد انبارهای فعال دوره جاری: <span className="font-mono text-rose-450">{toPersianDigits(warehouses.length)} انبار</span>
-                </div>
-              </div>
+              <UnifiedToolbar
+                searchValue={whSearch}
+                onSearchChange={setWhSearch}
+                searchPlaceholder="جستجو در انبارها..."
+                onDownloadTemplate={downloadSampleWarehousesExcel}
+                onImportExcel={importWarehousesFile}
+                importAccept=".xlsx,.xls,.csv"
+                onExportExcel={exportWarehousesExcel}
+                onPrint={() => printElement('item-warehouses-printable-section', 'فهرست انبارهای فعال دوره')}
+              />
 
-              <div className="overflow-x-auto border border-zinc-800 rounded-2xl bg-zinc-950/20 backdrop-blur-md">
+              <div id="item-warehouses-printable-section" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md">
                 <table className="min-w-full text-right text-xs">
-                  <thead className="bg-zinc-900/40 text-zinc-400 border-b border-zinc-800/80">
+                  <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800">
                     <tr>
                       <th className="px-4 py-3.5 font-bold tracking-wider">کد انبار</th>
                       <th className="px-4 py-3.5 font-bold tracking-wider">نام انبار</th>
@@ -6333,6 +6445,7 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
             </div>
           )}
         </div>
+      </div>
       </div>
 
       {/* ==================== QUICK EDIT ITEM MASTER MODAL (IN AUDIT) ==================== */}

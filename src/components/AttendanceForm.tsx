@@ -775,6 +775,28 @@ export default function AttendanceForm(props: AttendanceFormProps) {
   const setUnregisteredCodes = (_codes: string[]) => {};
   const [selectedPersonnelMap, setSelectedPersonnelMap] = useState<Record<string, string>>({});
   const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
+  const [groupExcelImportReport, setGroupExcelImportReport] = useState<{
+    fileName: string;
+    targetMonthsLabel: string;
+    clearedCount: number;
+    importedCount: number;
+    validPersonnelCount: number;
+    invalidTimeErrors: {
+      excelRow: number;
+      cellRef: string;
+      personnelName: string;
+      attCode: string;
+      dateStr: string;
+      columnHeader: string;
+      rawValue: string;
+      reason: string;
+    }[];
+    missingCodeErrors: {
+      excelRow: number;
+      personnelName: string;
+    }[];
+    fatalError?: string;
+  } | null>(null);
   const isDataLoaded = records.length > 0;
   const [correctionReports, setCorrectionReports] = useState<any[]>([]);
   const [showReportsModal, setShowReportsModal] = useState<boolean>(false);
@@ -2982,10 +3004,19 @@ export default function AttendanceForm(props: AttendanceFormProps) {
     XLSX.writeFile(wb, `Gatan_Group_Attendance_${selectedYear}_${monthName}.xlsx`);
   };
 
-  // Upload Group Attendance Excel File
+  // Upload Group Attendance Excel File (clears target month, exact day-boundary matching, strict time validation)
   const handleUploadGroupAttendanceExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isMonthLocked) {
-      alert('سند حقوق و دستمزد این ماه قفل شده است و امکان بارگذاری تردد وجود ندارد.');
+      setGroupExcelImportReport({
+        fileName: e.target.files?.[0]?.name || '',
+        targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+        clearedCount: 0,
+        importedCount: 0,
+        validPersonnelCount: 0,
+        invalidTimeErrors: [],
+        missingCodeErrors: [],
+        fatalError: 'سند حقوق و دستمزد این ماه قفل شده است و امکان بارگذاری تردد وجود ندارد.'
+      });
       e.target.value = '';
       return;
     }
@@ -2999,140 +3030,423 @@ export default function AttendanceForm(props: AttendanceFormProps) {
         const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         if (!sheetName) {
-          alert('فایل اکسل تهی است یا برگه معتبری ندارد.');
+          setGroupExcelImportReport({
+            fileName: file.name,
+            targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+            clearedCount: 0,
+            importedCount: 0,
+            validPersonnelCount: 0,
+            invalidTimeErrors: [],
+            missingCodeErrors: [],
+            fatalError: 'فایل اکسل تهی است یا برگه (Sheet) معتبری ندارد.'
+          });
           return;
         }
         const sheet = workbook.Sheets[sheetName];
-        const rows = XLSX.utils.sheet_to_json<any>(sheet);
-        if (!rows || rows.length === 0) {
-          alert('فایل اکسل هیچ ردیفی ندارد.');
+        const matrix = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, raw: true, defval: '' });
+        if (!matrix || matrix.length < 2) {
+          setGroupExcelImportReport({
+            fileName: file.name,
+            targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+            clearedCount: 0,
+            importedCount: 0,
+            validPersonnelCount: 0,
+            invalidTimeErrors: [],
+            missingCodeErrors: [],
+            fatalError: 'فایل اکسل هیچ ردیف داده‌ای ندارد.'
+          });
           return;
         }
 
-        const newRecordsMap = new Map<string, AttendanceRecord>();
-        const existingRecords = db.attendanceRecords || [];
-        existingRecords.forEach(r => {
-          if (r.periodId === activePeriodId) {
-            newRecordsMap.set(`${r.attendanceCode}_${r.date}`, r);
-          } else {
-            newRecordsMap.set(`${r.attendanceCode}_${r.date}`, r);
+        const sheetRange = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+
+        // Locate header row (first non-empty row)
+        let headerRowIdx = -1;
+        for (let r = 0; r < matrix.length; r++) {
+          const rowArr = matrix[r];
+          if (Array.isArray(rowArr) && rowArr.some(cell => String(cell ?? '').trim() !== '')) {
+            headerRowIdx = r;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          setGroupExcelImportReport({
+            fileName: file.name,
+            targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+            clearedCount: 0,
+            importedCount: 0,
+            validPersonnelCount: 0,
+            invalidTimeErrors: [],
+            missingCodeErrors: [],
+            fatalError: 'سربرگ ستون‌ها در فایل اکسل یافت نشد.'
+          });
+          return;
+        }
+
+        const headerRow = matrix[headerRowIdx] || [];
+
+        let yearColIdx = -1;
+        let monthColIdx = -1;
+        let nameColIdx = -1;
+        let codeColIdx = -1;
+
+        // Map each day (1..31) to exact entry/exit column indices using strict digit-boundary parsing
+        const dayColumnsMap = new Map<number, {
+          entry?: { idx: number; header: string };
+          exit?: { idx: number; header: string };
+        }>();
+
+        const normalizeHeaderText = (raw: any): string => {
+          return toEnglishDigits(String(raw ?? ''))
+            .replace(/ي/g, 'ی')
+            .replace(/ك/g, 'ک')
+            .replace(/[\u200B-\u200F\u202A-\u202E\u00A0\uFEFF]/g, '')
+            .trim();
+        };
+
+        headerRow.forEach((rawHeaderCell, colIdx) => {
+          const hNorm = normalizeHeaderText(rawHeaderCell);
+          if (!hNorm) return;
+          const hCompact = hNorm.replace(/\s+/g, '').toLowerCase();
+
+          const isEntryCol =
+            hCompact.includes('ورود') ||
+            /(?:^|[\s\-_.:/()[\]])(entry|in)(?:$|[\s\-_.:/()[\]])/i.test(hNorm);
+          const isExitCol =
+            hCompact.includes('خروج') ||
+            /(?:^|[\s\-_.:/()[\]])(exit|out)(?:$|[\s\-_.:/()[\]])/i.test(hNorm);
+
+          if ((isEntryCol || isExitCol) && !(isEntryCol && isExitCol)) {
+            // Strictly extract the exact day number with digit boundaries (never substring-matching 1 inside 10..31)
+            let dayNum = NaN;
+            const prefixedMatch = hNorm.match(/(?:روز|day|د)\s*[-_:]?\s*0*(\d{1,2})(?!\d)/i);
+            if (prefixedMatch) {
+              dayNum = parseInt(prefixedMatch[1], 10);
+            } else if (!hCompact.includes('سال') && !hCompact.includes('ماه') && !hCompact.includes('کد') && !hCompact.includes('year') && !hCompact.includes('month') && !hCompact.includes('code')) {
+              const standaloneMatch = hNorm.match(/(?:^|[^\d])0*(\d{1,2})(?!\d)/);
+              if (standaloneMatch) {
+                dayNum = parseInt(standaloneMatch[1], 10);
+              }
+            }
+
+            if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+              const existing = dayColumnsMap.get(dayNum) || {};
+              if (isEntryCol && !existing.entry) {
+                existing.entry = { idx: colIdx, header: hNorm };
+              } else if (isExitCol && !existing.exit) {
+                existing.exit = { idx: colIdx, header: hNorm };
+              }
+              dayColumnsMap.set(dayNum, existing);
+              return;
+            }
+          }
+
+          // Metadata columns
+          if (yearColIdx === -1 && (hCompact === 'سال' || hCompact === 'year' || hCompact === 'jy' || (hCompact.includes('سال') && !hCompact.includes('روز')))) {
+            yearColIdx = colIdx;
+          } else if (monthColIdx === -1 && (hCompact === 'ماه' || hCompact === 'month' || hCompact === 'jm' || (hCompact.includes('ماه') && !hCompact.includes('روز')))) {
+            monthColIdx = colIdx;
+          } else if (nameColIdx === -1 && (hCompact.includes('نامپرسنل') || hCompact.includes('ناموخانوادگی') || hCompact === 'نام' || hCompact.includes('name'))) {
+            nameColIdx = colIdx;
+          } else if (codeColIdx === -1 && (hCompact.includes('کدتردد') || hCompact.includes('کدحضور') || hCompact.includes('attcode') || hCompact === 'کد' || hCompact === 'code' || hCompact.includes('کدپرسنلی'))) {
+            codeColIdx = colIdx;
           }
         });
 
-        let importedCount = 0;
-        const missingCodeErrors: string[] = [];
+        if (dayColumnsMap.size === 0) {
+          setGroupExcelImportReport({
+            fileName: file.name,
+            targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+            clearedCount: 0,
+            importedCount: 0,
+            validPersonnelCount: 0,
+            invalidTimeErrors: [],
+            missingCodeErrors: [],
+            fatalError: 'هیچ ستون تردد روزانه معتبری (مانند «روز 1 - ورود» و «روز 1 - خروج») در سربرگ فایل اکسل شناسایی نشد. لطفاً از فایل نمونه اکسل تردد گروهی استفاده فرمایید.'
+          });
+          return;
+        }
 
-        rows.forEach((row, rowIndex) => {
-          if (!row) return;
-          const keys = Object.keys(row);
-          
+        const dayColIndicesSet = new Set<number>();
+        dayColumnsMap.forEach(entry => {
+          if (entry.entry) dayColIndicesSet.add(entry.entry.idx);
+          if (entry.exit) dayColIndicesSet.add(entry.exit.idx);
+        });
+
+        const parseStrictExcelTime = (
+          rawVal: any,
+          cellObj?: XLSX.CellObject
+        ): { status: 'empty' } | { status: 'valid'; value: string } | { status: 'invalid'; rawDisplay: string; reason: string } => {
+          if (rawVal === undefined || rawVal === null) return { status: 'empty' };
+
+          const parseTimeString = (strRaw: string): { status: 'empty' } | { status: 'valid'; value: string } | { status: 'invalid'; rawDisplay: string; reason: string } => {
+            const trimmedOrig = strRaw.trim();
+            const cleaned = toEnglishDigits(trimmedOrig)
+              .replace(/[\u200B-\u200F\u202A-\u202E\u00A0\uFEFF]/g, '')
+              .replace(/：/g, ':')
+              .trim();
+            if (!cleaned) return { status: 'empty' };
+
+            const match = cleaned.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?:\s*:\s*(\d{1,2}))?(?:\s*(am|pm))?$/i);
+            if (!match) {
+              return {
+                status: 'invalid',
+                rawDisplay: trimmedOrig,
+                reason: 'فرمت ساعت نامعتبر است (قالب صحیح مانند 08:30 یا 17:00 می‌باشد؛ برای روز بدون تردد سلول را خالی بگذارید)'
+              };
+            }
+
+            let h = parseInt(match[1], 10);
+            const m = parseInt(match[2], 10);
+            const s = match[3] ? parseInt(match[3], 10) : 0;
+            const ampm = match[4]?.toLowerCase();
+
+            if (m < 0 || m > 59 || s < 0 || s > 59) {
+              return {
+                status: 'invalid',
+                rawDisplay: trimmedOrig,
+                reason: 'مقدار دقیقه یا ثانیه خارج از بازه مجاز (۰۰ تا ۵۹) است'
+              };
+            }
+
+            if (ampm) {
+              if (h < 1 || h > 12) {
+                return {
+                  status: 'invalid',
+                  rawDisplay: trimmedOrig,
+                  reason: 'ساعت در فرمت AM/PM باید بین ۱ تا ۱۲ باشد'
+                };
+              }
+              if (ampm === 'pm' && h < 12) h += 12;
+              if (ampm === 'am' && h === 12) h = 0;
+            } else {
+              if (h < 0 || h > 23) {
+                return {
+                  status: 'invalid',
+                  rawDisplay: trimmedOrig,
+                  reason: 'مقدار ساعت باید بین ۰۰ تا ۲۳ باشد'
+                };
+              }
+            }
+
+            return {
+              status: 'valid',
+              value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+            };
+          };
+
+          if (typeof rawVal === 'number') {
+            if (!isFinite(rawVal)) {
+              return { status: 'invalid', rawDisplay: String(rawVal), reason: 'مقدار عددی نامعتبر برای ساعت' };
+            }
+            if (rawVal === 0) {
+              if (cellObj?.w && /:/.test(cellObj.w)) {
+                return { status: 'valid', value: '00:00' };
+              }
+              return {
+                status: 'invalid',
+                rawDisplay: '0',
+                reason: 'عدد «0» به عنوان ساعت معتبر نیست (برای روز بدون تردد سلول را خالی بگذارید و برای نیمه‌شب 00:00 وارد کنید)'
+              };
+            }
+            if (rawVal > 0 && rawVal < 1) {
+              const totalMins = Math.round(rawVal * 24 * 60);
+              const normalizedMins = totalMins >= 1440 ? 0 : totalMins;
+              const h = Math.floor(normalizedMins / 60);
+              const m = normalizedMins % 60;
+              return { status: 'valid', value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` };
+            }
+            // Number >= 1 or < 0: only accept if Excel formatted string is explicitly a valid time
+            if (rawVal >= 1 && cellObj?.w) {
+              const formattedAttempt = parseTimeString(String(cellObj.w));
+              if (formattedAttempt.status === 'valid') return formattedAttempt;
+            }
+            return {
+              status: 'invalid',
+              rawDisplay: String(cellObj?.w ?? rawVal),
+              reason: 'مقدار عددی نامعتبر برای ساعت (قالب صحیح مانند 08:30 یا 17:00 می‌باشد)'
+            };
+          }
+
+          if (rawVal instanceof Date && !isNaN(rawVal.getTime())) {
+            const h = rawVal.getHours();
+            const m = rawVal.getMinutes();
+            return { status: 'valid', value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` };
+          }
+
+          return parseTimeString(String(rawVal));
+        };
+
+        const parsedNewRecordsMap = new Map<string, AttendanceRecord>();
+        const targetYearMonthSet = new Set<string>();
+        const validPersonnelCodesSet = new Set<string>();
+        const missingCodeErrors: { excelRow: number; personnelName: string }[] = [];
+        const invalidTimeErrors: {
+          excelRow: number;
+          cellRef: string;
+          personnelName: string;
+          attCode: string;
+          dateStr: string;
+          columnHeader: string;
+          rawValue: string;
+          reason: string;
+        }[] = [];
+
+        const sortedDayNums = Array.from(dayColumnsMap.keys()).sort((a, b) => a - b);
+
+        for (let r = headerRowIdx + 1; r < matrix.length; r++) {
+          const rowArr = matrix[r];
+          if (!Array.isArray(rowArr)) continue;
+          const hasAnyContent = rowArr.some(cell => String(cell ?? '').trim() !== '');
+          if (!hasAnyContent) continue;
+
+          const excelRowNum = sheetRange.s.r + r + 1;
+
           let rowYear = selectedYear;
           let rowMonth = selectedMonth;
-          let attCode = '';
           let personnelName = '';
+          let attCode = '';
 
-          for (const k of keys) {
-            const kClean = toEnglishDigits(k).trim().replace(/\s+/g, '').replace(/\u200c/g, '').toLowerCase();
-            if (kClean.includes('سال') || kClean === 'year' || kClean === 'jy') {
-              const val = parseInt(toEnglishDigits(String(row[k] || '')), 10);
-              if (!isNaN(val) && val > 1300 && val < 1500) {
-                rowYear = val;
-              }
-            } else if (kClean.includes('ماه') || kClean === 'month' || kClean === 'jm') {
-              const val = parseInt(toEnglishDigits(String(row[k] || '')), 10);
-              if (!isNaN(val) && val >= 1 && val <= 12) {
-                rowMonth = val;
-              }
-            } else if (kClean.includes('نامپرسنل') || kClean.includes('نام') || kClean.includes('name')) {
-              personnelName = String(row[k] || '').trim();
-            } else if (kClean.includes('کدتردد') || kClean.includes('کدحضور') || kClean.includes('attcode') || kClean.includes('code') || kClean.includes('کد')) {
-              if (!attCode) {
-                attCode = toEnglishDigits(String(row[k] || '')).trim();
-              }
-            }
+          if (yearColIdx !== -1) {
+            const val = parseInt(toEnglishDigits(String(rowArr[yearColIdx] ?? '')).trim(), 10);
+            if (!isNaN(val) && val > 1300 && val < 1500) rowYear = val;
+          }
+          if (monthColIdx !== -1) {
+            const val = parseInt(toEnglishDigits(String(rowArr[monthColIdx] ?? '')).trim(), 10);
+            if (!isNaN(val) && val >= 1 && val <= 12) rowMonth = val;
+          }
+          if (nameColIdx !== -1) {
+            personnelName = String(rowArr[nameColIdx] ?? '').trim();
+          }
+          if (codeColIdx !== -1) {
+            attCode = toEnglishDigits(String(rowArr[codeColIdx] ?? '')).trim().replace(/\.0+$/, '');
           }
 
-          // Positional fallbacks
-          if (rowYear === selectedYear && keys.length >= 1) {
-            const val = parseInt(toEnglishDigits(String(row[keys[0]] || '')), 10);
-            if (!isNaN(val) && val > 1300 && val < 1500) {
-              rowYear = val;
+          // Safe positional fallbacks only for metadata columns not overlapping day columns
+          if (yearColIdx === -1 && !dayColIndicesSet.has(0) && rowArr.length >= 1) {
+            const val = parseInt(toEnglishDigits(String(rowArr[0] ?? '')).trim(), 10);
+            if (!isNaN(val) && val > 1300 && val < 1500) rowYear = val;
+          }
+          if (monthColIdx === -1 && !dayColIndicesSet.has(1) && rowArr.length >= 2) {
+            const val = parseInt(toEnglishDigits(String(rowArr[1] ?? '')).trim(), 10);
+            if (!isNaN(val) && val >= 1 && val <= 12) rowMonth = val;
+          }
+          if (!personnelName && nameColIdx === -1) {
+            const candidateIdx = yearColIdx !== -1 || monthColIdx !== -1 ? 2 : 0;
+            if (!dayColIndicesSet.has(candidateIdx) && rowArr.length > candidateIdx) {
+              personnelName = String(rowArr[candidateIdx] ?? '').trim();
             }
           }
-          if (rowMonth === selectedMonth && keys.length >= 2) {
-            const val = parseInt(toEnglishDigits(String(row[keys[1]] || '')), 10);
-            if (!isNaN(val) && val >= 1 && val <= 12) {
-              rowMonth = val;
+          if (!attCode && codeColIdx === -1) {
+            const candidateIdx = yearColIdx !== -1 || monthColIdx !== -1 ? 3 : 1;
+            if (!dayColIndicesSet.has(candidateIdx) && rowArr.length > candidateIdx) {
+              attCode = toEnglishDigits(String(rowArr[candidateIdx] ?? '')).trim().replace(/\.0+$/, '');
             }
           }
-          if (!personnelName && keys.length >= 3) {
-            personnelName = String(row[keys[2]] || '').trim();
-          }
-          if (!attCode && keys.length >= 4) {
-            attCode = toEnglishDigits(String(row[keys[3]] || '')).trim();
-          } else if (!attCode && keys.length >= 3) {
-            attCode = toEnglishDigits(String(row[keys[2]] || '')).trim();
-          } else if (!attCode && keys.length >= 2) {
-            attCode = toEnglishDigits(String(row[keys[1]] || '')).trim();
-          }
+
+          targetYearMonthSet.add(`${rowYear}-${rowMonth}`);
 
           if (!attCode) {
-            const displayName = personnelName || `ردیف شماره ${toPersianDigits(rowIndex + 2)}`;
-            missingCodeErrors.push(displayName);
-            return;
+            missingCodeErrors.push({
+              excelRow: excelRowNum,
+              personnelName: personnelName || `ردیف ${toPersianDigits(excelRowNum)}`
+            });
+            continue;
           }
 
           const daysInRowMonth = (rowMonth <= 6) ? 31 : (rowMonth <= 11 ? 30 : (rowYear % 4 === 3 ? 30 : 29));
 
-          for (let day = 1; day <= daysInRowMonth; day++) {
-            let entryVal = '';
-            let exitVal = '';
+          for (const day of sortedDayNums) {
+            const colPair = dayColumnsMap.get(day);
+            if (!colPair) continue;
 
-            for (const k of keys) {
-              const kClean = toEnglishDigits(k).trim().replace(/\s+/g, '').replace(/\u200c/g, '').toLowerCase();
-              const dayStr = String(day);
-              
-              const isTargetDay = kClean.includes(`روز${dayStr}`) || kClean.includes(`day${dayStr}`) || kClean.includes(`د${dayStr}`) || (kClean.includes(dayStr) && !kClean.includes('سال') && !kClean.includes('ماه'));
+            const dateStr = `${rowYear}/${String(rowMonth).padStart(2, '0')}/${String(day).padStart(2, '0')}`;
+            const entryRaw = colPair.entry !== undefined ? rowArr[colPair.entry.idx] : '';
+            const exitRaw = colPair.exit !== undefined ? rowArr[colPair.exit.idx] : '';
 
-              if (isTargetDay) {
-                if (kClean.includes('ورود') || kClean.includes('entry') || kClean.includes('in')) {
-                  entryVal = String(row[k] || '').trim();
-                } else if (kClean.includes('خروج') || kClean.includes('exit') || kClean.includes('out')) {
-                  exitVal = String(row[k] || '').trim();
-                }
+            const entryAddr = colPair.entry !== undefined
+              ? XLSX.utils.encode_cell({ r: sheetRange.s.r + r, c: sheetRange.s.c + colPair.entry.idx })
+              : '';
+            const exitAddr = colPair.exit !== undefined
+              ? XLSX.utils.encode_cell({ r: sheetRange.s.r + r, c: sheetRange.s.c + colPair.exit.idx })
+              : '';
+
+            const entryParsed = colPair.entry !== undefined
+              ? parseStrictExcelTime(entryRaw, entryAddr ? sheet[entryAddr] : undefined)
+              : ({ status: 'empty' } as const);
+            const exitParsed = colPair.exit !== undefined
+              ? parseStrictExcelTime(exitRaw, exitAddr ? sheet[exitAddr] : undefined)
+              : ({ status: 'empty' } as const);
+
+            // Check impossible day for this month (e.g. day 31 in a 30-day month)
+            if (day > daysInRowMonth) {
+              if (entryParsed.status !== 'empty' && colPair.entry) {
+                invalidTimeErrors.push({
+                  excelRow: excelRowNum,
+                  cellRef: entryAddr,
+                  personnelName: personnelName || `کد ${attCode}`,
+                  attCode,
+                  dateStr,
+                  columnHeader: colPair.entry.header,
+                  rawValue: entryParsed.status === 'valid' ? entryParsed.value : entryParsed.rawDisplay,
+                  reason: `این ماه دارای ${toPersianDigits(daysInRowMonth)} روز است و روز ${toPersianDigits(day)} معتبر نیست`
+                });
               }
+              if (exitParsed.status !== 'empty' && colPair.exit) {
+                invalidTimeErrors.push({
+                  excelRow: excelRowNum,
+                  cellRef: exitAddr,
+                  personnelName: personnelName || `کد ${attCode}`,
+                  attCode,
+                  dateStr,
+                  columnHeader: colPair.exit.header,
+                  rawValue: exitParsed.status === 'valid' ? exitParsed.value : exitParsed.rawDisplay,
+                  reason: `این ماه دارای ${toPersianDigits(daysInRowMonth)} روز است و روز ${toPersianDigits(day)} معتبر نیست`
+                });
+              }
+              continue;
             }
 
-            const formatExcelTime = (val: any): string => {
-              if (val === undefined || val === null || val === '') return '';
-              let s = String(val).trim();
-              const num = Number(s);
-              if (!isNaN(num) && num > 0 && num < 1) {
-                const totalMins = Math.round(num * 24 * 60);
-                const h = Math.floor(totalMins / 60);
-                const m = totalMins % 60;
-                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-              }
-              return toEnglishDigits(s);
-            };
+            if (entryParsed.status === 'invalid' && colPair.entry) {
+              invalidTimeErrors.push({
+                excelRow: excelRowNum,
+                cellRef: entryAddr,
+                personnelName: personnelName || `کد ${attCode}`,
+                attCode,
+                dateStr,
+                columnHeader: colPair.entry.header,
+                rawValue: entryParsed.rawDisplay,
+                reason: entryParsed.reason
+              });
+            }
 
-            const cleanEntry = formatExcelTime(entryVal);
-            const cleanExit = formatExcelTime(exitVal);
+            if (exitParsed.status === 'invalid' && colPair.exit) {
+              invalidTimeErrors.push({
+                excelRow: excelRowNum,
+                cellRef: exitAddr,
+                personnelName: personnelName || `کد ${attCode}`,
+                attCode,
+                dateStr,
+                columnHeader: colPair.exit.header,
+                rawValue: exitParsed.rawDisplay,
+                reason: exitParsed.reason
+              });
+            }
 
-            if (cleanEntry || cleanExit) {
-              const dateStr = `${rowYear}/${String(rowMonth).padStart(2, '0')}/${String(day).padStart(2, '0')}`;
-              const times: string[] = [];
-              const statuses: number[] = [];
+            const times: string[] = [];
+            const statuses: number[] = [];
 
-              if (cleanEntry) {
-                times.push(cleanEntry);
-                statuses.push(0);
-              }
-              if (cleanExit) {
-                times.push(cleanExit);
-                statuses.push(1);
-              }
+            if (entryParsed.status === 'valid') {
+              times.push(entryParsed.value);
+              statuses.push(0);
+            }
+            if (exitParsed.status === 'valid') {
+              times.push(exitParsed.value);
+              statuses.push(1);
+            }
 
+            // Strictly create record ONLY if at least one valid time exists
+            if (times.length > 0) {
               const recordId = `att-group-${activePeriodId}-${rowYear}-${rowMonth}-${attCode}-${day}`;
               const rec: AttendanceRecord = {
                 id: recordId,
@@ -3146,26 +3460,82 @@ export default function AttendanceForm(props: AttendanceFormProps) {
                 isSystemCorrected: true
               };
 
-              newRecordsMap.set(`${attCode}_${dateStr}`, rec);
-              importedCount++;
+              parsedNewRecordsMap.set(`${activePeriodId}_${attCode}_${dateStr}`, rec);
+              validPersonnelCodesSet.add(attCode);
             }
           }
+        }
+
+        if (targetYearMonthSet.size === 0) {
+          targetYearMonthSet.add(`${selectedYear}-${selectedMonth}`);
+        }
+
+        // Clear ALL existing attendance records of the target month(s) in the active fiscal period
+        const doesRecordBelongToTargetMonths = (r: AttendanceRecord): boolean => {
+          if (r.periodId !== activePeriodId) return false;
+          const rY = Number(r.year);
+          const rM = Number(r.month);
+          if (!isNaN(rY) && !isNaN(rM) && rY > 0 && rM > 0) {
+            if (targetYearMonthSet.has(`${rY}-${rM}`)) return true;
+          }
+          if (r.date) {
+            const parts = toEnglishDigits(r.date).split(/[\/\-]/);
+            if (parts.length >= 2) {
+              const dY = parseInt(parts[0], 10);
+              const dM = parseInt(parts[1], 10);
+              if (!isNaN(dY) && !isNaN(dM) && targetYearMonthSet.has(`${dY}-${dM}`)) return true;
+            }
+          }
+          return false;
+        };
+
+        const existingRecords = db.attendanceRecords || [];
+        let clearedCount = 0;
+        const preservedOtherRecords = existingRecords.filter(r => {
+          if (doesRecordBelongToTargetMonths(r)) {
+            clearedCount++;
+            return false;
+          }
+          return true;
         });
 
-        const updatedAttendanceRecords = Array.from(newRecordsMap.values());
+        const freshMonthRecords = Array.from(parsedNewRecordsMap.values());
+        const updatedAttendanceRecords = [...preservedOtherRecords, ...freshMonthRecords];
+
         onUpdateDb({
           ...db,
           attendanceRecords: updatedAttendanceRecords
         });
 
-        let alertMsg = `فایل تردد گروهی با موفقیت بارگذاری شد!\n\n✓ تعداد ${toPersianDigits(importedCount)} تردد روزانه برای دوره/ماه مندرج ثبت گردید.`;
-        if (missingCodeErrors.length > 0) {
-          alertMsg += `\n\n⚠️ خطا: ${toPersianDigits(missingCodeErrors.length)} ردیف به دلیل «نداشتن کد تردد» نادیده گرفته شدند:\n• ${missingCodeErrors.slice(0, 10).join('\n• ')}${missingCodeErrors.length > 10 ? '\n(... و موارد دیگر)' : ''}`;
-        }
-        alert(alertMsg);
+        const targetMonthsLabel = Array.from(targetYearMonthSet)
+          .map(ym => {
+            const [yStr, mStr] = ym.split('-');
+            const mLabel = monthsList.find(m => m.value === Number(mStr))?.label || `ماه ${toPersianDigits(mStr)}`;
+            return `${mLabel} ${toPersianDigits(yStr)}`;
+          })
+          .join('، ');
+
+        setGroupExcelImportReport({
+          fileName: file.name,
+          targetMonthsLabel,
+          clearedCount,
+          importedCount: freshMonthRecords.length,
+          validPersonnelCount: validPersonnelCodesSet.size,
+          invalidTimeErrors,
+          missingCodeErrors
+        });
       } catch (err) {
         console.error(err);
-        alert('خطا در پردازش فایل اکسل تردد گروهی. لطفاً ساختار ستون‌ها را بررسی فرمایید.');
+        setGroupExcelImportReport({
+          fileName: file.name,
+          targetMonthsLabel: `${monthsList.find(m => m.value === selectedMonth)?.label || ''} ${toPersianDigits(selectedYear)}`,
+          clearedCount: 0,
+          importedCount: 0,
+          validPersonnelCount: 0,
+          invalidTimeErrors: [],
+          missingCodeErrors: [],
+          fatalError: 'خطا در خواندن یا پردازش فایل اکسل تردد گروهی. لطفاً از سالم بودن فایل و استاندارد بودن ساختار ستون‌ها اطمینان حاصل فرمایید.'
+        });
       }
     };
     reader.readAsArrayBuffer(file);
@@ -5167,7 +5537,7 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
               <FileSpreadsheet className="h-7 w-7 text-emerald-500 group-hover:text-emerald-400 transition-all mb-2 animate-bounce" />
               <span className="text-xs font-black text-slate-200">بارگذاری فایل تردد گروهی از اکسل (XLSX)</span>
               <span className="text-[10px] text-slate-400 mt-1 leading-normal text-justify">
-                ستون اول: نام پرسنل | ستون دوم: کد تردد | ستون‌های بعدی: ورود و خروج روزهای ۱ تا ۳۱ ماه
+                سال، ماه، نام پرسنل، کد تردد و ورود/خروج روزهای ۱ تا ۳۱ ماه — هنگام بارگذاری، کل تردد قبلی ماه پاک و صرفاً روزهای دارای ساعت معتبر جایگزین می‌شوند
               </span>
               <input 
                 id="group-attendance-excel-upload"
@@ -7274,6 +7644,178 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
               >
                 <Trash2 className="h-4 w-4" />
                 تأیید و پاک‌سازی کامل
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Excel Attendance Import Result & Detailed Error Report Modal */}
+      {groupExcelImportReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn" dir="rtl">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl text-right overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-xl border ${
+                  groupExcelImportReport.fatalError
+                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                    : groupExcelImportReport.invalidTimeErrors.length > 0 || groupExcelImportReport.missingCodeErrors.length > 0
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                }`}>
+                  {groupExcelImportReport.fatalError || groupExcelImportReport.invalidTimeErrors.length > 0 || groupExcelImportReport.missingCodeErrors.length > 0
+                    ? <AlertTriangle className="h-5 w-5" />
+                    : <Check className="h-5 w-5" />
+                  }
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">
+                    {groupExcelImportReport.fatalError
+                      ? 'خطا در بارگذاری فایل اکسل تردد گروهی'
+                      : groupExcelImportReport.invalidTimeErrors.length > 0 || groupExcelImportReport.missingCodeErrors.length > 0
+                      ? 'گزارش بارگذاری تردد گروهی (همراه با خطاهای اعتبارسنجی ساعت)'
+                      : 'بارگذاری تردد گروهی از اکسل با موفقیت انجام شد'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    دوره: <strong className="text-slate-200">{groupExcelImportReport.targetMonthsLabel}</strong>
+                    {groupExcelImportReport.fileName ? ` • فایل: ${groupExcelImportReport.fileName}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGroupExcelImportReport(null)}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+                title="بستن گزارش"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 text-xs">
+              {groupExcelImportReport.fatalError ? (
+                <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/30 text-rose-200 font-bold leading-relaxed">
+                  {groupExcelImportReport.fatalError}
+                </div>
+              ) : (
+                <>
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 block">ترددهای قبلی ماه پاک‌شده</span>
+                      <strong className="text-base font-black text-slate-200 font-mono mt-1 block">
+                        {toPersianDigits(groupExcelImportReport.clearedCount)}
+                      </strong>
+                    </div>
+                    <div className="bg-emerald-950/25 border border-emerald-500/30 rounded-xl p-3">
+                      <span className="text-[10px] text-emerald-300 block">روز-تردد معتبر ثبت‌شده</span>
+                      <strong className="text-base font-black text-emerald-400 font-mono mt-1 block">
+                        {toPersianDigits(groupExcelImportReport.importedCount)}
+                      </strong>
+                    </div>
+                    <div className="bg-sky-950/25 border border-sky-500/30 rounded-xl p-3">
+                      <span className="text-[10px] text-sky-300 block">پرسنل دارای تردد معتبر</span>
+                      <strong className="text-base font-black text-sky-400 font-mono mt-1 block">
+                        {toPersianDigits(groupExcelImportReport.validPersonnelCount)} نفر
+                      </strong>
+                    </div>
+                    <div className={`rounded-xl p-3 border ${
+                      groupExcelImportReport.invalidTimeErrors.length + groupExcelImportReport.missingCodeErrors.length > 0
+                        ? 'bg-rose-950/30 border-rose-500/35'
+                        : 'bg-slate-950/70 border-slate-800'
+                    }`}>
+                      <span className="text-[10px] text-rose-300 block">موارد نامعتبر (ثبت‌نشده)</span>
+                      <strong className={`text-base font-black font-mono mt-1 block ${
+                        groupExcelImportReport.invalidTimeErrors.length + groupExcelImportReport.missingCodeErrors.length > 0
+                          ? 'text-rose-400'
+                          : 'text-emerald-400'
+                      }`}>
+                        {toPersianDigits(groupExcelImportReport.invalidTimeErrors.length + groupExcelImportReport.missingCodeErrors.length)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  {/* Invalid Time Cells Table */}
+                  {groupExcelImportReport.invalidTimeErrors.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-black text-rose-400 flex items-center gap-1.5">
+                          <AlertTriangle className="h-4 w-4 shrink-0" />
+                          <span>
+                            سلول‌های دارای ساعت نامعتبر ({toPersianDigits(groupExcelImportReport.invalidTimeErrors.length)} مورد — این مقادیر ثبت نشدند):
+                          </span>
+                        </h4>
+                      </div>
+                      <div className="overflow-x-auto border border-rose-500/25 rounded-xl bg-slate-950/60 max-h-64 overflow-y-auto">
+                        <table className="min-w-full divide-y divide-slate-800 text-right text-[11px]">
+                          <thead className="bg-slate-900/90 text-slate-400 sticky top-0">
+                            <tr>
+                              <th className="px-3 py-2 font-bold">ردیف / سلول</th>
+                              <th className="px-3 py-2 font-bold">پرسنل (کد تردد)</th>
+                              <th className="px-3 py-2 font-bold">تاریخ / ستون</th>
+                              <th className="px-3 py-2 font-bold">مقدار نامعتبر</th>
+                              <th className="px-3 py-2 font-bold">علت خطا</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                            {groupExcelImportReport.invalidTimeErrors.map((err, idx) => (
+                              <tr key={`${err.cellRef}-${idx}`} className="hover:bg-rose-950/15">
+                                <td className="px-3 py-2 font-mono text-amber-300 whitespace-nowrap">
+                                  ردیف {toPersianDigits(err.excelRow)}{err.cellRef ? ` (${err.cellRef})` : ''}
+                                </td>
+                                <td className="px-3 py-2 font-bold whitespace-nowrap">
+                                  {err.personnelName} <span className="text-slate-400 font-mono">({toPersianDigits(err.attCode)})</span>
+                                </td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  <span className="font-mono text-slate-300">{toPersianDigits(err.dateStr)}</span>
+                                  <span className="text-slate-500 mr-1.5">({err.columnHeader})</span>
+                                </td>
+                                <td className="px-3 py-2 font-mono font-bold text-rose-400 whitespace-nowrap" dir="ltr">
+                                  {err.rawValue}
+                                </td>
+                                <td className="px-3 py-2 text-slate-300 leading-relaxed">
+                                  {err.reason}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Missing Attendance Code Errors */}
+                  {groupExcelImportReport.missingCodeErrors.length > 0 && (
+                    <div className="p-3.5 rounded-xl bg-amber-950/25 border border-amber-500/30 space-y-1.5">
+                      <h4 className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        <span>
+                          ردیف‌های نادیده‌گرفته‌شده به دلیل نداشتن «کد تردد» ({toPersianDigits(groupExcelImportReport.missingCodeErrors.length)} ردیف):
+                        </span>
+                      </h4>
+                      <ul className="list-disc list-inside text-[11px] text-amber-100/90 space-y-0.5 max-h-32 overflow-y-auto">
+                        {groupExcelImportReport.missingCodeErrors.map((item, i) => (
+                          <li key={i}>
+                            ردیف {toPersianDigits(item.excelRow)}: <strong>{item.personnelName}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setGroupExcelImportReport(null)}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                متوجه شدم
               </button>
             </div>
           </div>

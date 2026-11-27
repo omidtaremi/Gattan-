@@ -74,11 +74,11 @@ export interface ErpButtonProps extends React.ButtonHTMLAttributes<HTMLButtonEle
 }
 
 const NEUTRAL_BUTTON_CLASSES =
-  'bg-white dark:bg-zinc-900 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 border border-slate-200 dark:border-zinc-700';
+  'bg-white dark:bg-slate-950/90 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800';
 
 const VARIANT_CLASSES: Record<ErpButtonVariant, string> = {
   primary:
-    'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white border border-emerald-600 shadow-xs',
+    'bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white border border-rose-500/80 shadow-md shadow-rose-600/20',
   secondary: NEUTRAL_BUTTON_CLASSES,
   neutral: NEUTRAL_BUTTON_CLASSES,
   danger:
@@ -86,7 +86,7 @@ const VARIANT_CLASSES: Record<ErpButtonVariant, string> = {
   'danger-subtle':
     'bg-transparent hover:bg-rose-50 dark:hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-200/80 dark:border-rose-500/25',
   ghost:
-    'bg-transparent hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-300 border border-transparent',
+    'bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 border border-transparent',
 };
 
 const SIZE_CLASSES: Record<ErpButtonSize, string> = {
@@ -105,7 +105,7 @@ export const ErpButton: React.FC<ErpButtonProps> = ({
 }) => (
   <button
     type={type}
-    className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-45 disabled:pointer-events-none cursor-pointer ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+    className={`inline-flex items-center justify-center rounded-xl font-bold transition-all whitespace-nowrap shrink-0 disabled:opacity-45 disabled:pointer-events-none cursor-pointer ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
     {...rest}
   >
     {icon && <span className="inline-flex items-center shrink-0">{renderErpIcon(icon, 'w-4 h-4')}</span>}
@@ -146,25 +146,28 @@ export const ModuleHeader: React.FC<ModuleHeaderProps> = ({
   if (typeof recordCount === 'number') {
     computedMeta.push(`${recordCount.toLocaleString('fa-IR')} ${recordLabel}`);
   }
+  if (periodName) {
+    computedMeta.push(periodName);
+  }
   if (metaItems?.length) computedMeta.push(...metaItems.filter(Boolean));
   const extraContent = rightExtra || actions;
 
   return (
     <header
-      className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-slate-200 dark:border-zinc-800 ${className}`}
+      className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-800/90 ${className}`}
     >
-      <div className="flex items-start gap-2.5 min-w-0">
+      <div className="flex items-start gap-3 min-w-0">
         {icon && (
-          <div className="w-9 h-9 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+          <div className="w-10 h-10 rounded-xl border border-slate-200 dark:border-rose-500/25 bg-slate-50 dark:bg-rose-500/10 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0 mt-0.5">
             {renderErpIcon(icon, 'w-5 h-5')}
           </div>
         )}
         <div className="min-w-0">
-          <h2 className="text-base sm:text-lg font-bold tracking-tight text-slate-900 dark:text-zinc-100 truncate">
+          <h2 className="text-base sm:text-lg font-black tracking-tight text-slate-900 dark:text-slate-100 truncate">
             {title}
           </h2>
           {subtitle && (
-            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1">
               {subtitle}
             </p>
           )}
@@ -172,9 +175,9 @@ export const ModuleHeader: React.FC<ModuleHeaderProps> = ({
       </div>
 
       {(computedMeta.length > 0 || extraContent) && (
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           {computedMeta.length > 0 && (
-            <div className="text-xs text-slate-500 dark:text-zinc-400 font-medium tabular-nums">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-bold tabular-nums px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800">
               {computedMeta.join(' · ')}
             </div>
           )}
@@ -218,7 +221,7 @@ export function ModulePrimaryTabs<T extends string = string>({
   return (
     <nav
       aria-label="برگه‌های بخش"
-      className={`border-b border-slate-200 dark:border-zinc-800 overflow-x-auto no-scrollbar ${className}`}
+      className={`border-b border-slate-200 dark:border-slate-800 overflow-x-auto no-scrollbar ${className}`}
     >
       <div className="flex items-center gap-1 min-w-max">
         {tabs.map(tab => {
@@ -229,18 +232,18 @@ export function ModulePrimaryTabs<T extends string = string>({
               type="button"
               disabled={tab.disabled}
               onClick={() => onChange(tab.id)}
-              className={`relative inline-flex items-center gap-2 min-h-[44px] sm:min-h-[40px] px-3.5 text-xs sm:text-[13px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-40 ${
+              className={`relative inline-flex items-center gap-2 min-h-[44px] sm:min-h-[42px] px-3.5 text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-40 ${
                 isActive
-                  ? 'text-slate-900 dark:text-zinc-100 font-semibold'
-                  : 'text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
+                  ? 'text-slate-900 dark:text-slate-100'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
               }`}
             >
               {tab.icon && (
                 <span
                   className={
                     isActive
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-slate-400 dark:text-zinc-500'
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-slate-400 dark:text-slate-500'
                   }
                 >
                   {renderErpIcon(tab.icon, 'w-4 h-4')}
@@ -248,17 +251,23 @@ export function ModulePrimaryTabs<T extends string = string>({
               )}
               <span>{tab.label}</span>
               {typeof tab.count === 'number' && (
-                <span className="text-[11px] text-slate-400 dark:text-zinc-500 tabular-nums">
-                  ({tab.count.toLocaleString('fa-IR')})
+                <span
+                  className={`text-[10px] font-black tabular-nums px-1.5 py-0.5 rounded-md ${
+                    isActive
+                      ? 'bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {tab.count.toLocaleString('fa-IR')}
                 </span>
               )}
               {tab.badge && (
-                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
                   · {tab.badge}
                 </span>
               )}
               {isActive && (
-                <span className="absolute inset-x-1.5 bottom-0 h-[2px] rounded-full bg-emerald-600 dark:bg-emerald-400" />
+                <span className="absolute inset-x-1.5 bottom-0 h-[2.5px] rounded-full bg-rose-600 dark:bg-rose-500" />
               )}
             </button>
           );
@@ -290,7 +299,7 @@ export function ModuleSubTabs<T extends string = string>({
   const currentTab = activeTab ?? activeId;
   return (
     <div className={`overflow-x-auto no-scrollbar ${className}`}>
-      <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-800 min-w-max">
+      <div className="inline-flex items-center gap-1.5 p-1.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 min-w-max">
         {tabs.map(tab => {
           const isActive = tab.id === currentTab;
           return (
@@ -299,21 +308,27 @@ export function ModuleSubTabs<T extends string = string>({
               type="button"
               disabled={tab.disabled}
               onClick={() => onChange(tab.id)}
-              className={`inline-flex items-center gap-1.5 min-h-[36px] sm:min-h-[32px] px-3 rounded-md text-xs font-medium whitespace-nowrap shrink-0 transition-all cursor-pointer disabled:opacity-40 ${
+              className={`inline-flex items-center gap-1.5 min-h-[36px] sm:min-h-[34px] px-3.5 rounded-lg text-xs font-extrabold whitespace-nowrap shrink-0 transition-all cursor-pointer disabled:opacity-40 ${
                 isActive
-                  ? 'bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-semibold shadow-xs border border-slate-200/90 dark:border-zinc-700'
-                  : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200 border border-transparent'
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20 border border-rose-500/80'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 border border-transparent'
               }`}
             >
               {tab.icon && <span className="shrink-0">{renderErpIcon(tab.icon, 'w-3.5 h-3.5')}</span>}
               <span>{tab.label}</span>
               {typeof tab.count === 'number' && (
-                <span className="text-[11px] text-slate-400 dark:text-zinc-500 tabular-nums">
+                <span
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-black tabular-nums ${
+                    isActive
+                      ? 'bg-white/20 text-white'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
                   {tab.count.toLocaleString('fa-IR')}
                 </span>
               )}
               {tab.badge && (
-                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                <span className="text-[10px] font-bold text-amber-500 dark:text-amber-300">
                   · {tab.badge}
                 </span>
               )}
@@ -343,19 +358,19 @@ export const UnifiedSearchInput: React.FC<UnifiedSearchInputProps> = ({
   className = '',
 }) => (
   <div className={`relative flex-1 min-w-[180px] sm:max-w-xs ${className}`}>
-    <Search className="w-4 h-4 text-slate-400 dark:text-zinc-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+    <Search className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
     <input
       type="text"
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full h-10 sm:h-9 pr-9 pl-8 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 text-xs sm:text-[13px] text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition-colors"
+      className="w-full h-10 sm:h-9 pr-9 pl-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-xs sm:text-[13px] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 transition-colors font-medium"
     />
     {value && (
       <button
         type="button"
         onClick={() => onChange('')}
-        className="absolute left-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+        className="absolute left-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
         aria-label="پاک کردن جستجو"
       >
         <X className="w-3.5 h-3.5" />
@@ -377,6 +392,7 @@ export interface UnifiedToolbarProps {
   filters?: React.ReactNode;
   hasActiveFilters?: boolean;
   onClearFilters?: () => void;
+  onResetFilters?: () => void;
 
   // Standardized action slots (rendered in exact canonical order)
   onCopyFromPeriod?: () => void;
@@ -406,6 +422,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
   filters,
   hasActiveFilters,
   onClearFilters,
+  onResetFilters,
   onCopyFromPeriod,
   copyFromPeriodLabel = ERP_BUTTON_LABELS.copyFromPeriod,
   onDownloadTemplate,
@@ -424,8 +441,9 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
   className = '',
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const clearFiltersHandler = onClearFilters ?? onResetFilters;
 
-  const hasSearchOrFilters = Boolean(onSearchChange || filters || (hasActiveFilters && onClearFilters));
+  const hasSearchOrFilters = Boolean(onSearchChange || filters || (hasActiveFilters && clearFiltersHandler));
   const hasSecondaryActions = Boolean(
     onCopyFromPeriod ||
       onDownloadTemplate ||
@@ -440,7 +458,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
 
   return (
     <div
-      className={`flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 bg-slate-50/70 dark:bg-zinc-900/60 ${className}`}
+      className={`flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 shadow-sm ${className}`}
     >
       {/* Right side (RTL start): Search & Filters */}
       {hasSearchOrFilters ? (
@@ -453,11 +471,11 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
             />
           )}
           {filters}
-          {hasActiveFilters && onClearFilters && (
+          {hasActiveFilters && clearFiltersHandler && (
             <ErpButton
               variant="ghost"
               size="sm"
-              onClick={onClearFilters}
+              onClick={clearFiltersHandler}
               icon={<RotateCcw className="w-3.5 h-3.5" />}
             >
               {ERP_BUTTON_LABELS.clearFilters}
@@ -476,7 +494,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
               variant="secondary"
               size="sm"
               onClick={onCopyFromPeriod}
-              icon={<Copy className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+              icon={<Copy className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />}
             >
               {copyFromPeriodLabel}
             </ErpButton>
@@ -487,7 +505,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
               variant="secondary"
               size="sm"
               onClick={onDownloadTemplate}
-              icon={<FileSpreadsheet className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+              icon={<FileSpreadsheet className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />}
             >
               {ERP_BUTTON_LABELS.excelTemplate}
             </ErpButton>
@@ -517,7 +535,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
                   if (onImportExcelClick) onImportExcelClick();
                   else fileInputRef.current?.click();
                 }}
-                icon={<Upload className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+                icon={<Upload className="w-3.5 h-3.5 text-cyan-500 dark:text-cyan-400" />}
               >
                 {ERP_BUTTON_LABELS.importExcel}
               </ErpButton>
@@ -529,7 +547,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
               variant="secondary"
               size="sm"
               onClick={onExportExcel}
-              icon={<Download className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+              icon={<Download className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />}
             >
               {ERP_BUTTON_LABELS.exportExcel}
             </ErpButton>
@@ -540,7 +558,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
               variant="secondary"
               size="sm"
               onClick={onPrint}
-              icon={<Printer className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+              icon={<Printer className="w-3.5 h-3.5 text-slate-500 dark:text-slate-300" />}
             >
               {ERP_BUTTON_LABELS.print}
             </ErpButton>
@@ -551,7 +569,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
               variant="secondary"
               size="sm"
               onClick={onRefresh}
-              icon={<RefreshCw className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />}
+              icon={<RefreshCw className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />}
             >
               {ERP_BUTTON_LABELS.refresh}
             </ErpButton>
@@ -560,7 +578,7 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
           {extraSecondaryActions}
 
           {hasSecondaryActions && hasPrimary && (
-            <span className="hidden sm:inline-block w-px h-5 bg-slate-200 dark:bg-zinc-700 mx-0.5" />
+            <span className="hidden sm:inline-block w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5" />
           )}
 
           {primaryActionSlot}
@@ -581,6 +599,26 @@ export const UnifiedToolbar: React.FC<UnifiedToolbarProps> = ({
     </div>
   );
 };
+
+/* -------------------------------------------------------------------------- */
+/* UnifiedFilterBar (Matches CustomerManagement 4-column filter bar)          */
+/* -------------------------------------------------------------------------- */
+
+export const UnifiedFilterBar: React.FC<{
+  children: React.ReactNode;
+  columnsClass?: string;
+  className?: string;
+}> = ({ children, columnsClass = 'grid-cols-2 sm:grid-cols-4', className = '' }) => (
+  <div className={`bg-white dark:bg-slate-900/90 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 ${className}`}>
+    <div className={`grid ${columnsClass} gap-2.5`}>{children}</div>
+  </div>
+);
+
+export const UNIFIED_FILTER_SELECT_CLASS =
+  'w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer';
+
+export const UNIFIED_FILTER_LABEL_CLASS =
+  'block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1';
 
 /* -------------------------------------------------------------------------- */
 /* RowActions (Leftmost table column: [Details/Print] [Edit] [Delete])        */
@@ -617,7 +655,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
         onClick={onDetails}
         title={detailsTitle}
         aria-label={detailsTitle}
-        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-slate-400 hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
       >
         <Eye className="w-4 h-4" />
       </button>
@@ -628,7 +666,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
         onClick={onPrint}
         title={printTitle}
         aria-label={printTitle}
-        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
       >
         <Printer className="w-4 h-4" />
       </button>
@@ -639,7 +677,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
         onClick={onEdit}
         title={editTitle}
         aria-label={editTitle}
-        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+        className="w-9 h-9 sm:w-8 sm:h-8 inline-flex items-center justify-center rounded-lg text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
       >
         <Edit2 className="w-4 h-4" />
       </button>
@@ -682,14 +720,14 @@ export const EmptyPeriodState: React.FC<EmptyPeriodStateProps> = ({
   className = '',
 }) => (
   <div
-    className={`flex flex-col items-center justify-center text-center py-12 px-4 rounded-xl border border-dashed border-slate-300 dark:border-zinc-700 bg-slate-50/50 dark:bg-zinc-900/30 ${className}`}
+    className={`flex flex-col items-center justify-center text-center py-12 px-4 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/50 ${className}`}
   >
-    <div className="w-11 h-11 rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-center text-slate-400 dark:text-zinc-500 mb-3">
+    <div className="w-11 h-11 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-center justify-center text-slate-400 dark:text-slate-500 mb-3">
       {icon ? renderErpIcon(icon, 'w-5 h-5') : <Inbox className="w-5 h-5" />}
     </div>
-    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">{title}</h3>
+    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{title}</h3>
     {description && (
-      <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1 max-w-md leading-5">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md leading-5">
         {description}
       </p>
     )}
@@ -758,22 +796,22 @@ export const UnifiedModal: React.FC<UnifiedModalProps> = ({
   return (
     <div
       dir="rtl"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 backdrop-blur-[2px] p-3 sm:p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-4"
       onClick={onClose}
     >
       <div
-        className={`w-full ${maxWidthClass} max-h-[90vh] flex flex-col rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden`}
+        className={`w-full ${maxWidthClass} max-h-[90vh] flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden`}
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-200 dark:border-zinc-800 shrink-0">
+        <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            {icon && <span className="text-emerald-600 dark:text-emerald-400 shrink-0">{renderErpIcon(icon, 'w-5 h-5')}</span>}
+            {icon && <span className="text-rose-600 dark:text-rose-400 shrink-0">{renderErpIcon(icon, 'w-5 h-5')}</span>}
             <div className="min-w-0">
-              <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-zinc-100 truncate">
+              <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 truncate">
                 {title}
               </h3>
               {subtitle && (
-                <p className="text-xs text-slate-500 dark:text-zinc-400 truncate mt-0.5">{subtitle}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">{subtitle}</p>
               )}
             </div>
           </div>
@@ -781,7 +819,7 @@ export const UnifiedModal: React.FC<UnifiedModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label={ERP_BUTTON_LABELS.close}
-            className="w-9 h-9 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors shrink-0 cursor-pointer"
+            className="w-9 h-9 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -790,7 +828,7 @@ export const UnifiedModal: React.FC<UnifiedModalProps> = ({
         <div className="flex-1 overflow-y-auto p-5">{children}</div>
 
         {(footer || onSave) && (
-          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-zinc-800 bg-slate-50/70 dark:bg-zinc-950/60 shrink-0">
+          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 shrink-0">
             {footer ?? (
               <>
                 <ErpButton variant="secondary" onClick={onClose}>
@@ -814,7 +852,7 @@ export const UnifiedModal: React.FC<UnifiedModalProps> = ({
 };
 
 /* -------------------------------------------------------------------------- */
-/* StatusText & KpiStrip (Zero candy pills, tabular numerals)                 */
+/* StatusText & KpiStrip (CustomerManagement unified KPI card architecture)   */
 /* -------------------------------------------------------------------------- */
 
 export type StatusTone = 'success' | 'warning' | 'danger' | 'neutral' | 'info';
@@ -828,20 +866,20 @@ export const StatusText: React.FC<{
     success: 'bg-emerald-500',
     warning: 'bg-amber-500',
     danger: 'bg-rose-500',
-    info: 'bg-sky-500',
-    neutral: 'bg-slate-400 dark:bg-zinc-500',
+    info: 'bg-cyan-500',
+    neutral: 'bg-slate-400 dark:bg-slate-500',
   };
   const textColors: Record<StatusTone, string> = {
     success: 'text-emerald-700 dark:text-emerald-400',
     warning: 'text-amber-700 dark:text-amber-400',
     danger: 'text-rose-700 dark:text-rose-400',
-    info: 'text-sky-700 dark:text-sky-400',
-    neutral: 'text-slate-600 dark:text-zinc-400',
+    info: 'text-cyan-700 dark:text-cyan-400',
+    neutral: 'text-slate-600 dark:text-slate-400',
   };
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${textColors[tone]} ${className}`}
+      className={`inline-flex items-center gap-1.5 text-xs font-bold whitespace-nowrap ${textColors[tone]} ${className}`}
     >
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColors[tone]}`} />
       <span>{children}</span>
@@ -853,44 +891,58 @@ export interface KpiItem {
   label: string;
   value: string | number;
   sublabel?: string;
-  tone?: 'default' | 'success' | 'danger' | 'warning';
+  tone?: 'default' | 'success' | 'danger' | 'warning' | 'info';
 }
 
 export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
   items,
   className = '',
 }) => {
+  const labelTone: Record<NonNullable<KpiItem['tone']>, string> = {
+    default: 'text-slate-500 dark:text-slate-400',
+    success: 'text-emerald-600 dark:text-emerald-400',
+    danger: 'text-rose-600 dark:text-rose-400',
+    warning: 'text-amber-600 dark:text-amber-400',
+    info: 'text-cyan-600 dark:text-cyan-400',
+  };
   const valueTone: Record<NonNullable<KpiItem['tone']>, string> = {
-    default: 'text-slate-900 dark:text-zinc-100',
+    default: 'text-slate-900 dark:text-slate-100',
     success: 'text-emerald-700 dark:text-emerald-400',
     danger: 'text-rose-600 dark:text-rose-400',
     warning: 'text-amber-600 dark:text-amber-400',
+    info: 'text-cyan-600 dark:text-cyan-400',
   };
 
   return (
     <div
-      className={`grid grid-cols-2 sm:grid-cols-4 gap-3 ${className}`}
+      className={`grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5 ${className}`}
     >
-      {items.map((item, idx) => (
-        <div
-          key={`${item.label}-${idx}`}
-          className="rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/80 px-4 py-3"
-        >
-          <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 truncate">
-            {item.label}
-          </div>
+      {items.map((item, idx) => {
+        const tone = item.tone ?? 'default';
+        return (
           <div
-            className={`text-base sm:text-lg font-bold tabular-nums mt-1 truncate ${valueTone[item.tone ?? 'default']}`}
+            key={`${item.label}-${idx}`}
+            className="bg-slate-50 dark:bg-slate-950/70 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800/80"
           >
-            {typeof item.value === 'number' ? item.value.toLocaleString('fa-IR') : item.value}
-          </div>
-          {item.sublabel && (
-            <div className="text-[11px] text-slate-400 dark:text-zinc-500 mt-0.5 truncate">
-              {item.sublabel}
+            <span className={`text-[11px] font-bold block mb-1 truncate ${labelTone[tone]}`}>
+              {item.label}
+            </span>
+            <div className="flex items-baseline justify-between gap-2">
+              <span
+                className={`text-lg sm:text-xl font-black font-mono tabular-nums truncate ${valueTone[tone]}`}
+              >
+                {typeof item.value === 'number' ? item.value.toLocaleString('fa-IR') : item.value}
+              </span>
+              {item.sublabel && (
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0 truncate">
+                  {item.sublabel}
+                </span>
+              )}
             </div>
-          )}
-        </div>
-      ))}
+          </div>
+        );
+      })}
     </div>
   );
 };
+

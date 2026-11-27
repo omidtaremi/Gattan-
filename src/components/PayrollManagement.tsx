@@ -54,9 +54,18 @@ import {
   ModuleHeader,
   ModulePrimaryTabs,
   UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+  KpiStrip,
   ErpButton,
   ERP_BUTTON_LABELS
 } from './ui/UnifiedErpUi';
+import {
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField
+} from '../utils/tableIoUtils';
 import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
 import { 
   Users, Search, Plus, Trash, Trash2, Printer, CheckCircle, FileSpreadsheet, Sparkles, Layers,
@@ -9388,6 +9397,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [onlyActiveContractsFilter, setOnlyActiveContractsFilter] = useState<boolean>(false);
   const [searchContractQuery, setSearchContractQuery] = useState<string>('');
   const [groupByPersonnelContracts, setGroupByPersonnelContracts] = useState<boolean>(false);
+  const [contractAgreementFilter, setContractAgreementFilter] = useState<'all' | 'agreed' | 'standard'>('all');
+  const [contractSortBy, setContractSortBy] = useState<'name' | 'startDate' | 'baseSalary' | 'netPayable'>('startDate');
+  const [contractSortOrder, setContractSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [constantsSearchQuery, setConstantsSearchQuery] = useState<string>('');
   const [contractModalEmployee, setContractModalEmployee] = useState<Personnel | null>(null);
   const [contractModalContractData, setContractModalContractData] = useState<any | null>(null);
   const [isContractEditable, setIsContractEditable] = useState<boolean>(false);
@@ -11697,8 +11710,144 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     downloadCSV('Gatan_Salary_Constants_and_Rates', headers, rows);
   };
 
-  const importSalaryBaseRatesCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const downloadSampleSalaryRatesTemplate = () => {
+    downloadTemplateExcel(
+      [
+        'سال',
+        'عنوان دوره',
+        'از تاریخ',
+        'تا تاریخ',
+        'حقوق پایه روزانه (ریال)',
+        'حقوق پایه روزانه بیمه (ریال)',
+        'حق مسکن (ریال)',
+        'حق بن (ریال)',
+        'حق اولاد (ریال)',
+        'حق تاهل (ریال)',
+        'سقف معافیت مالیاتی (ریال)',
+        'نرخ اضافه کاری ساعتی (ریال)',
+        'نرخ جمعه کاری ساعتی (ریال)',
+        'مرخصی ساعتی ماهانه'
+      ],
+      [
+        {
+          'سال': '1405',
+          'عنوان دوره': 'نیمه اول ۱۴۰۵',
+          'از تاریخ': activePeriodStartDate || '1405/01/01',
+          'تا تاریخ': activePeriodEndDate || '1405/12/29',
+          'حقوق پایه روزانه (ریال)': 4333333,
+          'حقوق پایه روزانه بیمه (ریال)': 4333333,
+          'حق مسکن (ریال)': 9000000,
+          'حق بن (ریال)': 22000000,
+          'حق اولاد (ریال)': 10390968,
+          'حق تاهل (ریال)': 5000000,
+          'سقف معافیت مالیاتی (ریال)': 240000000,
+          'نرخ اضافه کاری ساعتی (ریال)': 827650,
+          'نرخ جمعه کاری ساعتی (ریال)': 236471,
+          'مرخصی ساعتی ماهانه': DEFAULT_MONTHLY_LEAVE_HM
+        }
+      ],
+      'ثوابت_دستمزد',
+      'نمونه_قوانین_و_ثوابت_دستمزد.xlsx'
+    );
+  };
+
+  const downloadSampleContractsTemplate = () => {
+    downloadTemplateExcel(
+      [
+        'کد پرسنلی',
+        'سمت شغلی',
+        'تاریخ شروع قرارداد',
+        'تاریخ پایان قرارداد',
+        'مدت (ماه)',
+        'حقوق پایه روزانه (ریال)',
+        'پایه سنوات ماهانه (ریال)',
+        'فوق‌العاده شغلی (ریال)',
+        'توضیحات'
+      ],
+      [
+        {
+          'کد پرسنلی': '101',
+          'سمت شغلی': 'قناد / نانوا',
+          'تاریخ شروع قرارداد': activePeriodStartDate || '1405/01/01',
+          'تاریخ پایان قرارداد': activePeriodEndDate || '1405/12/29',
+          'مدت (ماه)': 12,
+          'حقوق پایه روزانه (ریال)': 4333333,
+          'پایه سنوات ماهانه (ریال)': 0,
+          'فوق‌العاده شغلی (ریال)': 0,
+          'توضیحات': ''
+        }
+      ],
+      'قراردادهای_پرسنلی',
+      'نمونه_قراردادهای_پرسنلی.xlsx'
+    );
+  };
+
+  const importContractsFile = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        alert('فایل انتخابی خالی است یا ساختار معتبری ندارد.');
+        return;
+      }
+      const existing = [...(db.personnelContracts || [])];
+      const nextConId = createSimpleIdGenerator(existing, getPrefixForCollection('personnelContracts'));
+      let added = 0;
+
+      rows.forEach(row => {
+        const empCode = toEnglishDigits(pickRowField(row, ['کد پرسنلی', 'employeeCode', 'کد'])).trim();
+        if (!empCode) return;
+        const emp = db.personnel.find(p => p.periodId === activePeriodId && p.employeeCode === empCode) ||
+          db.personnel.find(p => p.employeeCode === empCode);
+        const startDate = toEnglishDigits(pickRowField(row, ['تاریخ شروع قرارداد', 'تاریخ شروع', 'contractStartDate'])) || activePeriodStartDate || '1405/01/01';
+        const endDate = toEnglishDigits(pickRowField(row, ['تاریخ پایان قرارداد', 'تاریخ پایان', 'contractEndDate'])) || activePeriodEndDate || '1405/12/29';
+        const duration = Math.max(1, parseNumber(pickRowField(row, ['مدت (ماه)', 'مدت', 'contractDurationMonths'])) || 12);
+        const dailySalary = parseNumber(pickRowField(row, ['حقوق پایه روزانه (ریال)', 'حقوق پایه روزانه', 'contractDailySalary'])) || 0;
+        const seniorityBase = parseNumber(pickRowField(row, ['پایه سنوات ماهانه (ریال)', 'پایه سنوات', 'contractSeniorityBase'])) || 0;
+        const jobAllowance = parseNumber(pickRowField(row, ['فوق‌العاده شغلی (ریال)', 'فوق العاده شغلی', 'jobAllowance'])) || 0;
+        const role = pickRowField(row, ['سمت شغلی', 'سمت', 'role']) || emp?.role || 'پرسنل کارگاه';
+        const notes = pickRowField(row, ['توضیحات', 'notes']);
+
+        existing.forEach(c => {
+          if (c.periodId === activePeriodId && c.employeeCode === empCode) {
+            c.isActive = false;
+          }
+        });
+
+        const baseSalary = Math.round(dailySalary * 30);
+        const newContract: PersonnelContract = {
+          id: nextConId(),
+          periodId: activePeriodId,
+          employeeCode: empCode,
+          fullName: emp?.fullName || `${emp?.firstName || ''} ${emp?.lastName || ''}`.trim() || empCode,
+          role,
+          contractStartDate: startDate,
+          contractEndDate: endDate,
+          contractDurationMonths: duration,
+          contractDailySalary: dailySalary,
+          contractBaseSalary: baseSalary,
+          contractSeniorityBase: seniorityBase,
+          jobAllowance,
+          notes,
+          isActive: true,
+          createdAt: new Date().toISOString()
+        };
+        existing.push(newContract);
+        added++;
+      });
+
+      if (added === 0) {
+        alert('هیچ قرارداد معتبری با کد پرسنلی در فایل یافت نشد.');
+        return;
+      }
+      onUpdateDb({ ...db, personnelContracts: existing });
+      alert(`${toPersianDigits(added)} قرارداد پرسنلی با موفقیت از فایل وارد شد.`);
+    } catch (err) {
+      console.error(err);
+      alert('خطا در خواندن فایل قراردادها. لطفاً فایل نمونه را بررسی فرمایید.');
+    }
+  };
+
+  const importSalaryBaseRatesFile = (file: File) => {
     if (!file) return;
 
     const fileName = (file.name || '').toLowerCase();
@@ -13005,36 +13154,43 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   ];
 
   return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 animate-fade-in text-right payroll-management-root-wrapper" dir="rtl">
-      
-      <ModuleHeader
-        title="نظام حقوق و دستمزد و کنترل هزینه‌ها"
-        subtitle="مدیریت پرسنل، شیفت‌ها، تردد، قراردادها، محاسبه هوشمند حقوق و تسویه حساب (ایزوله در دوره مالی)"
-        icon={<Users className="h-5 w-5" />}
-        actions={
-          <ErpButton
-            variant="neutral"
-            icon={<Copy className="h-4 w-4" />}
-            onClick={() => setShowCopyModal(true)}
-          >
-            {ERP_BUTTON_LABELS.copyFromPeriod}
-          </ErpButton>
-        }
-      />
+    <div className="space-y-6 animate-fadeIn pb-12 text-right font-sans payroll-management-root-wrapper" dir="rtl">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          title="نظام حقوق و دستمزد و کنترل هزینه‌ها"
+          subtitle="مدیریت پرسنل، شیفت‌ها، تردد، قراردادها، محاسبه هوشمند حقوق و تسویه حساب (ایزوله در دوره مالی)"
+          icon={<Users className="h-5 w-5" />}
+          actions={
+            <ErpButton
+              variant="neutral"
+              icon={<Copy className="h-4 w-4" />}
+              onClick={() => setShowCopyModal(true)}
+            >
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+          }
+        />
 
-      <ModulePrimaryTabs
-        tabs={[
-          { id: 'payroll', label: 'محاسبه حقوق و تسهیم دستمزد', icon: <FileSpreadsheet className="h-4 w-4" /> },
-          { id: 'employees', label: 'پرونده پرسنل', icon: <Users className="h-4 w-4" /> },
-          { id: 'contracts', label: 'قراردادهای پرسنلی', icon: <FileCheck className="h-4 w-4" /> },
-          { id: 'settlement', label: 'تسویه حساب', icon: <Receipt className="h-4 w-4" /> },
-          { id: 'payrollConstants', label: 'قوانین و ثوابت دستمزد', icon: <DollarSign className="h-4 w-4" /> },
-          { id: 'attendanceSettings', label: 'تنظیمات حقوق و دستمزد', icon: <Settings className="h-4 w-4" /> }
-        ]}
-        activeId={activeTab}
-        onChange={(id) => setActiveTab(id as typeof activeTab)}
-        className="mb-5"
-      />
+        <ModulePrimaryTabs
+          tabs={[
+            { id: 'payroll', label: 'محاسبه حقوق و تسهیم دستمزد', icon: <FileSpreadsheet className="h-4 w-4" /> },
+            { id: 'employees', label: 'پرونده پرسنل', icon: <Users className="h-4 w-4" /> },
+            { id: 'contracts', label: 'قراردادهای پرسنلی', icon: <FileCheck className="h-4 w-4" /> },
+            { id: 'settlement', label: 'تسویه حساب', icon: <Receipt className="h-4 w-4" /> },
+            { id: 'payrollConstants', label: 'قوانین و ثوابت دستمزد', icon: <DollarSign className="h-4 w-4" /> },
+            { id: 'attendanceSettings', label: 'تنظیمات حقوق و دستمزد', icon: <Settings className="h-4 w-4" /> }
+          ]}
+          activeId={activeTab}
+          onChange={(id) => {
+            setActiveTab(id as typeof activeTab);
+            setIsPersonnelFormOpen(false);
+            setIsContractFormOpen(false);
+          }}
+        />
+      </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
 
 
       {/* ================= TAB 1: EMPLOYEES ROSTER & DEPT ALLOCATION ================= */}
@@ -15826,18 +15982,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <Sparkles className="h-3.5 w-3.5 text-indigo-200 animate-pulse" /> شیفت‌بندی هوشمند خودکار
                         </button>
 
-                        {/* Copy from previous period */}
-                        {previousPeriod && (
-                          <button
-                            type="button"
-                            onClick={handleCopyFromPreviousPeriod}
-                            className="text-[10.5px] bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-1.5 px-3 rounded-xl flex items-center justify-center gap-1 cursor-pointer transition-all"
-                            title={`کپی برنامه زمان‌بندی هفتگی از دوره قبل: ${previousPeriod.name}`}
-                          >
-                            📋 کپی از دوره قبل ({previousPeriod.name})
-                          </button>
-                        )}
-
                         {/* Print Section Headcount */}
                         <button
                           type="button"
@@ -17496,77 +17640,47 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         return (
         <div className="space-y-6 animate-fade-in text-slate-100 font-sans" dir="rtl">
           
-          {/* Header Description & Primary Action */}
-          <div className="bg-slate-900/95 p-5 rounded-3xl border border-slate-800 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-rose-500/10 rounded-xl text-rose-500 border border-rose-500/20">
-                <DollarSign className="h-5 w-5" />
+          {/* Unified Toolbar matching CustomerManagement */}
+          {!isConstantFormOpen ? (
+            <UnifiedToolbar
+              searchValue={constantsSearchQuery}
+              onSearchChange={setConstantsSearchQuery}
+              searchPlaceholder="جستجو در عنوان دوره، سال مالی یا اقلام..."
+              hasActiveFilters={Boolean(constantsSearchQuery)}
+              onClearFilters={() => setConstantsSearchQuery('')}
+              onDownloadTemplate={constantsSubTab === 'baseRates' ? downloadSampleSalaryRatesTemplate : undefined}
+              onImportExcel={constantsSubTab === 'baseRates' ? importSalaryBaseRatesFile : undefined}
+              importAccept=".xlsx,.xls,.csv"
+              onExportExcel={
+                constantsSubTab === 'baseRates'
+                  ? () => exportSalaryBaseRatesToExcel(db.salaryBaseRates || [])
+                  : undefined
+              }
+              onPrint={() => printElement('payroll-constants-printable-section', 'قوانین و ثوابت دستمزد')}
+              onAdd={openNewConstantForm}
+              addLabel={addConstantLabelMap[constantsSubTab]}
+            />
+          ) : (
+            <div className="bg-slate-900/95 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-500/10 rounded-xl text-rose-400 border border-rose-500/20">
+                  <DollarSign className="h-4 w-4" />
+                </div>
+                <span className="text-xs font-black text-slate-100">تعریف ثوابت، قوانین و آیتم‌های پایه حقوق</span>
               </div>
-              <div>
-                <h3 className="text-sm font-black text-white">تعریف ثوابت، قوانین و آیتم‌های پایه حقوق</h3>
-                <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-                  مدیریت مبالغ مرجع، اقلام مشمول بیمه، بازخرید مرخصی، مالیات حقوق و نرخ پایه سنوات دوره کاری فعال
-                </p>
-              </div>
+              <ErpButton
+                variant="secondary"
+                size="sm"
+                onClick={closeConstantForm}
+                icon={<ArrowRight className="h-4 w-4" />}
+              >
+                بازگشت به لیست
+              </ErpButton>
             </div>
-            <div className="flex flex-wrap items-center gap-2 self-stretch md:self-auto">
-              {!isConstantFormOpen && constantsSubTab === 'baseRates' && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => exportSalaryBaseRatesToExcel(db.salaryBaseRates || [])}
-                    className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-600 text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs"
-                    title="دانلود فایل رسمی اکسل (.xlsx) قوانین و ثوابت دستمزد"
-                  >
-                    <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel
-                  </button>
-                  
-                  <label 
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs"
-                    title="بارگذاری قوانین و ثوابت از فایل اکسل (.xlsx) یا متنی (.csv)"
-                  >
-                    <Download className="h-3.5 w-3.5" /> ورودی Excel/CSV
-                    <input
-                      type="file"
-                      accept=".xlsx, .xls, .csv"
-                      onChange={importSalaryBaseRatesCSV}
-                      className="hidden"
-                    />
-                  </label>
+          )}
 
-                  {getPreviousPeriodId() && (
-                    <button
-                      type="button"
-                      onClick={handleCopySalaryBaseRatesFromPreviousPeriod}
-                      className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30"
-                    >
-                      <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی از دوره قبل
-                    </button>
-                  )}
-                </>
-              )}
-
-              {!isConstantFormOpen ? (
-                <button
-                  type="button"
-                  onClick={openNewConstantForm}
-                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md shadow-rose-900/30"
-                >
-                  <Plus className="h-4 w-4" />
-                  {addConstantLabelMap[constantsSubTab]}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={closeConstantForm}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold border border-slate-700"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                  بازگشت به لیست
-                </button>
-              )}
-            </div>
-          </div>
+          {/* Printable Wrapper Start for Constants */}
+          <div id="payroll-constants-printable-section" className="space-y-4">
 
           {/* 5 Sub-Tabs Navigation Bar */}
           <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
@@ -19346,6 +19460,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               </div>
             )
           )}
+          </div>
         </div>
         );
       })()}
@@ -19386,11 +19501,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return true;
         });
 
+        const getContractNetPayable = (c: any, emp: any) => {
+          return getContractNetPayableHelper(c, emp, db, activePeriodId);
+        };
+
         const filteredContracts = registeredContracts.filter(c => {
           if (onlyActiveContractsFilter) {
             const active = isContractActive(c, periodContractsAll);
             if (!active) return false;
           }
+          if (contractAgreementFilter === 'agreed' && !c.hasAgreedMonthlyNet) return false;
+          if (contractAgreementFilter === 'standard' && c.hasAgreedMonthlyNet) return false;
           const emp = db.personnel.find(e => e.employeeCode === c.employeeCode && e.periodId === c.periodId) || db.personnel.find(e => e.employeeCode === c.employeeCode);
           const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : '';
           const matchSearch = matchPersianString(empName, searchContractQuery) || 
@@ -19399,87 +19520,209 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           return matchSearch;
         });
 
-        if (groupByPersonnelContracts) {
-          filteredContracts.sort((a, b) => {
+        filteredContracts.sort((a, b) => {
+          if (groupByPersonnelContracts) {
             const empA = db.personnel.find(e => e.employeeCode === a.employeeCode && e.periodId === a.periodId) || db.personnel.find(e => e.employeeCode === a.employeeCode);
-            const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && b.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
+            const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && e.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
             const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : (a.employeeCode || '');
             const nameB = empB ? (empB.fullName || `${empB.firstName || ''} ${empB.lastName || ''}`) : (b.employeeCode || '');
-            return nameA.localeCompare(nameB, 'fa');
-          });
-        }
+            const cmp = nameA.localeCompare(nameB, 'fa');
+            if (cmp !== 0) return cmp;
+          }
+          let cmp = 0;
+          if (contractSortBy === 'name') {
+            const empA = db.personnel.find(e => e.employeeCode === a.employeeCode);
+            const empB = db.personnel.find(e => e.employeeCode === b.employeeCode);
+            const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : (a.employeeCode || '');
+            const nameB = empB ? (empB.fullName || `${empB.firstName || ''} ${empB.lastName || ''}`) : (b.employeeCode || '');
+            cmp = nameA.localeCompare(nameB, 'fa');
+          } else if (contractSortBy === 'baseSalary') {
+            cmp = (Number(a.contractDailySalary) || 0) - (Number(b.contractDailySalary) || 0);
+          } else if (contractSortBy === 'netPayable') {
+            const empA = db.personnel.find(e => e.employeeCode === a.employeeCode);
+            const empB = db.personnel.find(e => e.employeeCode === b.employeeCode);
+            cmp = (getContractNetPayable(a, empA) || 0) - (getContractNetPayable(b, empB) || 0);
+          } else {
+            cmp = normalizeDateStr(a.contractStartDate || '').localeCompare(normalizeDateStr(b.contractStartDate || ''));
+          }
+          return contractSortOrder === 'asc' ? cmp : -cmp;
+        });
 
-        const getContractNetPayable = (c: any, emp: any) => {
-          return getContractNetPayableHelper(c, emp, db, activePeriodId);
-        };
+        const activeContractsCount = periodContractsAll.filter(c => isContractActive(c, periodContractsAll)).length;
+        const agreedContractsCount = periodContractsAll.filter(c => isContractActive(c, periodContractsAll) && c.hasAgreedMonthlyNet).length;
+        const activeContractsTotalNet = periodContractsAll
+          .filter(c => isContractActive(c, periodContractsAll))
+          .reduce((sum, c) => {
+            const emp = db.personnel.find(e => e.employeeCode === c.employeeCode && e.periodId === c.periodId) || db.personnel.find(e => e.employeeCode === c.employeeCode);
+            return sum + (Number(getContractNetPayable(c, emp)) || 0);
+          }, 0);
 
         return (
-          <div className="space-y-6 animate-fade-in text-slate-100 font-sans" dir="rtl">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between bg-slate-900/95 p-5 rounded-3xl border border-slate-800 shadow-xl gap-4">
-              <div className="flex items-center gap-3">
-                <div className="bg-rose-500/10 p-3 rounded-xl border border-rose-500/20">
-                  <FileCheck className="h-5 w-5 text-rose-500" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-white">سامانه ثبت و صدور قراردادهای پرسنلی</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">مدیریت مکتوب قراردادهای کاری کارگاه، ارتباط خودکار با پرونده پرسنلی و چاپ حرفه‌ای نسخه آ۴ فیزیکی</p>
-                </div>
-              </div>
+          <div className="space-y-5 animate-fade-in text-slate-100 font-sans" dir="rtl">
+            {/* 4 SUMMARY STATS CARDS matching CustomerManagement */}
+            {!isContractFormOpen && (
+              <KpiStrip
+                items={[
+                  { label: 'کل قراردادهای دوره', value: toPersianDigits(periodContractsAll.length), sublabel: 'قرارداد ثبت‌شده', tone: 'default' },
+                  { label: 'قراردادهای فعال جاری', value: toPersianDigits(activeContractsCount), sublabel: 'در حال اجرا', tone: 'success' },
+                  { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning' },
+                  { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info' }
+                ]}
+              />
+            )}
 
-              <div className="flex flex-wrap items-center gap-2 self-stretch md:self-auto w-full md:w-auto">
-                {!isContractFormOpen ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setShowContractSettings(true)}
-                      className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-amber-500/30 whitespace-nowrap justify-center"
+            {!isContractFormOpen ? (
+              <div className="space-y-3">
+                <UnifiedToolbar
+                  searchValue={searchContractQuery}
+                  onSearchChange={setSearchContractQuery}
+                  searchPlaceholder="جستجو در نام پرسنل، کد پرسنلی یا سمت شغلی..."
+                  hasActiveFilters={Boolean(
+                    searchContractQuery ||
+                    onlyActiveContractsFilter ||
+                    selectedContractYear !== 'all' ||
+                    contractAgreementFilter !== 'all' ||
+                    groupByPersonnelContracts
+                  )}
+                  onClearFilters={() => {
+                    setSearchContractQuery('');
+                    setOnlyActiveContractsFilter(false);
+                    setSelectedContractYear('all');
+                    setContractAgreementFilter('all');
+                    setGroupByPersonnelContracts(false);
+                  }}
+                  onDownloadTemplate={downloadSampleContractsTemplate}
+                  onImportExcel={importContractsFile}
+                  importAccept=".xlsx,.xls,.csv"
+                  onExportExcel={() => {
+                    if (filteredContracts.length === 0) {
+                      alert('هیچ قراردادی برای خروجی اکسل یافت نشد.');
+                      return;
+                    }
+                    const filterTitle = selectedContractYear === 'all'
+                      ? (onlyActiveContractsFilter ? 'قراردادهای_فعال' : 'کلیه_قراردادها')
+                      : `سال_${selectedContractYear}${onlyActiveContractsFilter ? '_فعال' : ''}`;
+                    exportPersonnelContractsToExcel(filteredContracts, filterTitle);
+                  }}
+                  onPrint={() => printElement('contracts-printable-section', 'فهرست قراردادهای پرسنلی')}
+                  extraSecondaryActions={
+                    <>
+                      <ErpButton
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowContractSettings(true)}
+                        icon={<Settings className="h-3.5 w-3.5 text-amber-400" />}
+                      >
+                        تنظیمات متن
+                      </ErpButton>
+                      <ErpButton
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowBatchContractForm(!showBatchContractForm)}
+                        icon={<Layers className="h-3.5 w-3.5 text-emerald-400" />}
+                      >
+                        صدور دسته‌جمعی
+                      </ErpButton>
+                    </>
+                  }
+                  onAdd={() => {
+                    setShowBatchContractForm(false);
+                    handleNewContract();
+                  }}
+                  addLabel="افزودن قرارداد جدید"
+                />
+
+                <UnifiedFilterBar>
+                  <div>
+                    <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت قرارداد</label>
+                    <select
+                      value={onlyActiveContractsFilter ? 'active' : 'all'}
+                      onChange={(e) => setOnlyActiveContractsFilter(e.target.value === 'active')}
+                      className={UNIFIED_FILTER_SELECT_CLASS}
                     >
-                      <Settings className="h-3.5 w-3.5 text-amber-200" /> تنظیمات متن قراردادها
-                    </button>
+                      <option value="all">همه قراردادها ({toPersianDigits(periodContractsAll.length)})</option>
+                      <option value="active">فقط قراردادهای فعال ({toPersianDigits(activeContractsCount)})</option>
+                    </select>
+                  </div>
 
-                    {getPreviousPeriodId() && (
+                  <div>
+                    <label className={UNIFIED_FILTER_LABEL_CLASS}>سال مالی</label>
+                    <select
+                      value={selectedContractYear}
+                      onChange={(e) => setSelectedContractYear(e.target.value)}
+                      className={UNIFIED_FILTER_SELECT_CLASS}
+                    >
+                      <option value="all">همه سال‌ها</option>
+                      {contractYears.map(y => (
+                        <option key={y} value={y}>سال {toPersianDigits(y)}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={UNIFIED_FILTER_LABEL_CLASS}>نوع توافق و نمایش</label>
+                    <select
+                      value={`${contractAgreementFilter}:${groupByPersonnelContracts ? 'grouped' : 'flat'}`}
+                      onChange={(e) => {
+                        const [agr, grp] = e.target.value.split(':');
+                        setContractAgreementFilter(agr as 'all' | 'agreed' | 'standard');
+                        setGroupByPersonnelContracts(grp === 'grouped');
+                      }}
+                      className={UNIFIED_FILTER_SELECT_CLASS}
+                    >
+                      <option value="all:flat">همه قراردادها (عادی)</option>
+                      <option value="all:grouped">همه — دسته‌بندی بر اساس پرسنل</option>
+                      <option value="agreed:flat">فقط قراردادهای توافقی</option>
+                      <option value="standard:flat">فقط قراردادهای اداره کار</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={UNIFIED_FILTER_LABEL_CLASS}>مرتب‌سازی</label>
+                    <div className="flex gap-1">
+                      <select
+                        value={contractSortBy}
+                        onChange={(e) => setContractSortBy(e.target.value as any)}
+                        className={`flex-grow ${UNIFIED_FILTER_SELECT_CLASS}`}
+                      >
+                        <option value="startDate">تاریخ شروع</option>
+                        <option value="name">نام پرسنل</option>
+                        <option value="baseSalary">حقوق پایه روزانه</option>
+                        <option value="netPayable">خالص پرداختی</option>
+                      </select>
                       <button
                         type="button"
-                        onClick={handleCopyPersonnelContractsFromPreviousPeriod}
-                        className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30 whitespace-nowrap justify-center"
+                        onClick={() => setContractSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                        className="px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-slate-200 cursor-pointer"
+                        title={contractSortOrder === 'asc' ? 'صعودی' : 'نزولی'}
                       >
-                        <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی از دوره قبل
+                        <ArrowUpDown className="h-3.5 w-3.5" />
                       </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => setShowBatchContractForm(!showBatchContractForm)}
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-emerald-500/30 whitespace-nowrap justify-center"
-                    >
-                      <Layers className="h-3.5 w-3.5 text-emerald-200" /> صدور دسته‌جمعی
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowBatchContractForm(false);
-                        handleNewContract();
-                      }}
-                      className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md shadow-rose-900/30 whitespace-nowrap justify-center"
-                    >
-                      <Plus className="h-4 w-4" /> افزودن قرارداد جدید
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      resetContractFormFields();
-                      setIsContractFormOpen(false);
-                    }}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold border border-slate-700 whitespace-nowrap justify-center"
-                  >
-                    <ArrowRight className="h-4 w-4" /> بازگشت به لیست قراردادها
-                  </button>
-                )}
+                    </div>
+                  </div>
+                </UnifiedFilterBar>
               </div>
-            </div>
+            ) : (
+              <div className="bg-slate-900/95 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="bg-rose-500/10 p-2 rounded-xl border border-rose-500/20">
+                    <FileCheck className="h-4 w-4 text-rose-400" />
+                  </div>
+                  <span className="text-xs font-black text-white">ثبت / ویرایش قرارداد پرسنلی</span>
+                </div>
+                <ErpButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    resetContractFormFields();
+                    setIsContractFormOpen(false);
+                  }}
+                  icon={<ArrowRight className="h-4 w-4" />}
+                >
+                  بازگشت به لیست قراردادها
+                </ErpButton>
+              </div>
+            )}
 
             {!isContractFormOpen && showBatchContractForm && (
               <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-scaleIn shadow-xl">
@@ -20845,97 +21088,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               </div>
               ) : (
               /* Saved Contracts List Grid */
-              <div className="w-full bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
-                <div className="flex flex-col xl:flex-row items-start xl:items-center justify-between border-b border-slate-800/80 pb-3 mb-1 gap-3">
-                  <h4 className="text-xs font-black text-white uppercase tracking-widest border-r-4 border-rose-500 pr-2">
-                    کارتابل کلیه قراردادهای ثبت شده در این دوره ({toPersianDigits(filteredContracts.length)})
+              <div id="contracts-printable-section" className="w-full bg-slate-900/90 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+                <div className="px-5 py-3.5 bg-slate-950/70 border-b border-slate-800 flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-black text-slate-100 border-r-4 border-rose-500 pr-2.5">
+                    فهرست قراردادهای ثبت‌شده در دوره ({toPersianDigits(filteredContracts.length)} قرارداد)
                   </h4>
-                  
-                  <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
-                    {/* Button to toggle only active contracts filter */}
-                    <button
-                      type="button"
-                      onClick={() => setOnlyActiveContractsFilter(!onlyActiveContractsFilter)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
-                        onlyActiveContractsFilter
-                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-950/40'
-                          : 'bg-slate-950 hover:bg-slate-850 text-slate-300 hover:text-white border-slate-800'
-                      }`}
-                      title={onlyActiveContractsFilter ? 'در حال نمایش فقط قراردادهای فعال (جهت نمایش کلیه قراردادها کلیک کنید)' : 'کلیک جهت فیلتر و نمایش فقط قراردادهای فعال'}
-                    >
-                      <Filter className="h-3.5 w-3.5" />
-                      <span>فقط قراردادهای فعال</span>
-                      {onlyActiveContractsFilter && (
-                        <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse"></span>
-                      )}
-                    </button>
-
-                    {/* Button to toggle grouping by personnel */}
-                    <button
-                      type="button"
-                      onClick={() => setGroupByPersonnelContracts(!groupByPersonnelContracts)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
-                        groupByPersonnelContracts
-                          ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-500 shadow-md shadow-rose-950/40'
-                          : 'bg-slate-950 hover:bg-slate-850 text-slate-300 hover:text-white border-slate-800'
-                      }`}
-                      title="دسته‌بندی و نمایش پشت سر هم قراردادهای هر پرسنل"
-                    >
-                      <Users className="h-3.5 w-3.5" />
-                      <span>دسته‌بندی بر اساس پرسنل</span>
-                      {groupByPersonnelContracts && (
-                        <span className="w-2 h-2 rounded-full bg-rose-300 animate-pulse"></span>
-                      )}
-                    </button>
-
-                    {/* Financial Year Selector drop-down */}
-                    <div className="flex items-center gap-1.5 bg-slate-950 px-2 py-1 rounded-xl border border-slate-800">
-                      <span className="text-[10px] text-slate-400 whitespace-nowrap">سال مالی:</span>
-                      <select
-                        value={selectedContractYear}
-                        onChange={(e) => setSelectedContractYear(e.target.value)}
-                        className="bg-transparent border-none text-[10.5px] text-white focus:outline-none cursor-pointer font-bold"
-                      >
-                        <option value="all" className="bg-slate-900">نمایش همه سال‌ها</option>
-                        {contractYears.map(y => (
-                          <option key={y} value={y} className="bg-slate-900">سال {toPersianDigits(y)}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Button to export contracts to Excel (.xlsx) */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (filteredContracts.length === 0) {
-                          alert('هیچ قراردادی برای خروجی اکسل یافت نشد.');
-                          return;
-                        }
-                        const filterTitle = selectedContractYear === 'all' 
-                          ? (onlyActiveContractsFilter ? 'قراردادهای_فعال' : 'کلیه_قراردادها') 
-                          : `سال_${selectedContractYear}${onlyActiveContractsFilter ? '_فعال' : ''}`;
-                        exportPersonnelContractsToExcel(filteredContracts, filterTitle);
-                      }}
-                      className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white transition-all flex items-center gap-1.5 border border-emerald-600 shadow-md shadow-emerald-950/30 cursor-pointer"
-                      title="خروجی رسمی اکسل (.xlsx) کلیه قراردادهای نمایش داده شده در این لیست"
-                    >
-                      <FileSpreadsheet className="h-3.5 w-3.5" />
-                      <span>خروجی Excel قراردادها</span>
-                    </button>
-
-                    {/* Search filter in registered contracts list (Enlarged width) */}
-                    <div className="relative w-full sm:w-72">
-                      <Search className="absolute right-3 top-2 h-3.5 w-3.5 text-slate-500" />
-                      <input
-                        type="text"
-                        placeholder="جستجو در قراردادها (نام، کد، سمت)..."
-                        value={searchContractQuery}
-                        onChange={(e) => setSearchContractQuery(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-9 pl-3.5 py-1.5 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors shadow-sm"
-                      />
-                    </div>
-                  </div>
                 </div>
+                <div className="p-4">
 
                 {filteredContracts.length === 0 ? (
                   <div className="text-center py-12 bg-slate-950/40 rounded-2xl border border-slate-850/60 text-slate-500">
@@ -21084,6 +21243,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </table>
                   </div>
                 )}
+                </div>
               </div>
               )}
 
@@ -22284,6 +22444,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         month={calcMonth}
         activePeriodId={activePeriodId}
       />
+
+      </div>
 
       <CopyFromPeriodModal
         open={showCopyModal}

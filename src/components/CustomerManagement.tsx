@@ -698,10 +698,27 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
             { id: 'categories', label: 'گروه‌های مشتریان', icon: <Layers className="h-4 w-4" />, count: categories.length },
           ]}
         />
+      </div>
 
-        {/* 4 SUMMARY STATS CARDS (Shown on Customer Directory / Form / Categories tabs) */}
-        {activeSubTab !== 'orders' && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5 mt-4 sm:mt-6 pt-3.5 sm:pt-5 border-t border-slate-800/80 relative z-10">
+      {/* ========================================================================= */}
+      {/* 0. CUSTOMER PRODUCTION ORDERS VIEW (DEFAULT LANDING PAGE)                 */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'orders' && (
+        <CustomerProductionOrders
+          db={db}
+          onUpdateDb={onUpdateDb}
+          activePeriodId={activePeriodId}
+          currentUserName={currentUserName}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* 1. CUSTOMER DIRECTORY VIEW */}
+      {/* ========================================================================= */}
+      {activeSubTab === 'list' && (
+        <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+          {/* 4 SUMMARY STATS CARDS (Matching CustomerProductionOrders placement) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
             <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
               <span className="text-[11px] text-slate-400 block mb-1">کل مشتریان ثبت‌شده</span>
               <div className="flex items-baseline justify-between">
@@ -734,26 +751,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
               </div>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* ========================================================================= */}
-      {/* 0. CUSTOMER PRODUCTION ORDERS VIEW (DEFAULT LANDING PAGE)                 */}
-      {/* ========================================================================= */}
-      {activeSubTab === 'orders' && (
-        <CustomerProductionOrders
-          db={db}
-          onUpdateDb={onUpdateDb}
-          activePeriodId={activePeriodId}
-          currentUserName={currentUserName}
-        />
-      )}
-
-      {/* ========================================================================= */}
-      {/* 1. CUSTOMER DIRECTORY VIEW */}
-      {/* ========================================================================= */}
-      {activeSubTab === 'list' && (
-        <div className="space-y-4">
           {/* SEARCH, FILTERS & EXPORT TOOLBAR */}
           <div className="space-y-3">
             <UnifiedToolbar
@@ -778,7 +776,7 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
             <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800">
 
             {/* FILTERS ROW */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-slate-800/60">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               {/* Category Filter */}
               <div>
                 <label className="block text-[10px] font-bold text-slate-400 mb-1">گروه مشتری</label>

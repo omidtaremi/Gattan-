@@ -18,11 +18,25 @@ import {
   toEnglishDigits,
   formatWithCommas,
   parseNumber,
+  printElement,
   printThermalReceipt,
   buildThermalReceiptDocumentHtml,
   matchPersianString,
   getTodayJalali
 } from '../utils/persianUtils';
+import {
+  downloadTemplateExcel,
+  exportRowsToExcel,
+  readSpreadsheetRows,
+  pickRowField
+} from '../utils/tableIoUtils';
+import {
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+  ErpButton
+} from './ui/UnifiedErpUi';
 import {
   enqueuePosPrintJob,
   fetchPrintQueueState,
@@ -1617,72 +1631,178 @@ export default function CustomerProductionOrders({
   };
 
   // ==================== RENDER ====================
+  const handleDownloadOrdersTemplate = () => {
+    downloadTemplateExcel(
+      [
+        'شماره سفارش',
+        'نام مشتری',
+        'تلفن مشتری',
+        'تاریخ تحویل',
+        'ساعت تحویل',
+        'نحوه تحویل',
+        'عنوان محصول',
+        'دپارتمان تولید',
+        'تعداد',
+        'واحد',
+        'مبلغ کل (ریال)',
+        'پیش‌پرداخت (ریال)',
+        'توضیحات'
+      ],
+      [
+        {
+          'شماره سفارش': 'PO-1405-001',
+          'نام مشتری': 'مشتری نمونه',
+          'تلفن مشتری': '09120000000',
+          'تاریخ تحویل': getTodayJalali(),
+          'ساعت تحویل': '17:00',
+          'نحوه تحویل': 'حضوری',
+          'عنوان محصول': 'کیک تولد وانیلی',
+          'دپارتمان تولید': filterDepartments[0]?.name || 'قنادی',
+          'تعداد': 1,
+          'واحد': 'عدد',
+          'مبلغ کل (ریال)': 15000000,
+          'پیش‌پرداخت (ریال)': 5000000,
+          'توضیحات': ''
+        }
+      ],
+      'سفارشات_تولید',
+      'نمونه_سفارشات_تولید_مشتریان.xlsx'
+    );
+  };
+
+  const handleExportOrdersExcel = () => {
+    const rows = filteredOrders.map(o => ({
+      'شماره سفارش': o.orderNumber,
+      'نام مشتری': o.customerName,
+      'تلفن مشتری': o.customerPhone,
+      'تاریخ ثبت': o.orderDate,
+      'تاریخ تحویل': o.deliveryDate,
+      'ساعت تحویل': o.deliveryTime,
+      'نحوه تحویل': o.deliveryType === 'delivery' ? 'ارسال با پیک' : 'تحویل حضوری',
+      'اقلام سفارش': (o.items || []).map(it => `${it.productName} (${it.quantity} ${it.unit})`).join(' | '),
+      'دپارتمان‌ها': Array.from(new Set((o.items || []).map(it => it.departmentName))).join('، '),
+      'مبلغ کل (ریال)': o.totalAmount || 0,
+      'پیش‌پرداخت (ریال)': o.prepaymentAmount || 0,
+      'مانده (ریال)': o.remainingAmount || 0,
+      'وضعیت': o.status,
+      'توضیحات': o.notes || ''
+    }));
+    exportRowsToExcel(rows, 'سفارشات_تولید', 'فهرست_سفارشات_تولید_مشتریان.xlsx');
+  };
+
+  const handleImportOrdersFile = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        showToast('فایل انتخابی خالی است یا ردیف معتبری ندارد.', 'warning');
+        return;
+      }
+      const existing = [...(db.customerProductionOrders || [])];
+      let added = 0;
+      const nowIso = new Date().toISOString();
+
+      rows.forEach(row => {
+        const customerName = pickRowField(row, ['نام مشتری', 'مشتری', 'customerName']);
+        const productName = pickRowField(row, ['عنوان محصول', 'محصول', 'productName']);
+        if (!customerName || !productName) return;
+        const phone = pickRowField(row, ['تلفن مشتری', 'تلفن', 'موبایل', 'customerPhone']) || '';
+        const deliveryDate = toEnglishDigits(pickRowField(row, ['تاریخ تحویل', 'deliveryDate'])) || getTodayJalali();
+        const deliveryTime = toEnglishDigits(pickRowField(row, ['ساعت تحویل', 'deliveryTime'])) || '17:00';
+        const deliveryRaw = pickRowField(row, ['نحوه تحویل', 'deliveryType']);
+        const deliveryType: 'pickup' | 'delivery' = deliveryRaw.includes('پیک') || deliveryRaw.includes('ارسال') ? 'delivery' : 'pickup';
+        const deptName = pickRowField(row, ['دپارتمان تولید', 'دپارتمان', 'departmentName']) || filterDepartments[0]?.name || 'عمومی';
+        const matchedDept = filterDepartments.find(d => d.name === deptName);
+        const qty = Math.max(1, parseNumber(pickRowField(row, ['تعداد', 'quantity'])) || 1);
+        const unit = pickRowField(row, ['واحد', 'unit']) || 'عدد';
+        const totalAmount = Math.max(0, parseNumber(pickRowField(row, ['مبلغ کل (ریال)', 'مبلغ کل', 'totalAmount'])) || 0);
+        const prepaymentAmount = Math.max(0, parseNumber(pickRowField(row, ['پیش‌پرداخت (ریال)', 'پیش پرداخت', 'prepaymentAmount'])) || 0);
+        const notes = pickRowField(row, ['توضیحات', 'notes']);
+        const orderNumber = pickRowField(row, ['شماره سفارش', 'orderNumber']) || `PO-${nextSimpleId(existing, 'cpo')}`;
+
+        const newOrder: CustomerProductionOrder = {
+          id: nextSimpleId(existing, 'cpo'),
+          orderNumber,
+          periodId: activePeriodId,
+          customerName,
+          customerPhone: phone,
+          orderDate: getTodayJalali(),
+          deliveryDate,
+          deliveryTime,
+          deliveryType,
+          items: [
+            {
+              lineId: `ln-${Date.now()}-${added}`,
+              productName,
+              departmentId: matchedDept?.id || 'unassigned',
+              departmentName: matchedDept?.name || deptName,
+              quantity: qty,
+              unit,
+              needsInscription: false,
+              sampleImages: [],
+              estimatedUnitPrice: qty > 0 ? Math.round(totalAmount / qty) : totalAmount,
+              totalPrice: totalAmount,
+              itemStatus: 'registered'
+            }
+          ],
+          totalAmount,
+          prepaymentAmount,
+          remainingAmount: Math.max(0, totalAmount - prepaymentAmount),
+          status: 'registered',
+          notes,
+          registeredBy: currentUserName,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        existing.push(newOrder);
+        added++;
+      });
+
+      if (added === 0) {
+        showToast('هیچ سفارش معتبری با نام مشتری و عنوان محصول در فایل یافت نشد.', 'warning');
+        return;
+      }
+      onUpdateDb({ ...db, customerProductionOrders: existing });
+      showToast(`${toPersianDigits(added)} سفارش تولید با موفقیت وارد شد.`, 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('خطا در خواندن فایل اکسل سفارشات تولید.', 'warning');
+    }
+  };
+
   return (
     <div
-      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right"
+      className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right"
       dir="rtl"
     >
-      {/* MODULE HEADER */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 shrink-0">
-            <ChefHat className="h-5 w-5 sm:h-6 sm:w-6" />
+      {viewMode === 'form' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-2xl bg-rose-500/10 text-rose-400 border border-rose-500/20 shrink-0">
+              <ChefHat className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-black text-white">
+                ثبت / ویرایش سفارش تولید مشتری
+              </h2>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                ثبت اقلام سفارشی با عکس نمونه، جمله روی محصول، بیعانه و ارسال به دپارتمان تولید
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white tracking-tight">
-              سفارشات تولید مشتریان و کارتابل دپارتمان‌ها
-            </h2>
-            <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              ثبت سفارش اختصاصی مشتریان (کیک، نان، شیرینی، فینگرفود) با عکس نمونه، جمله روی محصول، هدف سفارش، بیعانه و ارسال به دپارتمان تولید
-            </p>
-          </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setIsPrintQueueOpen(true)}
-            className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-2 cursor-pointer whitespace-nowrap"
-            title="مدیریت صف چاپ و نصب سرویس فیش‌پرینتر Sewoo 100 روی ویندوز ۱۰ صندوق"
+          <ErpButton
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              resetForm();
+              setViewMode('board');
+            }}
+            icon={<ClipboardList className="h-4 w-4" />}
           >
-            <span
-              className={`h-2 w-2 rounded-full shrink-0 ${
-                printStation?.online ? 'bg-emerald-500' : 'bg-slate-400'
-              }`}
-            />
-            <Printer className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span>صف چاپ صندوق</span>
-            {(printStation?.pendingCount || 0) > 0 && (
-              <span className="px-1.5 py-0.5 rounded-md bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 text-[10px] font-black">
-                {toPersianDigits(printStation?.pendingCount || 0)}
-              </span>
-            )}
-          </button>
-
-          {viewMode === 'form' ? (
-            <button
-              type="button"
-              onClick={() => {
-                resetForm();
-                setViewMode('board');
-              }}
-              className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-            >
-              <ClipboardList className="h-4 w-4" />
-              <span>بازگشت به لیست و کارتابل سفارش‌ها</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={openNewOrderForm}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="h-4 w-4 shrink-0" />
-              <span>ثبت سفارش تولید جدید</span>
-            </button>
-          )}
+            بازگشت به لیست و کارتابل سفارش‌ها
+          </ErpButton>
         </div>
-      </div>
+      )}
 
       {/* INLINE TOAST */}
       {toast && (
@@ -1757,123 +1877,95 @@ export default function CustomerProductionOrders({
             </div>
           </div>
 
-          {/* Department Filter Strip + Status & Date Controls */}
-          <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-4 space-y-3">
-            {/* Department Filter */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-extrabold text-slate-600 dark:text-slate-400 ml-1 flex items-center gap-1">
-                <Building2 className="h-3.5 w-3.5" />
-                دپارتمان تولید:
-              </span>
-              <button
-                type="button"
-                onClick={() => setSelectedDepartmentFilter('ALL')}
-                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap ${
-                  selectedDepartmentFilter === 'ALL'
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-emerald-400'
-                }`}
-              >
-                همه دپارتمان‌ها ({toPersianDigits(boardStats.activeCount)})
-              </button>
-              {filterDepartments.map(dept => {
-                const count = boardStats.activeLineCountByDept[dept.id] || 0;
-                return (
-                  <button
-                    key={dept.id}
-                    type="button"
-                    onClick={() => setSelectedDepartmentFilter(dept.id)}
-                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                      selectedDepartmentFilter === dept.id
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-emerald-400'
-                    }`}
-                  >
-                    <span>{dept.name}</span>
-                    {count > 0 && (
-                      <span
-                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
-                          selectedDepartmentFilter === dept.id
-                            ? 'bg-white/20 text-white'
-                            : 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                        }`}
-                      >
-                        {toPersianDigits(count)}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+          {/* Unified Toolbar & Filter Bar matching CustomerManagement */}
+          <div className="space-y-3">
+            <UnifiedToolbar
+              searchValue={boardSearch}
+              onSearchChange={setBoardSearch}
+              searchPlaceholder="جستجوی نام مشتری، تلفن، کد سفارش، نام محصول یا جمله روی محصول..."
+              hasActiveFilters={Boolean(
+                boardSearch ||
+                selectedDepartmentFilter !== 'ALL' ||
+                selectedStatusFilter !== 'active' ||
+                selectedDateRange !== 'all'
+              )}
+              onClearFilters={() => {
+                setBoardSearch('');
+                setSelectedDepartmentFilter('ALL');
+                setSelectedStatusFilter('active');
+                setSelectedDateRange('all');
+              }}
+              onDownloadTemplate={handleDownloadOrdersTemplate}
+              onImportExcel={handleImportOrdersFile}
+              importAccept=".xlsx,.xls,.csv"
+              onExportExcel={handleExportOrdersExcel}
+              onPrint={() => printElement('customer-orders-printable-section', 'کارتابل سفارشات تولید مشتریان')}
+              extraSecondaryActions={
+                <ErpButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setIsPrintQueueOpen(true)}
+                  icon={<Printer className="h-3.5 w-3.5 text-emerald-400" />}
+                >
+                  صف چاپ صندوق
+                  {(printStation?.pendingCount || 0) > 0 ? ` (${toPersianDigits(printStation?.pendingCount || 0)})` : ''}
+                </ErpButton>
+              }
+              onAdd={openNewOrderForm}
+              addLabel="ثبت سفارش تولید جدید"
+            />
 
-            {/* Search, Status & Delivery Window */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 pt-2.5 border-t border-slate-200 dark:border-slate-800">
-              <div className="relative lg:col-span-5">
-                <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                  <Search className="h-4 w-4 text-slate-400" />
-                </span>
-                <input
-                  type="text"
-                  value={boardSearch}
-                  onChange={e => setBoardSearch(e.target.value)}
-                  placeholder="جستجوی نام مشتری، تلفن، کد سفارش، نام محصول یا جمله روی محصول..."
-                  className="w-full pr-10 pl-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
-                />
+            <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>دپارتمان تولید</label>
+                <select
+                  value={selectedDepartmentFilter}
+                  onChange={e => setSelectedDepartmentFilter(e.target.value)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="ALL">همه دپارتمان‌ها ({toPersianDigits(boardStats.activeCount)})</option>
+                  {filterDepartments.map(dept => (
+                    <option key={dept.id} value={dept.id}>
+                      {dept.name} ({toPersianDigits(boardStats.activeLineCountByDept[dept.id] || 0)})
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="lg:col-span-4 flex flex-wrap bg-slate-200/70 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 gap-1">
-                {(
-                  [
-                    { key: 'active', label: 'فعال‌ها' },
-                    { key: 'registered', label: 'ثبت‌شده' },
-                    { key: 'in_production', label: 'در تولید' },
-                    { key: 'ready', label: 'آماده' },
-                    { key: 'delivered', label: 'تحویل‌شده' },
-                    { key: 'all', label: 'همه' }
-                  ] as const
-                ).map(st => (
-                  <button
-                    key={st.key}
-                    type="button"
-                    onClick={() => setSelectedStatusFilter(st.key)}
-                    className={`flex-1 px-2 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer whitespace-nowrap ${
-                      selectedStatusFilter === st.key
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    {st.label}
-                  </button>
-                ))}
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت سفارش</label>
+                <select
+                  value={selectedStatusFilter}
+                  onChange={e => setSelectedStatusFilter(e.target.value as any)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="active">سفارش‌های فعال</option>
+                  <option value="registered">ثبت‌شده</option>
+                  <option value="in_production">در حال تولید</option>
+                  <option value="ready">آماده تحویل</option>
+                  <option value="delivered">تحویل‌شده</option>
+                  <option value="all">همه وضعیت‌ها</option>
+                </select>
               </div>
 
-              <div className="lg:col-span-3 flex bg-slate-200/70 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 gap-1">
-                {(
-                  [
-                    { key: 'all', label: 'همه تاریخ‌ها' },
-                    { key: 'today', label: 'امروز' },
-                    { key: 'tomorrow', label: 'فردا' },
-                    { key: 'week', label: '۷ روز' }
-                  ] as const
-                ).map(dr => (
-                  <button
-                    key={dr.key}
-                    type="button"
-                    onClick={() => setSelectedDateRange(dr.key)}
-                    className={`flex-1 px-2 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer whitespace-nowrap ${
-                      selectedDateRange === dr.key
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    {dr.label}
-                  </button>
-                ))}
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>بازه تاریخ تحویل</label>
+                <select
+                  value={selectedDateRange}
+                  onChange={e => setSelectedDateRange(e.target.value as any)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="all">همه تاریخ‌ها</option>
+                  <option value="today">تحویل امروز</option>
+                  <option value="tomorrow">تحویل فردا</option>
+                  <option value="week">۷ روز آینده</option>
+                </select>
               </div>
-            </div>
+            </UnifiedFilterBar>
           </div>
 
           {/* Orders List */}
+          <div id="customer-orders-printable-section">
           {filteredOrders.length === 0 ? (
             <div className="py-14 px-4 text-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-3">
               <ChefHat className="h-10 w-10 mx-auto text-slate-400 dark:text-slate-600" />
@@ -2245,6 +2337,7 @@ export default function CustomerProductionOrders({
               })}
             </div>
           )}
+          </div>
         </div>
       )}
 

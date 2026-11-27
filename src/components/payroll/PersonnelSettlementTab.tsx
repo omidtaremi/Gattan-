@@ -22,8 +22,20 @@ import {
   Edit3, CheckCircle2, AlertCircle, Calendar, DollarSign, Users, 
   Briefcase, ShieldAlert, CreditCard, ArrowRight, ChevronDown, ChevronUp, 
   Sparkles, Clock, Receipt, X, FileCheck, HelpCircle, Layers, Check, RotateCcw,
-  Eye, Copy, ZoomIn, ZoomOut, Maximize2, Building2, ShieldCheck
+  Eye, Copy, ZoomIn, ZoomOut, Maximize2, Building2, ShieldCheck, ArrowUpDown
 } from 'lucide-react';
+import {
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+  ErpButton
+} from '../ui/UnifiedErpUi';
+import {
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField
+} from '../../utils/tableIoUtils';
 import { getInsuredSalaryItemsForContract, getTaxableSalaryItemsForContract, getSalaryBaseRateForContract } from '../PayrollManagement';
 import {
   addDaysToJalali,
@@ -274,6 +286,8 @@ export default function PersonnelSettlementTab({
 }: PersonnelSettlementTabProps) {
   // Filters & State
   const [searchQuery, setSearchQuery] = useState('');
+  const [settlementSortBy, setSettlementSortBy] = useState<'date' | 'net' | 'name' | 'no'>('date');
+  const [settlementSortOrder, setSettlementSortOrder] = useState<'asc' | 'desc'>('desc');
   const [reasonFilter, setReasonFilter] = useState<'all' | SettlementReason>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'finalized' | 'paid'>('all');
 
@@ -2511,125 +2525,226 @@ export default function PersonnelSettlementTab({
     window.print();
   };
 
-  return (
-    <div className="space-y-6 text-slate-100 font-sans" dir="rtl">
-      {/* Background Dashboard & Form Sections (hidden in print when preview is active) */}
-      <div className={printingSettlement ? 'print:hidden space-y-6' : 'space-y-6'}>
-        {/* Top Header & Overview */}
-      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between bg-slate-950 p-6 rounded-2xl border border-slate-850 gap-4 shadow-xl">
-        <div className="flex items-center gap-3.5">
-          <div className="bg-rose-500/15 p-3 rounded-2xl border border-rose-500/30 text-rose-400">
-            <Calculator className="h-7 w-7" />
-          </div>
-          <div>
-            <h2 className="text-lg font-black text-white flex items-center gap-2">
-              سامانه جامع تسویه حساب پرسنل و پایان همکاری
-              <span className="text-[11px] font-normal px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                منطبق با قانون کار و تامین اجتماعی
-              </span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              محاسبه حقوق ماه به ماه، ثوابت دستمزد، ماه‌های ۳۱ روزه، سنوات، عیدی و پاداش، بازخرید مرخصی، خرید دوره و کسورات
-            </p>
-          </div>
-        </div>
+  const handleDownloadSettlementTemplate = () => {
+    downloadTemplateExcel(
+      [
+        'شماره تسویه',
+        'کد پرسنلی',
+        'تاریخ شروع',
+        'تاریخ پایان',
+        'علت قطع همکاری',
+        'وضعیت',
+        'مبلغ قابل پرداخت (ریال)',
+        'توضیحات'
+      ],
+      [
+        {
+          'شماره تسویه': 'SET-1405-001',
+          'کد پرسنلی': '101',
+          'تاریخ شروع': '1405/01/01',
+          'تاریخ پایان': '1405/06/31',
+          'علت قطع همکاری': 'اتمام قرارداد',
+          'وضعیت': 'پیش‌نویس',
+          'مبلغ قابل پرداخت (ریال)': 0,
+          'توضیحات': ''
+        }
+      ],
+      'تسویه_حساب',
+      'نمونه_تسویه_حساب_پرسنل.xlsx'
+    );
+  };
 
-        <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
-          {!showModal ? (
-            <>
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-850 text-xs font-bold text-slate-200 rounded-xl border border-slate-750 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
-                title="دانلود فایل رسمی اکسل (.xlsx) تسویه حساب‌های پرسنل"
-              >
-                <Download className="h-4 w-4 text-emerald-400" />
-                خروجی اکسل (.xlsx)
-              </button>
-              
-              <button
-                type="button"
-                onClick={() => handleOpenAdd()}
-                className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-rose-600/25 border border-rose-500/40"
-              >
-                <Plus className="h-4 w-4" />
-                افزودن / صدور تسویه حساب جدید
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
+  const handleImportSettlementsFile = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        alert('فایل انتخابی خالی است یا ردیف معتبری ندارد.');
+        return;
+      }
+      const existing = [...(db.personnelSettlements || [])];
+      let added = 0;
+      rows.forEach(row => {
+        const empCode = toEnglishDigits(pickRowField(row, ['کد پرسنلی', 'employeeCode', 'کد'])).trim();
+        if (!empCode) return;
+        const emp = personnelList.find(p => p.employeeCode === empCode);
+        const startDate = toEnglishDigits(pickRowField(row, ['تاریخ شروع', 'startDate'])) || getTodayJalali();
+        const endDate = toEnglishDigits(pickRowField(row, ['تاریخ پایان', 'endDate'])) || getTodayJalali();
+        const reasonStr = pickRowField(row, ['علت قطع همکاری', 'علت', 'reason']);
+        const reason: SettlementReason = mapPersianReasonToSettlementReason(reasonStr) || 'contract_end';
+        const statusStr = pickRowField(row, ['وضعیت', 'status']);
+        const status: 'draft' | 'finalized' | 'paid' =
+          statusStr.includes('پرداخت') ? 'paid' : statusStr.includes('قطعی') ? 'finalized' : 'draft';
+        const finalNet = parseNumber(pickRowField(row, ['مبلغ قابل پرداخت (ریال)', 'مبلغ قابل پرداخت', 'finalNetPayable'])) || 0;
+        const settlementNo = pickRowField(row, ['شماره تسویه', 'settlementNo']) || nextSimpleId(existing, getPrefixForCollection('personnelSettlements'));
+        const notes = pickRowField(row, ['توضیحات', 'notes']);
+
+        const newItem: PersonnelSettlement = {
+          id: nextSimpleId(existing, getPrefixForCollection('personnelSettlements')),
+          periodId: activePeriodId,
+          settlementNo,
+          employeeCode: empCode,
+          employeeName: emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim()) : empCode,
+          settlementDate: getTodayJalali(),
+          startDate,
+          endDate,
+          reason,
+          settlementType: 'with_departure',
+          status,
+          totalWorkedDays: 0,
+          monthlyDetails: [],
+          totalGrossSalary: 0,
+          totalDeductionsAndIns: 0,
+          totalNetMonthlySalaries: 0,
+          severancePay: 0,
+          eidBonus: 0,
+          unusedLeaveDays: 0,
+          unusedLeavePay: 0,
+          totalPaidBefore: 0,
+          totalPurchasedItems: 0,
+          otherAdditions: 0,
+          otherDeductions: 0,
+          finalNetPayable: finalNet,
+          notes,
+          createdAt: new Date().toISOString()
+        } as unknown as PersonnelSettlement;
+        existing.push(newItem);
+        added++;
+      });
+
+      if (added === 0) {
+        alert('هیچ سند تسویه معتبری در فایل یافت نشد.');
+        return;
+      }
+      onUpdateDb({ ...db, personnelSettlements: existing });
+      alert(`${toPersianDigits(added)} سند تسویه حساب با موفقیت از فایل وارد شد.`);
+    } catch (err) {
+      console.error(err);
+      alert('خطا در خواندن فایل اکسل تسویه حساب.');
+    }
+  };
+
+  const sortedFilteredSettlements = [...filteredSettlements].sort((a, b) => {
+    let cmp = 0;
+    if (settlementSortBy === 'net') {
+      cmp = (a.finalNetPayable || 0) - (b.finalNetPayable || 0);
+    } else if (settlementSortBy === 'name') {
+      const empA = personnelList.find(p => p.employeeCode === a.employeeCode);
+      const empB = personnelList.find(p => p.employeeCode === b.employeeCode);
+      const nameA = empA ? (empA.fullName || `${empA.firstName || ''} ${empA.lastName || ''}`) : a.employeeCode;
+      const nameB = empB ? (empB.fullName || `${empB.firstName || ''} ${empB.lastName || ''}`) : b.employeeCode;
+      cmp = nameA.localeCompare(nameB, 'fa');
+    } else if (settlementSortBy === 'no') {
+      cmp = String(a.settlementNo || '').localeCompare(String(b.settlementNo || ''));
+    } else {
+      cmp = String(a.endDate || a.settlementDate || '').localeCompare(String(b.endDate || b.settlementDate || ''));
+    }
+    return settlementSortOrder === 'asc' ? cmp : -cmp;
+  });
+
+  return (
+    <div className="space-y-5 text-slate-100 font-sans" dir="rtl">
+      {/* Background Dashboard & Form Sections (hidden in print when preview is active) */}
+      <div className={printingSettlement ? 'print:hidden space-y-5' : 'space-y-5'}>
+        {showModal && (
+          <div className="flex items-center justify-between bg-slate-900/95 p-4 rounded-2xl border border-slate-800 gap-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <div className="bg-rose-500/10 p-2 rounded-xl border border-rose-500/20 text-rose-400">
+                <Calculator className="h-4 w-4" />
+              </div>
+              <span className="text-xs font-black text-white">صدور / ویرایش سند تسویه حساب پرسنل</span>
+            </div>
+            <ErpButton
+              variant="secondary"
+              size="sm"
               onClick={handleCloseModal}
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-black text-slate-200 rounded-xl border border-slate-700 transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+              icon={<RotateCcw className="h-4 w-4" />}
             >
-              <RotateCcw className="h-4 w-4" />
               بازگشت به لیست تسویه حساب‌ها
-            </button>
-          )}
-        </div>
-      </div>
+            </ErpButton>
+          </div>
+        )}
 
       {!showModal && (
         <>
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-          <span className="text-[11px] text-slate-400 block font-medium">تعداد اسناد تسویه</span>
-          <span className="text-lg font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          <span className="text-[10px] text-slate-400 mt-0.5 block">در این دوره</span>
+      {/* Stats Cards matching CustomerManagement */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+          <span className="text-[11px] text-slate-400 block font-bold mb-1">تعداد اسناد تسویه</span>
+          <div className="flex items-baseline justify-between">
+            <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(stats.totalCount)}</span>
+            <span className="text-[10px] text-slate-500">سند</span>
+          </div>
         </div>
 
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-          <span className="text-[11px] text-slate-400 block font-medium">مجموع حقوق و مزایا</span>
-          <span className="text-sm font-black text-amber-300 mt-1 block">{formatWithCommas(stats.totalGross)}</span>
-          <span className="text-[10px] text-slate-400 mt-0.5 block">ریال ناخالص</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+          <span className="text-[11px] text-amber-400 block font-bold mb-1">مجموع حقوق و مزایا</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm font-black text-amber-400 font-mono truncate">{formatWithCommas(stats.totalGross)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
+          </div>
         </div>
 
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-          <span className="text-[11px] text-slate-400 block font-medium">مجموع سنوات خدمت</span>
-          <span className="text-sm font-black text-sky-400 mt-1 block">{formatWithCommas(stats.totalSeverance)}</span>
-          <span className="text-[10px] text-slate-400 mt-0.5 block">ماده ۲۴ قانون کار</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+          <span className="text-[11px] text-cyan-400 block font-bold mb-1">مجموع سنوات خدمت</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm font-black text-cyan-400 font-mono truncate">{formatWithCommas(stats.totalSeverance)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
+          </div>
         </div>
 
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-          <span className="text-[11px] text-slate-400 block font-medium">مجموع عیدی و پاداش</span>
-          <span className="text-sm font-black text-emerald-400 mt-1 block">{formatWithCommas(stats.totalBonus)}</span>
-          <span className="text-[10px] text-slate-400 mt-0.5 block">به نسبت کارکرد دوره</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+          <span className="text-[11px] text-emerald-400 block font-bold mb-1">مجموع عیدی و پاداش</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm font-black text-emerald-400 font-mono truncate">{formatWithCommas(stats.totalBonus)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
+          </div>
         </div>
 
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
-          <span className="text-[11px] text-slate-400 block font-medium">مجموع بازخرید مرخصی</span>
-          <span className="text-sm font-black text-indigo-400 mt-1 block">{formatWithCommas(stats.totalUnusedLeave)}</span>
-          <span className="text-[10px] text-slate-400 mt-0.5 block">ماده ۶۴ قانون کار</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+          <span className="text-[11px] text-indigo-400 block font-bold mb-1">بازخرید مرخصی</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm font-black text-indigo-400 font-mono truncate">{formatWithCommas(stats.totalUnusedLeave)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
+          </div>
         </div>
 
-        <div className="bg-slate-950 p-4 rounded-xl border border-rose-900/40 bg-rose-950/20">
-          <span className="text-[11px] text-rose-300 block font-bold">خالص کل قابل پرداخت</span>
-          <span className="text-sm font-black text-white mt-1 block">{formatWithCommas(stats.totalFinalNet)}</span>
-          <span className="text-[10px] text-rose-400 mt-0.5 block">ریال پس از تمام کسورات</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-rose-500/30">
+          <span className="text-[11px] text-rose-400 block font-bold mb-1">خالص قابل پرداخت</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm font-black text-rose-300 font-mono truncate">{formatWithCommas(stats.totalFinalNet)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
+          </div>
         </div>
       </div>
 
-      {/* Filters Toolbar */}
-      <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-850 flex flex-col md:flex-row items-center justify-between gap-3">
-        <div className="relative flex-1 w-full md:w-auto">
-          <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <input
-            type="text"
-            placeholder="جستجو در اسناد تسویه بر اساس نام پرسنل، کد ملی، شماره تسویه..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-800 rounded-lg pr-9 pl-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-hidden focus:border-rose-500"
-          />
-        </div>
+      {/* Unified Toolbar & Filter Bar matching CustomerManagement */}
+      <div className="space-y-3">
+        <UnifiedToolbar
+          searchValue={searchQuery}
+          onSearchChange={setSearchQuery}
+          searchPlaceholder="جستجو در نام پرسنل، کد پرسنلی یا شماره تسویه..."
+          hasActiveFilters={Boolean(searchQuery || reasonFilter !== 'all' || statusFilter !== 'all')}
+          onClearFilters={() => {
+            setSearchQuery('');
+            setReasonFilter('all');
+            setStatusFilter('all');
+          }}
+          onDownloadTemplate={handleDownloadSettlementTemplate}
+          onImportExcel={handleImportSettlementsFile}
+          importAccept=".xlsx,.xls,.csv"
+          onExportExcel={handleExportExcel}
+          onPrint={() => printElement('settlements-printable-section', 'فهرست اسناد تسویه حساب پرسنل')}
+          onAdd={() => handleOpenAdd()}
+          addLabel="افزودن تسویه حساب جدید"
+        />
 
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-          <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 text-xs">
-            <span className="text-slate-400 text-[11px]">علت:</span>
+        <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+          <div>
+            <label className={UNIFIED_FILTER_LABEL_CLASS}>علت قطع همکاری</label>
             <select
               value={reasonFilter}
               onChange={e => setReasonFilter(e.target.value as any)}
-              className="bg-transparent text-slate-200 border-none outline-hidden text-xs cursor-pointer"
+              className={UNIFIED_FILTER_SELECT_CLASS}
             >
               <option value="all">همه علت‌ها</option>
               <option value="contract_end">اتمام قرارداد</option>
@@ -2639,12 +2754,12 @@ export default function PersonnelSettlementTab({
             </select>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 text-xs">
-            <span className="text-slate-400 text-[11px]">وضعیت:</span>
+          <div>
+            <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت سند</label>
             <select
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value as any)}
-              className="bg-transparent text-slate-200 border-none outline-hidden text-xs cursor-pointer"
+              className={UNIFIED_FILTER_SELECT_CLASS}
             >
               <option value="all">همه وضعیت‌ها</option>
               <option value="draft">پیش‌نویس</option>
@@ -2652,14 +2767,38 @@ export default function PersonnelSettlementTab({
               <option value="paid">پرداخت شده</option>
             </select>
           </div>
-        </div>
+
+          <div>
+            <label className={UNIFIED_FILTER_LABEL_CLASS}>مرتب‌سازی</label>
+            <div className="flex gap-1">
+              <select
+                value={settlementSortBy}
+                onChange={e => setSettlementSortBy(e.target.value as any)}
+                className={`flex-grow ${UNIFIED_FILTER_SELECT_CLASS}`}
+              >
+                <option value="date">تاریخ پایان / تسویه</option>
+                <option value="net">مبلغ قابل پرداخت</option>
+                <option value="name">نام پرسنل</option>
+                <option value="no">شماره سند</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSettlementSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                className="px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-slate-200 cursor-pointer"
+                title={settlementSortOrder === 'asc' ? 'صعودی' : 'نزولی'}
+              >
+                <ArrowUpDown className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </UnifiedFilterBar>
       </div>
 
       {/* Settlements Table */}
-      <div className="bg-slate-950 rounded-2xl border border-slate-850 overflow-hidden shadow-xl">
+      <div id="settlements-printable-section" className="bg-slate-900/90 rounded-3xl border border-slate-800 overflow-hidden shadow-xl">
         <div className="overflow-x-auto">
-          <table className="w-full text-right text-xs">
-            <thead className="bg-slate-900 text-slate-400 border-b border-slate-850 font-bold">
+          <table className="w-full text-right text-xs border-collapse">
+            <thead className="bg-slate-950/90 text-slate-400 text-[11px] border-b border-slate-800 font-bold">
               <tr>
                 <th className="p-3.5">شماره تسویه</th>
                 <th className="p-3.5">پرسنل</th>
@@ -2674,19 +2813,19 @@ export default function PersonnelSettlementTab({
                 <th className="p-3.5 text-left">کسورات و پرداختی</th>
                 <th className="p-3.5 text-left font-black text-rose-400">مبلغ قابل پرداخت</th>
                 <th className="p-3.5 text-center">وضعیت</th>
-                <th className="p-3.5 text-center">عملیات</th>
+                <th className="p-3.5 text-center no-print">عملیات</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-850/60">
-              {filteredSettlements.length === 0 ? (
+            <tbody className="divide-y divide-slate-800/60">
+              {sortedFilteredSettlements.length === 0 ? (
                 <tr>
                   <td colSpan={14} className="p-12 text-center text-slate-400">
-                    <Receipt className="h-10 w-10 text-slate-400 mx-auto mb-2 opacity-50" />
+                    <Receipt className="h-10 w-10 text-slate-600 mx-auto mb-2 opacity-50" />
                     هیچ سند تسویه حسابی با شرایط انتخابی یافت نشد.
                   </td>
                 </tr>
               ) : (
-                filteredSettlements.map(s => {
+                sortedFilteredSettlements.map(s => {
                   const emp = personnelList.find(p => p.employeeCode === s.employeeCode);
                   const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : s.employeeCode;
                   

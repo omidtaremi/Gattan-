@@ -13,11 +13,26 @@ import {
   FileText, ArrowDownLeft, RotateCcw, Send, Building2, User, Check, Sparkles
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString,
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString,
   getTodayJalali, getJalaliDaysDifference, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate,
   numberToWordsPersian, isValidJalaliDate
 } from '../../utils/persianUtils';
 import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  ModuleSubTabs,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+  ErpButton,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface ChequeBooksTabProps {
   db: AppDatabase;
@@ -650,321 +665,245 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
     );
   };
 
-  // Export Cheque Book Leaves to CSV
-  const handleExportLeavesCSV = () => {
-    const headers = [
-      'شماره برگه چک',
-      'شناسه صیاد ۱۶ رقمی',
-      'بانک و شعبه',
-      'سری دسته چک',
-      'وضعیت',
-      'در وجه / ذینفع',
-      'مبلغ (ریال)',
-      'تاریخ صدور',
-      'تاریخ سررسید',
-      'تاریخ وصول/برگشت',
-      'علت برگشت/ابطال',
-      'توضیحات'
-    ];
-
+  const handleExportLeavesExcel = () => {
     const rows = filteredLeaves.map(leaf => {
       const book = bookMap.get(leaf.chequeBookId);
       const bank = bankMap.get(leaf.bankAccountId);
-      const statusLabel = 
+      const statusLabel =
         leaf.status === 'blank' ? 'سفید و آزاد' :
         leaf.status === 'issued' ? 'صادر شده' :
         leaf.status === 'cleared' ? 'پاس شده (وصول)' :
         leaf.status === 'bounced' ? 'برگشت خورده' : 'باطل شده';
-
-      return [
-        leaf.leafNumber,
-        leaf.sayadNo,
-        bank ? `${bank.bankName} - ${bank.branchName}` : '',
-        book?.series || '',
-        statusLabel,
-        leaf.payeeName || '',
-        leaf.amount || 0,
-        leaf.issueDate || '',
-        leaf.dueDate || '',
-        leaf.clearedDate || leaf.bouncedDate || '',
-        leaf.bouncedReason || leaf.cancellationReason || '',
-        leaf.notes || ''
-      ];
+      return {
+        'شماره برگه چک': leaf.leafNumber,
+        'شناسه صیاد ۱۶ رقمی': leaf.sayadNo,
+        'بانک و شعبه': bank ? `${bank.bankName} - ${bank.branchName}` : '',
+        'سری دسته چک': book?.series || '',
+        'وضعیت': statusLabel,
+        'در وجه / ذینفع': leaf.payeeName || '',
+        'مبلغ (ریال)': leaf.amount || 0,
+        'تاریخ صدور': leaf.issueDate || '',
+        'تاریخ سررسید': leaf.dueDate || '',
+        'تاریخ وصول/برگشت': leaf.clearedDate || leaf.bouncedDate || '',
+        'علت برگشت/ابطال': leaf.bouncedReason || leaf.cancellationReason || '',
+        'توضیحات': leaf.notes || '',
+      };
     });
-
-    downloadCSV(`گزارش_برگه‌های_چک_${getTodayJalali().replace(/\//g, '-')}`, headers, rows);
+    exportRowsToExcel(rows, 'برگه‌های چک', `گزارش_برگه‌های_چک_${getTodayJalali().replace(/\//g, '-')}`);
   };
 
-  // Export Upcoming Cheques Alert to CSV
-  const handleExportAlertsCSV = () => {
-    const headers = [
-      'ردیف',
-      'شماره برگه',
-      'شناسه صیاد',
-      'بانک پرداخت‌کننده',
-      'در وجه / ذینفع',
-      'مبلغ به ریال',
-      'تاریخ سررسید',
-      'روزهای باقیمانده تا موعد',
-      'وضعیت سررسید'
-    ];
-
+  const handleExportAlertsExcel = () => {
     const rows = filteredAlerts.map((item, idx) => {
       const bank = bankMap.get(item.leaf.bankAccountId);
       let statusStr = '';
       if (item.daysDiff === 0) statusStr = 'امروز سررسید می‌شود';
       else if (item.daysDiff > 0) statusStr = `${item.daysDiff} روز تا سررسید`;
       else statusStr = `معوق (${Math.abs(item.daysDiff)} روز گذشته)`;
-
-      return [
-        idx + 1,
-        item.leaf.leafNumber,
-        item.leaf.sayadNo,
-        bank ? `${bank.bankName} (${bank.accountNo})` : '',
-        item.leaf.payeeName || '',
-        item.leaf.amount || 0,
-        item.leaf.dueDate || '',
-        item.daysDiff,
-        statusStr
-      ];
+      return {
+        'ردیف': idx + 1,
+        'شماره برگه': item.leaf.leafNumber,
+        'شناسه صیاد': item.leaf.sayadNo,
+        'بانک پرداخت‌کننده': bank ? `${bank.bankName} (${bank.accountNo})` : '',
+        'در وجه / ذینفع': item.leaf.payeeName || '',
+        'مبلغ (ریال)': item.leaf.amount || 0,
+        'تاریخ سررسید': item.leaf.dueDate || '',
+        'روزهای باقیمانده': item.daysDiff,
+        'وضعیت سررسید': statusStr,
+      };
     });
+    exportRowsToExcel(rows, 'سررسید چک‌ها', `اعلام_چک‌های_نزدیک_به_پرداخت_${getTodayJalali().replace(/\//g, '-')}`);
+  };
 
-    downloadCSV(`اعلام_چک‌های_نزدیک_به_پرداخت_${getTodayJalali().replace(/\//g, '-')}`, headers, rows);
+  const handleExportBooksExcel = () => {
+    const rows = chequeBooks.map(book => {
+      const bank = bankMap.get(book.bankAccountId);
+      const bookLeaves = chequeLeaves.filter(l => l.chequeBookId === book.id);
+      const blankCount = bookLeaves.filter(l => l.status === 'blank').length;
+      return {
+        'سری دسته چک': book.series,
+        'پیشوند صیاد': book.sayadPrefix || '',
+        'بانک': bank?.bankName || '',
+        'شماره حساب': bank?.accountNo || '',
+        'شماره شروع': book.startNumber,
+        'شماره پایان': book.endNumber,
+        'تعداد کل برگه‌ها': book.totalLeaves,
+        'برگه‌های سفید': blankCount,
+        'تاریخ دریافت': book.receivedDate,
+        'وضعیت': book.status === 'active' ? 'فعال' : book.status === 'finished' ? 'تمام شده' : 'مسدود',
+      };
+    });
+    exportRowsToExcel(rows, 'دسته‌چک‌ها', 'گزارش_دسته_چک_ها');
+  };
+
+  const handleDownloadBooksTemplate = () => {
+    downloadTemplateExcel(
+      ['سری دسته چک', 'پیشوند صیاد', 'شماره شروع', 'تعداد برگه‌ها', 'تاریخ دریافت', 'توضیحات'],
+      [{
+        'سری دسته چک': 'الف/1405',
+        'پیشوند صیاد': '2105',
+        'شماره شروع': 1001,
+        'تعداد برگه‌ها': 25,
+        'تاریخ دریافت': getTodayJalali(),
+        'توضیحات': '',
+      }],
+      'قالب_دسته_چک',
+      'نمونه_دسته_چک_ها'
+    );
+  };
+
+  const handleImportBooksExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const defaultBankId = bankAccounts[0]?.id || '';
+      const genBookId = createSimpleIdGenerator(db.chequeBooks || [], getPrefixForCollection('chequeBooks'));
+      const genLeafId = createSimpleIdGenerator(db.chequeLeaves || [], getPrefixForCollection('chequeLeaves'));
+      const newBooks: ChequeBook[] = [];
+      const newLeaves: ChequeLeaf[] = [];
+      for (const row of rows) {
+        const series = pickRowField(row, ['سری دسته چک', 'سری', 'series']);
+        if (!series) continue;
+        const startNo = parseNumber(pickRowField(row, ['شماره شروع', 'startNumber'])) || 1001;
+        const total = Math.max(1, Math.min(100, parseNumber(pickRowField(row, ['تعداد برگه‌ها', 'تعداد', 'totalLeaves'])) || 25));
+        const sayadPrefix = pickRowField(row, ['پیشوند صیاد', 'sayadPrefix']) || '2105';
+        const bookId = genBookId();
+        newBooks.push({
+          id: bookId,
+          periodId: activePeriodId,
+          bankAccountId: defaultBankId,
+          series,
+          sayadPrefix,
+          startNumber: startNo,
+          endNumber: startNo + total - 1,
+          totalLeaves: total,
+          receivedDate: pickRowField(row, ['تاریخ دریافت', 'receivedDate']) || getTodayJalali(),
+          description: pickRowField(row, ['توضیحات', 'description']),
+          status: 'active',
+          createdAt: new Date().toISOString(),
+        });
+        for (let i = 0; i < total; i++) {
+          const leafNo = startNo + i;
+          newLeaves.push({
+            id: genLeafId(),
+            periodId: activePeriodId,
+            chequeBookId: bookId,
+            bankAccountId: defaultBankId,
+            leafNumber: leafNo,
+            sayadNo: `${sayadPrefix}${leafNo.toString().padStart(6, '0')}${(1000 + i).toString().padStart(6, '0')}`,
+            status: 'blank',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+      if (newBooks.length > 0) {
+        onUpdateDb({
+          ...db,
+          chequeBooks: [...(db.chequeBooks || []), ...newBooks],
+          chequeLeaves: [...(db.chequeLeaves || []), ...newLeaves],
+        });
+      }
+    } catch (err) {
+      console.error('Cheque books import error:', err);
+    }
+  };
+
+  const hasChequeFilters = Boolean(searchQuery.trim() || selectedBankId !== 'all' || selectedBookId !== 'all' || statusFilter !== 'all');
+  const handleClearChequeFilters = () => {
+    setSearchQuery('');
+    setSelectedBankId('all');
+    setSelectedBookId('all');
+    setStatusFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Header & Fast Action */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900/60 p-4 rounded-3xl border border-slate-800">
+      {/* Top Header & Unified Actions */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900/95 p-4 sm:p-5 rounded-3xl border border-slate-800 shadow-xl">
         <div>
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <CreditCard className="w-5 h-5 text-teal-400" />
+          <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+            <CreditCard className="w-5 h-5 text-rose-400" />
             مدیریت دسته‌چک‌ها، برگه‌ها و عملیات چک صیادی
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             سیستم یکپارچه ره‌گیری برگه‌های صیادی، هشدار خودکار سررسیدها، وصول، واخواست و صدور چک
           </p>
         </div>
-        <div className="flex items-center gap-2.5 w-full sm:w-auto">
-          <button
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <ErpButton
+            variant="primary"
+            size="sm"
             onClick={() => handleOpenIssueCheque()}
-            className="flex-1 sm:flex-none px-4 py-2.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-teal-600/30 transition-all cursor-pointer"
+            icon={<Sparkles className="w-4 h-4" />}
           >
-            <Sparkles className="w-4 h-4 text-teal-200" />
-            <span>صدور چک جدید (برگه سفید)</span>
-          </button>
-          <button
+            صدور چک جدید
+          </ErpButton>
+          <ErpButton
+            variant="secondary"
+            size="sm"
             onClick={handleOpenAddBook}
-            className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-slate-700 transition-all cursor-pointer"
+            icon={<Plus className="w-4 h-4 text-rose-400" />}
           >
-            <Plus className="w-4 h-4 text-teal-400" />
-            <span>ثبت دسته چک جدید</span>
-          </button>
+            ثبت دسته چک جدید
+          </ErpButton>
         </div>
       </div>
 
-      {/* KPI Cards Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Active Cheque Books */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-bold">دسته‌چک‌های فعال</span>
-            <div className="p-2.5 bg-teal-500/10 rounded-2xl text-teal-400 border border-teal-500/20">
-              <BookOpen className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-white font-mono">{toPersianDigits(stats.activeBooks)}</span>
-            <span className="text-xs text-slate-400">از {toPersianDigits(stats.totalBooks)} جلد</span>
-          </div>
-          <div className="mt-2 text-xs text-teal-400/90 flex items-center gap-1 font-medium">
-            <CheckCircle className="w-3.5 h-3.5" />
-            <span>{toPersianDigits(stats.blankLeaves)} برگه چک سفید و آماده صدور</span>
-          </div>
-        </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'دسته‌چک‌های فعال', value: stats.activeBooks, sublabel: `${toPersianDigits(stats.blankLeaves)} برگه سفید` },
+          { label: 'چک‌های صادرشده در جریان', value: toPersianDigits(formatWithCommas(stats.issuedTotalAmount)), sublabel: `${toPersianDigits(stats.issuedCount)} فقره`, tone: 'info' },
+          { label: 'سررسید ۷ روزه و معوق', value: toPersianDigits(formatWithCommas(stats.dueIn7DaysAmount + stats.overdueAmount)), sublabel: `${toPersianDigits(stats.dueIn7DaysCount + stats.overdueCount)} فقره`, tone: stats.overdueCount > 0 ? 'danger' : 'warning' },
+          { label: 'چک‌های پاس‌شده', value: toPersianDigits(formatWithCommas(stats.clearedTotalAmount)), sublabel: `${toPersianDigits(stats.clearedCount)} پاس · ${toPersianDigits(stats.bouncedCount)} برگشتی`, tone: 'success' },
+        ]}
+      />
 
-        {/* Total Issued Active Cheques */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-bold">چک‌های صادر شده در جریان</span>
-            <div className="p-2.5 bg-indigo-500/10 rounded-2xl text-indigo-400 border border-indigo-500/20">
-              <CreditCard className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-white font-mono">{toPersianDigits(stats.issuedCount)}</span>
-            <span className="text-xs text-slate-400">فقره چک صادر شده</span>
-          </div>
-          <div className="mt-2 text-xs text-indigo-300 font-mono flex items-center gap-1 font-bold">
-            <span>مبلغ کل:</span>
-            <span className="text-white">{formatWithCommas(stats.issuedTotalAmount)}</span>
-            <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-          </div>
-        </div>
-
-        {/* High-Priority Upcoming Due Cheques Alert Card */}
-        <div className={`border rounded-3xl p-5 shadow-xl relative overflow-hidden transition-all ${
-          stats.dueIn7DaysCount > 0 || stats.overdueCount > 0 
-            ? 'bg-gradient-to-br from-amber-950/40 via-slate-900/90 to-rose-950/30 border-amber-500/40 ring-1 ring-amber-500/30' 
-            : 'bg-slate-900/90 border-slate-800'
-        }`}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-              <Bell className="w-4 h-4 animate-bounce text-amber-400" />
-              سررسید ۷ روز آینده و معوق
-            </span>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
-              {toPersianDigits(stats.dueIn7DaysCount + stats.overdueCount)} فقره
-            </span>
-          </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-amber-300 font-mono">{formatWithCommas(stats.dueIn7DaysAmount + stats.overdueAmount)}</span>
-            <span className="text-[10px] text-slate-400">ریال</span>
-          </div>
-          <div className="mt-2 flex items-center justify-between text-[11px]">
-            <span className="text-amber-200">
-              {stats.dueTodayCount > 0 && <span className="text-rose-400 font-bold">({toPersianDigits(stats.dueTodayCount)} چک امروز) </span>}
-              {toPersianDigits(stats.dueIn7DaysCount)} چک این هفته
-            </span>
-            {stats.overdueCount > 0 && (
-              <span className="text-rose-400 font-bold bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
-                {toPersianDigits(stats.overdueCount)} معوق
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Cleared & Bounced */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-bold">وضعیت پاس شده و برگشتی</span>
-            <div className="p-2.5 bg-emerald-500/10 rounded-2xl text-emerald-400 border border-emerald-500/20">
-              <CheckCircle2 className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-black text-emerald-400 font-mono">{toPersianDigits(stats.clearedCount)}</span>
-            <span className="text-xs text-slate-400">پاس شده</span>
-          </div>
-          <div className="mt-2 flex items-center justify-between text-xs">
-            <span className="text-emerald-400/90 font-mono font-medium">{formatWithCommas(stats.clearedTotalAmount)} ریال</span>
-            {stats.bouncedCount > 0 && (
-              <span className="text-rose-400 font-bold bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">
-                {toPersianDigits(stats.bouncedCount)} برگشتی
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-3 overflow-x-auto">
-        <button
-          onClick={() => setActiveView('alerts')}
-          className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
-            activeView === 'alerts'
-              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20'
-              : 'bg-slate-900/70 text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <Bell className="w-4 h-4" />
-          <span>اعلام و هشدار سررسیدها</span>
-          {(stats.dueIn7DaysCount > 0 || stats.overdueCount > 0) && (
-            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold font-mono ${
-              activeView === 'alerts' ? 'bg-slate-950 text-amber-400' : 'bg-amber-500/20 text-amber-300'
-            }`}>
-              {toPersianDigits(stats.dueIn7DaysCount + stats.overdueCount)}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveView('operations')}
-          className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
-            activeView === 'operations'
-              ? 'bg-teal-600 text-white shadow-lg shadow-teal-600/20'
-              : 'bg-slate-900/70 text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <CreditCard className="w-4 h-4" />
-          <span>مرکز عملیات چک (وصول / برگشت / ابطال)</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold font-mono bg-teal-500/20 text-teal-300">
-            {toPersianDigits(stats.issuedCount)}
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveView('books')}
-          className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
-            activeView === 'books'
-              ? 'bg-teal-600 text-white shadow-lg shadow-teal-600/20'
-              : 'bg-slate-900/70 text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <BookOpen className="w-4 h-4" />
-          <span>مدیریت دسته‌چک‌ها</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold font-mono bg-slate-800 text-slate-300">
-            {toPersianDigits(stats.totalBooks)}
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveView('leaves')}
-          className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
-            activeView === 'leaves'
-              ? 'bg-teal-600 text-white shadow-lg shadow-teal-600/20'
-              : 'bg-slate-900/70 text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <FileText className="w-4 h-4" />
-          <span>ماتریس کلیه برگه‌ها</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold font-mono bg-slate-800 text-slate-300">
-            {toPersianDigits(stats.totalLeavesCount)}
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveView('reports')}
-          className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
-            activeView === 'reports'
-              ? 'bg-teal-600 text-white shadow-lg shadow-teal-600/20'
-              : 'bg-slate-900/70 text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <BarChart2 className="w-4 h-4" />
-          <span>گزارشات و جریان نقدینگی</span>
-        </button>
-      </div>
+      {/* Unified Sub-Tabs */}
+      <ModuleSubTabs
+        activeTab={activeView}
+        onChange={setActiveView}
+        tabs={[
+          { id: 'alerts', label: 'اعلام و هشدار سررسیدها', icon: Bell, count: stats.dueIn7DaysCount + stats.overdueCount },
+          { id: 'operations', label: 'مرکز عملیات چک', icon: CreditCard, count: stats.issuedCount },
+          { id: 'books', label: 'مدیریت دسته‌چک‌ها', icon: BookOpen, count: stats.totalBooks },
+          { id: 'leaves', label: 'ماتریس برگه‌ها', icon: FileText, count: stats.totalLeavesCount },
+          { id: 'reports', label: 'گزارشات نقدینگی', icon: BarChart2 },
+        ]}
+      />
 
       {/* VIEW 1: ALERTS & UPCOMING DUE DATES */}
       {activeView === 'alerts' && (
         <div className="space-y-4">
-          {/* Filter Bar for Alerts */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl">
-            <div className="flex flex-wrap items-center gap-2.5 flex-1">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجوی سریال چک، صیاد، ذینفع..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-amber-500 outline-none"
-                />
-              </div>
+          {/* Unified Toolbar & Filters for Alerts */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجوی سریال چک، صیاد، ذینفع..."
+            hasActiveFilters={hasChequeFilters}
+            onClearFilters={handleClearChequeFilters}
+            onExportExcel={handleExportAlertsExcel}
+            onPrint={() => printElement('cheque-alerts-print', 'گزارش سررسید چک‌های صادره')}
+            onAdd={() => handleOpenIssueCheque()}
+            addLabel="صدور چک جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>حساب بانکی مبدا</label>
               <select
                 value={selectedBankId}
                 onChange={(e) => setSelectedBankId(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:border-amber-500 outline-none"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه حساب‌های بانکی</option>
                 {bankAccounts.map(b => (
                   <option key={b.id} value={b.id}>{b.bankName} - {b.accountNo}</option>
                 ))}
               </select>
-
-              <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 gap-1">
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>بازه سررسید</label>
+              <div className="flex flex-wrap items-center bg-slate-950 border border-slate-800 rounded-xl p-1 gap-1">
                 {[
                   { id: 'all', label: 'همه' },
                   { id: 'today', label: 'امروز' },
@@ -975,10 +914,11 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 ].map(p => (
                   <button
                     key={p.id}
+                    type="button"
                     onClick={() => setAlertPeriodFilter(p.id as any)}
                     className={`px-2.5 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer ${
-                      alertPeriodFilter === p.id 
-                        ? 'bg-amber-500 text-slate-950 shadow-sm' 
+                      alertPeriodFilter === p.id
+                        ? 'bg-rose-600 text-white shadow-sm'
                         : 'text-slate-400 hover:text-white'
                     }`}
                   >
@@ -987,26 +927,7 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 ))}
               </div>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportAlertsCSV}
-                className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-              <button
-                onClick={() => printElement('cheque-alerts-print')}
-                className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ چک‌های سررسید"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Alerts Table */}
           <div id="cheque-alerts-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">
@@ -1138,24 +1059,26 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       {/* VIEW 2: DEDICATED CHEQUE OPERATIONS CENTER */}
       {activeView === 'operations' && (
         <div className="space-y-4">
-          {/* Operations Header Controls */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl">
-            <div className="flex flex-wrap items-center gap-2.5 flex-1">
-              <div className="relative flex-1 min-w-[220px]">
-                <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجوی شماره چک، شناسه صیادی، ذینفع..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-teal-500 outline-none"
-                />
-              </div>
+          {/* Unified Toolbar & Filters for Operations */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجوی شماره چک، شناسه صیادی، ذینفع..."
+            hasActiveFilters={hasChequeFilters}
+            onClearFilters={handleClearChequeFilters}
+            onExportExcel={handleExportLeavesExcel}
+            onPrint={() => printElement('cheque-operations-print', 'گزارش عملیات برگه‌های چک')}
+            onAdd={() => handleOpenIssueCheque()}
+            addLabel="صدور برگه چک"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت برگه چک</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:border-teal-500 outline-none"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="issued">صادر شده (در جریان)</option>
@@ -1164,11 +1087,13 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 <option value="cancelled">ابطال شده / عودت</option>
                 <option value="blank">سفید و آزاد</option>
               </select>
-
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>حساب بانکی</label>
               <select
                 value={selectedBankId}
                 onChange={(e) => setSelectedBankId(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:border-teal-500 outline-none"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه بانک‌ها</option>
                 {bankAccounts.map(b => (
@@ -1176,29 +1101,10 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 ))}
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleOpenIssueCheque()}
-                className="px-3.5 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-teal-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>صدور برگه چک</span>
-              </button>
-
-              <button
-                onClick={handleExportLeavesCSV}
-                className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1 text-xs font-bold cursor-pointer"
-                title="خروجی اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Operations Table */}
-          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">
+          <div id="cheque-operations-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">
             <table className="w-full text-right text-xs text-slate-300">
               <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800 font-bold">
                 <tr>
@@ -1398,7 +1304,15 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       {/* VIEW 3: CHEQUE BOOKS MANAGEMENT */}
       {activeView === 'books' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <UnifiedToolbar
+            onDownloadTemplate={handleDownloadBooksTemplate}
+            onImportExcel={handleImportBooksExcel}
+            onExportExcel={handleExportBooksExcel}
+            onPrint={() => printElement('cheque-books-print', 'فهرست دسته‌چک‌ها')}
+            onAdd={handleOpenAddBook}
+            addLabel="ثبت دسته چک جدید"
+          />
+          <div id="cheque-books-print" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {chequeBooks.map(book => {
               const bank = bankMap.get(book.bankAccountId);
               const bookLeaves = chequeLeaves.filter(l => l.chequeBookId === book.id);
@@ -1521,34 +1435,38 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
       {/* VIEW 4: LEAVES MATRIX */}
       {activeView === 'leaves' && (
         <div className="space-y-4">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl">
-            <div className="flex flex-wrap items-center gap-2.5 flex-1">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو در تمام برگه‌ها..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-teal-500 outline-none"
-                />
-              </div>
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو در تمام برگه‌ها..."
+            hasActiveFilters={hasChequeFilters}
+            onClearFilters={handleClearChequeFilters}
+            onExportExcel={handleExportLeavesExcel}
+            onPrint={() => printElement('cheque-leaves-matrix-print', 'ماتریس برگه‌های چک')}
+            onAdd={() => handleOpenIssueCheque()}
+            addLabel="صدور چک جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>انتخاب دسته‌چک</label>
               <select
                 value={selectedBookId}
                 onChange={(e) => setSelectedBookId(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:border-teal-500 outline-none"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه دسته‌چک‌ها</option>
                 {chequeBooks.map(b => (
                   <option key={b.id} value={b.id}>سری {b.series} ({b.totalLeaves} برگ)</option>
                 ))}
               </select>
-
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت برگه</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:border-teal-500 outline-none"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="blank">سفید و آزاد</option>
@@ -1558,18 +1476,10 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 <option value="cancelled">باطل شده</option>
               </select>
             </div>
-
-            <button
-              onClick={handleExportLeavesCSV}
-              className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              <span>خروجی اکسل ماتریس</span>
-            </button>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Cards Grid for Leaves Matrix */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+          <div id="cheque-leaves-matrix-print" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
             {filteredLeaves.map(leaf => {
               const isBlank = leaf.status === 'blank';
               const isIssued = leaf.status === 'issued';
@@ -1657,8 +1567,12 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
 
       {/* VIEW 5: REPORTS & CASH FLOW */}
       {activeView === 'reports' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          <UnifiedToolbar
+            onExportExcel={handleExportLeavesExcel}
+            onPrint={() => printElement('cheque-reports-print', 'گزارش تعهدات و چرخه حیات چک‌ها')}
+          />
+          <div id="cheque-reports-print" className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Bank Commitments Breakdown */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl">
               <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">

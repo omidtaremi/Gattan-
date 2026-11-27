@@ -12,9 +12,22 @@ import {
   Network, Send, Activity, ShieldCheck
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
+  toPersianDigits, formatWithCommas, printElement, matchPersianString 
 } from '../../utils/persianUtils';
-import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface PosTerminalsTabProps {
   db: AppDatabase;
@@ -51,6 +64,7 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
   const [activeSubView, setActiveSubView] = useState<'list' | 'form'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [pspFilter, setPspFilter] = useState<string>('all');
+  const [connectionFilter, setConnectionFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [editingTerminal, setEditingTerminal] = useState<PosTerminal | null>(null);
 
@@ -139,11 +153,12 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
         if (!matches) return false;
       }
       if (pspFilter !== 'all' && t.pspName !== pspFilter) return false;
+      if (connectionFilter !== 'all' && t.connectionType !== connectionFilter) return false;
       if (statusFilter === 'active' && !t.isActive) return false;
       if (statusFilter === 'inactive' && t.isActive) return false;
       return true;
     });
-  }, [terminals, searchQuery, pspFilter, statusFilter, bankAccountMap]);
+  }, [terminals, searchQuery, pspFilter, connectionFilter, statusFilter, bankAccountMap]);
 
   const handleOpenNew = () => {
     setEditingTerminal(null);
@@ -276,76 +291,110 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['کد پایانه', 'کد پذیرنده', 'مدل دستگاه', 'شرکت PSP', 'آدرس IP کارتخوان', 'پورت شبکه', 'پروتکل ارتباطی', 'حساب بانکی متصل', 'صندوق فیزیکی', 'نوع اتصال', 'شماره سریال', 'تعداد تراکنش', 'جمع مبالغ پوز (ریال)', 'وضعیت'];
+  const handleExportExcel = () => {
     const rows = filteredTerminals.map(t => {
       const itemTotals = terminalTotals[t.id] || { count: 0, total: 0 };
-      return [
-        t.terminalId,
-        t.merchantId || '-',
-        t.model,
-        t.pspName,
-        t.ipAddress || '-',
-        t.port || '-',
-        t.protocol || '-',
-        bankAccountMap[t.bankAccountId] || '-',
-        t.cashDrawerId ? (cashDrawerMap[t.cashDrawerId] || '-') : '-',
-        t.connectionType,
-        t.serialNo || '-',
-        itemTotals.count,
-        itemTotals.total,
-        t.isActive ? 'فعال' : 'غیرفعال'
-      ];
+      return {
+        'کد پایانه': t.terminalId,
+        'کد پذیرنده': t.merchantId || '',
+        'مدل دستگاه': t.model,
+        'شرکت PSP': t.pspName,
+        'آدرس IP کارتخوان': t.ipAddress || '',
+        'پورت شبکه': t.port || '',
+        'پروتکل ارتباطی': t.protocol || '',
+        'حساب بانکی متصل': bankAccountMap[t.bankAccountId] || '',
+        'صندوق فیزیکی': t.cashDrawerId ? (cashDrawerMap[t.cashDrawerId] || '') : '',
+        'نوع اتصال': t.connectionType,
+        'شماره سریال': t.serialNo || '',
+        'تعداد تراکنش': itemTotals.count,
+        'جمع مبالغ پوز (ریال)': itemTotals.total,
+        'وضعیت': t.isActive ? 'فعال' : 'غیرفعال',
+      };
     });
-    downloadCSV('گزارش_کارتخوان_های_فروشگاه.csv', headers, rows);
+    exportRowsToExcel(rows, 'دستگاه‌های کارتخوان', 'گزارش_کارتخوان_های_فروشگاه');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['کد پایانه', 'کد پذیرنده', 'شرکت PSP', 'مدل دستگاه', 'نوع اتصال', 'آدرس IP کارتخوان', 'پورت شبکه', 'شماره سریال', 'وضعیت', 'توضیحات'],
+      [{
+        'کد پایانه': '14890234',
+        'کد پذیرنده': '984501234455112',
+        'شرکت PSP': PSP_COMPANIES[0],
+        'مدل دستگاه': 'PAX D210',
+        'نوع اتصال': 'LAN',
+        'آدرس IP کارتخوان': '192.168.1.150',
+        'پورت شبکه': '1024',
+        'شماره سریال': 'SN-88392014',
+        'وضعیت': 'فعال',
+        'توضیحات': '',
+      }],
+      'قالب_کارتخوان',
+      'نمونه_کارتخوان_های_فروشگاه'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.posTerminals || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('posTerminals'));
+      const defaultBankId = bankAccounts[0]?.id || '';
+      const imported: PosTerminal[] = [];
+      for (const row of rows) {
+        const termId = pickRowField(row, ['کد پایانه', 'شماره پایانه', 'terminalId']);
+        if (!termId) continue;
+        const connRaw = pickRowField(row, ['نوع اتصال', 'بستر', 'connectionType']).toUpperCase();
+        const connType: PosTerminal['connectionType'] =
+          connRaw === 'WIFI' ? 'WiFi' : connRaw === 'GPRS' ? 'GPRS' : connRaw === 'USB' ? 'USB' : 'LAN';
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          terminalId: termId,
+          merchantId: pickRowField(row, ['کد پذیرنده', 'merchantId']),
+          model: pickRowField(row, ['مدل دستگاه', 'مدل', 'model']) || 'PAX D210',
+          pspName: pickRowField(row, ['شرکت PSP', 'PSP', 'pspName']) || PSP_COMPANIES[0],
+          bankAccountId: defaultBankId,
+          serialNo: pickRowField(row, ['شماره سریال', 'سریال', 'serialNo']),
+          connectionType: connType,
+          ipAddress: pickRowField(row, ['آدرس IP کارتخوان', 'IP', 'ipAddress']) || '192.168.1.150',
+          port: pickRowField(row, ['پورت شبکه', 'پورت', 'port']) || '1024',
+          protocol: POS_PROTOCOLS[0],
+          feePercent: 0,
+          isActive: statusRaw !== 'غیرفعال',
+          notes: pickRowField(row, ['توضیحات', 'یادداشت', 'notes']),
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, posTerminals: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('POS terminals import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || pspFilter !== 'all' || connectionFilter !== 'all' || statusFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setPspFilter('all');
+    setConnectionFilter('all');
+    setStatusFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد پایانه‌های کارتخوان</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <CreditCard className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">کارتخوان‌های فعال و متصل</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">{toPersianDigits(stats.activeCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد تراکنش‌های ثبت شده</span>
-            <span className="text-2xl font-black text-purple-400 mt-1 block">{toPersianDigits(stats.totalTxCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-            <Hash className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع گردش تراکنش‌های کارتخوان</span>
-            <span className="text-lg font-black text-emerald-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalVolume))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CreditCard className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'تعداد پایانه‌های کارتخوان', value: stats.totalCount, sublabel: 'دستگاه' },
+          { label: 'کارتخوان‌های فعال و متصل', value: stats.activeCount, sublabel: 'فعال', tone: 'success' },
+          { label: 'تعداد تراکنش‌های ثبت شده', value: stats.totalTxCount, sublabel: 'تراکنش', tone: 'info' },
+          { label: 'مجموع گردش کارتخوان', value: toPersianDigits(formatWithCommas(stats.totalVolume)), sublabel: 'ریال', tone: 'warning' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -604,7 +653,7 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingTerminal ? 'ذخیره تغییرات' : 'ثبت دستگاه کارتخوان'}
@@ -615,70 +664,62 @@ export default function PosTerminalsTab({ db, onUpdateDb, activePeriodId, askCon
       ) : (
         /* List View */
         <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو با کد پایانه، شماره سریال، آدرس IP، شرکت یا حساب متصل..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-cyan-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو با کد پایانه، شماره سریال، آدرس IP، شرکت یا حساب متصل..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('pos-terminals-table-print', 'فهرست دستگاه‌های کارتخوان')}
+            onAdd={handleOpenNew}
+            addLabel="تعریف کارتخوان جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>شرکت پرداخت (PSP)</label>
               <select
                 value={pspFilter}
                 onChange={(e) => setPspFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-cyan-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه شرکت‌های PSP</option>
                 {PSP_COMPANIES.map(p => (
                   <option key={p} value={p}>{p}</option>
                 ))}
               </select>
-
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>بستر ارتباطی</label>
+              <select
+                value={connectionFilter}
+                onChange={(e) => setConnectionFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه بسترها</option>
+                <option value="LAN">LAN</option>
+                <option value="WiFi">WiFi</option>
+                <option value="USB">USB</option>
+                <option value="GPRS">GPRS</option>
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت پایانه</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-cyan-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="active">فقط فعال</option>
                 <option value="inactive">غیرفعال</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('pos-terminals-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست کارتخوان‌ها"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>تعریف کارتخوان جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Terminals Table */}
           <div id="pos-terminals-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

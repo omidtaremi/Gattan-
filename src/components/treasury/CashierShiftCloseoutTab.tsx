@@ -12,11 +12,19 @@ import {
   RefreshCw, Sparkles, CheckCircle2, Layers, ArrowDownLeft, ArrowUpRight
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString,
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString,
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
 import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import { exportRowsToExcel } from '../../utils/tableIoUtils';
 
 interface CashierShiftCloseoutTabProps {
   db: AppDatabase;
@@ -29,6 +37,7 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
   const [activeSubView, setActiveSubView] = useState<'list' | 'form'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [shiftFilter, setShiftFilter] = useState<string>('all');
   const [editingCloseout, setEditingCloseout] = useState<CashierShiftCloseout | null>(null);
 
   // Date Filter State for List View
@@ -193,9 +202,10 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
         if (!matches) return false;
       }
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+      if (shiftFilter !== 'all' && c.shift !== shiftFilter) return false;
       return true;
     });
-  }, [closeouts, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter]);
+  }, [closeouts, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter, shiftFilter]);
 
   const handleOpenNew = () => {
     setEditingCloseout(null);
@@ -365,73 +375,40 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['شماره برگه', 'تاریخ', 'شیفت', 'صندوق‌دار', 'موجودی دفتری', 'شمارش فیزیکی', 'مغایرت (کسری/مازاد)', 'رسیدهای کارتخوان', 'تحویلی به گاوصندوق', 'وضعیت'];
-    const rows = filteredCloseouts.map(c => [
-      c.closeoutNo,
-      c.date,
-      c.shift === 'morning' ? 'صبح' : c.shift === 'evening' ? 'عصر' : 'کامل',
-      c.cashierName,
-      c.expectedCash,
-      c.actualCashCount,
-      c.cashDifference,
-      c.totalPosReceipts,
-      c.transferredToSafe,
-      c.status === 'closed' ? 'تایید و بسته شده' : c.status === 'discrepancy' ? 'دارای مغایرت' : 'باز'
-    ]);
-    downloadCSV('گزارش_بستن_حساب_صندوقداران.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredCloseouts.map(c => ({
+      'شماره برگه': c.closeoutNo,
+      'تاریخ': c.date,
+      'شیفت': c.shift === 'morning' ? 'صبح' : c.shift === 'evening' ? 'عصر' : c.shift === 'night' ? 'شب' : 'کامل',
+      'صندوق‌دار': c.cashierName,
+      'موجودی دفتری (ریال)': c.expectedCash,
+      'شمارش فیزیکی (ریال)': c.actualCashCount,
+      'مغایرت (ریال)': c.cashDifference,
+      'رسیدهای کارتخوان (ریال)': c.totalPosReceipts,
+      'تحویلی به گاوصندوق (ریال)': c.transferredToSafe,
+      'وضعیت': c.status === 'closed' ? 'تایید و بسته شده' : c.status === 'discrepancy' ? 'دارای مغایرت' : 'باز',
+    }));
+    exportRowsToExcel(rows, 'بستن حساب شیفت‌ها', 'گزارش_بستن_حساب_صندوقداران');
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || statusFilter !== 'all' || shiftFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setShiftFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">کل شیفت‌های بسته‌شده</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <Lock className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع گردش نقدینگی شیفت‌ها</span>
-            <span className="text-lg font-black text-emerald-400 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalCashTurnover))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <Banknote className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تراکنش‌های کارتخوان POS</span>
-            <span className="text-lg font-black text-cyan-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalPos))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <CreditCard className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع مغایرت‌های صندوق (کسری/مازاد)</span>
-            <span className={`text-lg font-black mt-1 block ${stats.totalDiscrepancy < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-              {toPersianDigits(formatWithCommas(stats.totalDiscrepancy))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-            <Calculator className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'کل شیفت‌های بسته‌شده', value: stats.totalCount, sublabel: 'شیفت' },
+          { label: 'مجموع گردش نقدینگی شیفت‌ها', value: toPersianDigits(formatWithCommas(stats.totalCashTurnover)), sublabel: 'ریال', tone: 'success' },
+          { label: 'تراکنش‌های کارتخوان POS', value: toPersianDigits(formatWithCommas(stats.totalPos)), sublabel: 'ریال', tone: 'info' },
+          { label: 'مجموع مغایرت‌های صندوق', value: toPersianDigits(formatWithCommas(stats.totalDiscrepancy)), sublabel: 'ریال', tone: stats.totalDiscrepancy < 0 ? 'danger' : 'warning' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -785,7 +762,7 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-amber-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingCloseout ? 'ذخیره تغییرات' : 'تایید نهایی و بستن حساب شیفت'}
@@ -810,24 +787,40 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
             colorScheme="amber"
           />
 
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو با شماره برگه، نام صندوق‌دار، یادداشت‌ها..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-amber-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو با شماره برگه، نام صندوق‌دار، یادداشت‌ها..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('closeouts-table-print', 'فهرست بستن حساب شیفت صندوقداران')}
+            onAdd={handleOpenNew}
+            addLabel="ثبت بستن حساب شیفت"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>نوبت کاری (شیفت)</label>
+              <select
+                value={shiftFilter}
+                onChange={(e) => setShiftFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه شیفت‌ها</option>
+                <option value="morning">شیفت صبح</option>
+                <option value="evening">شیفت عصر</option>
+                <option value="night">شیفت شب</option>
+                <option value="full_day">تمام وقت</option>
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت بستن حساب</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-amber-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="closed">بسته و تایید شده</option>
@@ -835,35 +828,7 @@ export default function CashierShiftCloseoutTab({ db, onUpdateDb, activePeriodId
                 <option value="open">باز</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('closeouts-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست بستن حساب‌ها"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-amber-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>ثبت بستن حساب شیفت</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Closeouts Table */}
           <div id="closeouts-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

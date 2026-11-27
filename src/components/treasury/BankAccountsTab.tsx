@@ -11,9 +11,22 @@ import {
   Building2, ArrowUpDown, ChevronDown, Check, Eye, RefreshCw, Wallet
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString 
 } from '../../utils/persianUtils';
-import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface BankAccountsTabProps {
   db: AppDatabase;
@@ -218,72 +231,107 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['نام بانک', 'شعبه', 'شماره حساب', 'شماره شبا', 'شماره کارت', 'نوع حساب', 'صاحب حساب', 'موجودی اولیه (ریال)', 'موجودی لحظه‌ای (ریال)', 'کد حسابداری', 'وضعیت'];
-    const rows = filteredAccounts.map(a => [
-      a.bankName,
-      a.branchName,
-      a.accountNo,
-      a.shaba || '-',
-      a.cardNo || '-',
-      a.accountType,
-      a.accountHolder,
-      a.initialBalance || 0,
-      accountBalances[a.id] || a.initialBalance || 0,
-      a.accountingCode || '-',
-      a.isActive ? 'فعال' : 'غیرفعال'
-    ]);
-    downloadCSV('گزارش_حسابهای_بانکی.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredAccounts.map(a => ({
+      'نام بانک': a.bankName,
+      'نام شعبه': a.branchName || '',
+      'کد شعبه': a.branchCode || '',
+      'شماره حساب': a.accountNo,
+      'شماره شبا': a.shaba || '',
+      'شماره کارت': a.cardNo || '',
+      'نوع حساب': a.accountType,
+      'صاحب حساب': a.accountHolder,
+      'موجودی اولیه (ریال)': a.initialBalance || 0,
+      'موجودی لحظه‌ای (ریال)': accountBalances[a.id] || a.initialBalance || 0,
+      'کد حسابداری': a.accountingCode || '',
+      'وضعیت': a.isActive ? 'فعال' : 'غیرفعال',
+    }));
+    exportRowsToExcel(rows, 'حساب‌های بانکی', 'گزارش_حسابهای_بانکی');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['نام بانک', 'نام شعبه', 'کد شعبه', 'شماره حساب', 'شماره شبا', 'شماره کارت', 'نوع حساب', 'صاحب حساب', 'موجودی اولیه (ریال)', 'کد حسابداری', 'وضعیت', 'توضیحات'],
+      [{
+        'نام بانک': 'بانک ملت',
+        'نام شعبه': 'مرکزی',
+        'کد شعبه': '1234',
+        'شماره حساب': '0105678901004',
+        'شماره شبا': 'IR120120000000001056789010',
+        'شماره کارت': '6104337812345678',
+        'نوع حساب': 'جاری',
+        'صاحب حساب': 'صنایع غذایی گاتان',
+        'موجودی اولیه (ریال)': 0,
+        'کد حسابداری': '101001',
+        'وضعیت': 'فعال',
+        'توضیحات': '',
+      }],
+      'قالب_حساب_بانکی',
+      'نمونه_حسابهای_بانکی'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.bankAccounts || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('bankAccounts'));
+      const imported: BankAccount[] = [];
+      for (const row of rows) {
+        const bName = pickRowField(row, ['نام بانک', 'بانک', 'bankName']);
+        const accNo = pickRowField(row, ['شماره حساب', 'حساب', 'accountNo']);
+        if (!bName || !accNo) continue;
+        const rawType = pickRowField(row, ['نوع حساب', 'نوع', 'accountType']);
+        const validType: BankAccount['accountType'] =
+          rawType === 'پس‌انداز' || rawType === 'قرض‌الحسنه' || rawType === 'کوتاه‌مدت' ? rawType : 'جاری';
+        let shabaVal = pickRowField(row, ['شماره شبا', 'شبا', 'shaba']).toUpperCase();
+        if (shabaVal && !shabaVal.startsWith('IR')) shabaVal = `IR${shabaVal}`;
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          bankName: bName,
+          branchName: pickRowField(row, ['نام شعبه', 'شعبه', 'branchName']) || 'مرکزی',
+          branchCode: pickRowField(row, ['کد شعبه', 'branchCode']),
+          accountNo: accNo,
+          shaba: shabaVal,
+          cardNo: pickRowField(row, ['شماره کارت', 'کارت', 'cardNo']).replace(/\s+/g, ''),
+          accountType: validType,
+          accountHolder: pickRowField(row, ['صاحب حساب', 'accountHolder']) || 'صنایع غذایی گاتان',
+          initialBalance: parseNumber(pickRowField(row, ['موجودی اولیه (ریال)', 'موجودی اولیه', 'initialBalance'])) || 0,
+          accountingCode: pickRowField(row, ['کد حسابداری', 'accountingCode']),
+          isActive: statusRaw !== 'غیرفعال',
+          notes: pickRowField(row, ['توضیحات', 'notes']),
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, bankAccounts: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('Bank accounts import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || typeFilter !== 'all' || statusFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setTypeFilter('all');
+    setStatusFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد کل حساب‌های بانکی</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-            <Landmark className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">حساب‌های بانکی فعال</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">{toPersianDigits(stats.activeCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع موجودی اولیه</span>
-            <span className="text-lg font-black text-cyan-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalInitial))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Wallet className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع مانده دفتری لحظه‌ای</span>
-            <span className="text-lg font-black text-amber-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalCurrent))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <CreditCard className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'تعداد کل حساب‌های بانکی', value: stats.totalCount, sublabel: 'حساب' },
+          { label: 'حساب‌های بانکی فعال', value: stats.activeCount, sublabel: 'فعال', tone: 'success' },
+          { label: 'مجموع موجودی اولیه', value: toPersianDigits(formatWithCommas(stats.totalInitial)), sublabel: 'ریال', tone: 'info' },
+          { label: 'مجموع مانده دفتری لحظه‌ای', value: toPersianDigits(formatWithCommas(stats.totalCurrent)), sublabel: 'ریال', tone: 'warning' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -501,24 +549,28 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
       ) : (
         /* List View */
         <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو بر اساس نام بانک، شعبه، شماره حساب، کارت یا شبا..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-rose-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو بر اساس نام بانک، شعبه، شماره حساب، کارت یا شبا..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('bank-accounts-table-print', 'فهرست حساب‌های بانکی')}
+            onAdd={handleOpenNew}
+            addLabel="تعریف حساب جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>نوع حساب بانکی</label>
               <select
                 value={typeFilter}
                 onChange={(e) => setTypeFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-rose-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه انواع حساب</option>
                 <option value="جاری">حساب جاری</option>
@@ -526,46 +578,20 @@ export default function BankAccountsTab({ db, onUpdateDb, activePeriodId, askCon
                 <option value="قرض‌الحسنه">قرض‌الحسنه</option>
                 <option value="کوتاه‌مدت">کوتاه‌مدت</option>
               </select>
-
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت حساب</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-rose-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="active">فقط فعال</option>
                 <option value="inactive">غیرفعال</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('bank-accounts-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست حساب‌های بانکی"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>تعریف حساب جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Accounts Table */}
           <div id="bank-accounts-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

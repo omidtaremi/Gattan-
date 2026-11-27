@@ -11,11 +11,19 @@ import {
   Save, X, Calendar, User, Banknote, ShieldCheck, Landmark, Check
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString,
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString,
   getTodayJalali, getRelativeJalaliDate, isJalaliDateInRange, normalizeJalaliDate
 } from '../../utils/persianUtils';
 import TreasuryDateFilterBar, { DateFilterMode } from './TreasuryDateFilterBar';
 import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import { exportRowsToExcel } from '../../utils/tableIoUtils';
 
 interface CounterpartySettlementTabProps {
   db: AppDatabase;
@@ -28,6 +36,7 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
   const [activeSubView, setActiveSubView] = useState<'list' | 'form'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [partyTypeFilter, setPartyTypeFilter] = useState<string>('all');
   const [editingSettlement, setEditingSettlement] = useState<CounterpartySettlement | null>(null);
 
   // Unified Date Filter State (Default to 'today')
@@ -99,9 +108,10 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
         if (!matches) return false;
       }
       if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+      if (partyTypeFilter !== 'all' && s.partyType !== partyTypeFilter) return false;
       return true;
     });
-  }, [settlements, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter]);
+  }, [settlements, dateFilterMode, specificDate, fromDate, toDate, searchQuery, statusFilter, partyTypeFilter]);
 
   const handleOpenNew = () => {
     setEditingSettlement(null);
@@ -213,71 +223,40 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['شماره سند تسویه', 'تاریخ', 'طرف حساب', 'نوع', 'کل مبلغ تسویه (ریال)', 'تخفیف تسویه', 'واریز بانکی', 'نقد', 'چک', 'وضعیت'];
-    const rows = filteredSettlements.map(s => [
-      s.settlementNo,
-      s.date,
-      s.partyName,
-      s.partyType === 'customer' ? 'مشتری' : 'تامین‌کننده',
-      s.totalSettledAmount,
-      s.discountAmount || 0,
-      s.bankTransferAmount || 0,
-      s.cashAmount || 0,
-      s.chequeAmount || 0,
-      s.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس'
-    ]);
-    downloadCSV('گزارش_تسویه_حساب_طرفین.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredSettlements.map(s => ({
+      'شماره سند تسویه': s.settlementNo,
+      'تاریخ': s.date,
+      'طرف حساب': s.partyName,
+      'نوع طرف حساب': s.partyType === 'customer' ? 'مشتری' : 'تامین‌کننده',
+      'کل مبلغ تسویه (ریال)': s.totalSettledAmount,
+      'تخفیف تسویه (ریال)': s.discountAmount || 0,
+      'واریز بانکی (ریال)': s.bankTransferAmount || 0,
+      'نقدی (ریال)': s.cashAmount || 0,
+      'چک (ریال)': s.chequeAmount || 0,
+      'وضعیت': s.status === 'completed' ? 'تکمیل شده' : s.status === 'draft' ? 'پیش‌نویس' : 'باطل شده',
+    }));
+    exportRowsToExcel(rows, 'تسویه حساب طرفین', 'گزارش_تسویه_حساب_طرفین');
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || statusFilter !== 'all' || partyTypeFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setPartyTypeFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد اسناد تسویه حساب</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Receipt className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع بدهی/بستانکاری تسویه‌شده</span>
-            <span className="text-lg font-black text-emerald-400 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalSettled))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع تخفیفات تسویه نقدی</span>
-            <span className="text-lg font-black text-amber-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalDiscount))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <BadgePercent className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">اسناد تسویه نهایی</span>
-            <span className="text-2xl font-black text-purple-400 mt-1 block">{toPersianDigits(stats.completedCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-            <ShieldCheck className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'تعداد اسناد تسویه حساب', value: stats.totalCount, sublabel: 'سند' },
+          { label: 'مجموع بدهی/بستانکاری تسویه‌شده', value: toPersianDigits(formatWithCommas(stats.totalSettled)), sublabel: 'ریال', tone: 'success' },
+          { label: 'مجموع تخفیفات تسویه نقدی', value: toPersianDigits(formatWithCommas(stats.totalDiscount)), sublabel: 'ریال', tone: 'warning' },
+          { label: 'اسناد تسویه نهایی', value: stats.completedCount, sublabel: 'تکمیل‌شده', tone: 'info' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -506,7 +485,7 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingSettlement ? 'ذخیره تغییرات' : 'ثبت سند تسویه حساب'}
@@ -531,59 +510,45 @@ export default function CounterpartySettlementTab({ db, onUpdateDb, activePeriod
             colorScheme="cyan"
           />
 
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو با نام طرف حساب، شماره سند، کد پیگیری فیش..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-cyan-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو با نام طرف حساب، شماره سند، کد پیگیری فیش..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('settlement-table-print', 'فهرست اسناد تسویه حساب طرفین')}
+            onAdd={handleOpenNew}
+            addLabel="ثبت سند تسویه جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>نوع طرف حساب</label>
+              <select
+                value={partyTypeFilter}
+                onChange={(e) => setPartyTypeFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه طرف‌های حساب</option>
+                <option value="customer">مشتریان</option>
+                <option value="supplier">تامین‌کنندگان</option>
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت سند</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-cyan-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="completed">تکمیل شده</option>
                 <option value="draft">پیش‌نویس</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('settlement-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست تسویه‌ها"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>ثبت سند تسویه جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Settlements Table */}
           <div id="settlement-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

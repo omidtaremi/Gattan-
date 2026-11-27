@@ -15,7 +15,7 @@ import { decodeFileBuffer, parseCSVText } from '../utils/csvUtils';
 import { 
   Plus, Search, Edit2, Trash2, CheckCircle, AlertTriangle, FileSpreadsheet, 
   Printer, Save, TrendingUp, TrendingDown, Layers, BarChart3, PieChart, Info, DollarSign, Download,
-  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, CheckSquare, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag, Tag
+  Calendar, Sparkles, RefreshCw, Upload, Clock, Check, CheckSquare, X, Package, Box, Barcode as BarcodeIcon, Scale, Copy, ShoppingBag, Tag, ArrowRight
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import SearchableSelect from './SearchableSelect';
@@ -27,7 +27,23 @@ import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '.
 import { getPeriodBarcodeSettings } from '../utils/periodIsolation';
 import { CopySectionKey } from '../utils/periodCopyEngine';
 import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from './ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../utils/tableIoUtils';
 
 interface SalesManagementProps {
   db: AppDatabase;
@@ -1774,6 +1790,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [prodSearch, setProdSearch] = useState('');
   const [selectedCatFilter, setSelectedCatFilter] = useState('ALL');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isProductFormOpen, setIsProductFormOpen] = useState(false);
 
   const handleApplyBulkEditProducts = () => {
     if (selectedProductIds.length === 0) return;
@@ -2155,6 +2172,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     }
 
     onUpdateDb({ ...db, products: updated, productFormulas: updatedFormulas });
+    setIsProductFormOpen(false);
   };
 
   const deleteProduct = (id: string) => {
@@ -2966,42 +2984,137 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   };
 
 
-  return (
-    <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-2xl font-sans p-3 sm:p-6 text-right space-y-5" dir="rtl">
-      <ModuleHeader
-        icon={<ShoppingBag className="w-5 h-5" />}
-        title="مدیریت فروش و محصولات نهایی"
-        subtitle="تعریف کاتالوگ محصولات، دسته‌بندی‌ها، بسته‌بندی، بارکد، ثبت فروش ماهانه و تحلیل عملکرد فروش (ایزوله در دوره فعال)"
-        periodName={activePeriodObj?.name}
-        recordCount={products.length}
-        recordLabel="محصول"
-        actions={
-          <ErpButton variant="neutral" icon={<Copy className="w-4 h-4" />} onClick={() => setShowCopyModal(true)}>
-            {ERP_BUTTON_LABELS.copyFromPeriod}
-          </ErpButton>
-        }
-      />
+  const downloadSamplePackagingExcel = () => {
+    downloadTemplateExcel(
+      ['عنوان نوع بسته‌بندی', 'توضیحات'],
+      [
+        { 'عنوان نوع بسته‌بندی': 'جعبه شیرینی ۱ کیلویی', 'توضیحات': 'جعبه مقوایی ویژه قنادی' },
+        { 'عنوان نوع بسته‌بندی': 'کیسه نانوایی', 'توضیحات': 'بسته‌بندی نان تازه' },
+      ],
+      'بسته‌بندی',
+      'نمونه_انواع_بسته_بندی'
+    );
+  };
 
-      <ModulePrimaryTabs
-        activeTab={activeTab}
-        onChange={(id) => setActiveTab(id as typeof activeTab)}
-        tabs={[
-          { id: 'products', label: 'تعریف محصولات نهایی', count: products.length },
-          {
-            id: 'categories',
-            label: 'دسته‌بندی و دپارتمان‌ها',
-            count: categories.length,
-            badge: unassignedCategories.length > 0 ? `${toPersianDigits(unassignedCategories.length)} بدون دپارتمان` : undefined
-          },
-          { id: 'packaging', label: 'نوع بسته‌بندی', count: packagingTypesList.length },
-          { id: 'barcodes', label: 'تنظیمات بارکد', icon: <BarcodeIcon className="h-4 w-4" /> },
-          { id: 'records', label: 'ثبت فروش ماهانه', count: salesRecords.length },
-          { id: 'analysis', label: 'تحلیل فروش ماهانه' },
-          { id: 'shelf_tags', label: 'تگ و برچسب قفسه', icon: <Tag className="h-4 w-4" /> }
-        ]}
-      />
+  const exportPackagingExcel = () => {
+    exportRowsToExcel(
+      searchedPkgTypes.map((pt, idx) => ({
+        'ردیف': idx + 1,
+        'عنوان نوع بسته‌بندی': pt.name,
+        'توضیحات': pt.description || '',
+      })),
+      'انواع_بسته_بندی',
+      'بسته‌بندی'
+    );
+  };
+
+  const importPackagingFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const existing = db.packagingTypes || [];
+      const genId = createSimpleIdGenerator(existing, 'pkg');
+      const existingNames = new Set(existing.filter(p => p.periodId === activePeriodId).map(p => p.name.trim().toLowerCase()));
+      const added: PackagingType[] = [];
+      for (const row of rows) {
+        const name = String(pickRowField(row, ['عنوان نوع بسته‌بندی', 'نوع بسته‌بندی', 'عنوان', 'name']) || '').trim();
+        if (!name || existingNames.has(name.toLowerCase())) continue;
+        existingNames.add(name.toLowerCase());
+        added.push({
+          id: genId(),
+          periodId: activePeriodId,
+          name,
+          description: String(pickRowField(row, ['توضیحات', 'مشخصات', 'description']) || '').trim(),
+        });
+      }
+      if (added.length > 0) {
+        onUpdateDb({ ...db, packagingTypes: [...existing, ...added] });
+      }
+    } catch {
+      // handled gracefully
+    }
+  };
+
+  const exportMonthlySalesExcel = () => {
+    exportRowsToExcel(
+      filteredActiveSalesRecords.map((rec, idx) => {
+        const p = productMap[rec.productId];
+        return {
+          'ردیف': idx + 1,
+          'کد محصول': p?.code || rec.productId,
+          'نام محصول': p?.name || '',
+          'تعداد فروش': rec.quantitySold,
+          'فی فروش واحد (ریال)': rec.unitPrice,
+          'مبلغ ناخالص (ریال)': rec.grossSalesAmount,
+          'تخفیف (ریال)': rec.discountAmount,
+          'خالص فروش (ریال)': rec.netSalesAmount,
+        };
+      }),
+      `فروش_ماهانه_${PERSIAN_MONTHS[selectedSalesMonth - 1]}_${selectedSalesYear}`,
+      'فروش ماهانه'
+    );
+  };
+
+  const currentMonthStats = monthlySalesStats[selectedSalesMonth] || { count: 0, totalAmount: 0, totalQty: 0 };
+
+  return (
+    <div className="space-y-6 animate-fadeIn pb-12 text-right font-sans" dir="rtl">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <ModuleHeader
+          icon={<ShoppingBag className="w-5 h-5" />}
+          title="مدیریت فروش و محصولات نهایی"
+          subtitle="تعریف کاتالوگ محصولات، دسته‌بندی‌ها، بسته‌بندی، بارکد، ثبت فروش ماهانه و تحلیل عملکرد فروش (ایزوله در دوره فعال)"
+          periodName={activePeriodObj?.name}
+          recordCount={products.length}
+          recordLabel="محصول"
+          actions={
+            <ErpButton variant="secondary" size="sm" icon={<Copy className="w-3.5 h-3.5" />} onClick={() => setShowCopyModal(true)}>
+              {ERP_BUTTON_LABELS.copyFromPeriod}
+            </ErpButton>
+          }
+        />
+
+        <ModulePrimaryTabs
+          activeTab={activeTab}
+          onChange={(id) => {
+            setActiveTab(id as typeof activeTab);
+            setIsProductFormOpen(false);
+          }}
+          tabs={[
+            { id: 'products', label: 'تعریف محصولات نهایی', count: products.length },
+            {
+              id: 'categories',
+              label: 'دسته‌بندی و دپارتمان‌ها',
+              count: categories.length,
+              badge: unassignedCategories.length > 0 ? `${toPersianDigits(unassignedCategories.length)} بدون دپارتمان` : undefined
+            },
+            { id: 'packaging', label: 'نوع بسته‌بندی', count: packagingTypesList.length },
+            { id: 'barcodes', label: 'تنظیمات بارکد', icon: <BarcodeIcon className="h-4 w-4" /> },
+            { id: 'records', label: 'ثبت فروش ماهانه', count: salesRecords.length },
+            { id: 'analysis', label: 'تحلیل فروش ماهانه' },
+            { id: 'shelf_tags', label: 'تگ و برچسب قفسه', icon: <Tag className="h-4 w-4" /> }
+          ]}
+        />
+      </div>
+
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
+        {!(activeTab === 'products' && isProductFormOpen) && (
+          <KpiStrip
+            items={[
+              { label: 'محصولات نهایی کاتالوگ', value: toPersianDigits(products.length), sublabel: `${toPersianDigits(categories.length)} دسته‌بندی فعال`, tone: 'default' },
+              { label: `اقلام فروش ${PERSIAN_MONTHS[selectedSalesMonth - 1]}`, value: toPersianDigits(currentMonthStats.count), sublabel: `${toPersianDigits(Math.round(currentMonthStats.totalQty * 100) / 100)} واحد فروخته‌شده`, tone: 'info' },
+              { label: `خالص فروش ${PERSIAN_MONTHS[selectedSalesMonth - 1]}`, value: formatWithCommas(currentMonthStats.totalAmount), sublabel: 'ریال', tone: 'success' },
+              { label: 'وضعیت تخصیص دپارتمان', value: unassignedCategories.length > 0 ? `${toPersianDigits(unassignedCategories.length)} نیازمند تخصیص` : 'تکمیل', sublabel: `${toPersianDigits(packagingTypesList.length)} نوع بسته‌بندی`, tone: unassignedCategories.length > 0 ? 'warning' : 'success' },
+            ]}
+          />
+        )}
 
       {/* Global Sales Module Header & 12-Month Selector */}
+      {!(activeTab === 'products' && isProductFormOpen) && (
       <div className="bg-slate-950 border border-slate-850 rounded-2xl sm:rounded-3xl p-3.5 sm:p-5 shadow-xl space-y-3 sm:space-y-4" dir="rtl">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-850/80 pb-4">
           <div className="flex items-center gap-3">
@@ -3133,6 +3246,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           </div>
         </div>
       </div>
+      )}
 
       {/* Active Tab Content */}
 
@@ -3140,115 +3254,100 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       {activeTab === 'products' && (
         <div className="space-y-5 animate-fade-in">
           {/* 1. TOP TOOLBAR: SEARCH, CATEGORY FILTER & ACTION BUTTONS */}
-          <div className="flex flex-col gap-4 bg-slate-900/60 border border-slate-800 p-4.5 rounded-2xl shadow-xl backdrop-blur-md">
-            {/* Search Input & Category Filter row */}
-            <div className="flex flex-col md:flex-row gap-3 w-full">
-              <div className="relative flex-grow w-full">
-                <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                  <Search className="h-4 w-4 text-slate-500" />
-                </span>
-                <input
-                  id="search-prod"
-                  type="text"
-                  className="w-full pr-10 pl-3.5 py-2.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-sans"
-                  placeholder="جستجوی محصول در کاتالوگ (کد کالا، نام محصول، بارکد، گروه)..."
-                  value={prodSearch}
-                  onChange={(e) => setProdSearch(e.target.value)}
-                />
-              </div>
-              <div className="w-full md:w-64">
+          {!isProductFormOpen && (
+          <div className="space-y-3">
+            <UnifiedToolbar
+              searchValue={prodSearch}
+              onSearchChange={setProdSearch}
+              searchPlaceholder="جستجوی محصول در کاتالوگ (کد کالا، نام محصول، بارکد، گروه)..."
+              onAdd={() => {
+                setEditingProduct(null);
+                setIsProductFormOpen(true);
+              }}
+              addLabel={ERP_BUTTON_LABELS.add}
+              hasActiveFilters={Boolean(prodSearch || selectedCatFilter !== 'ALL')}
+              onClearFilters={() => {
+                setProdSearch('');
+                setSelectedCatFilter('ALL');
+              }}
+              onDownloadTemplate={downloadSampleProductsCSV}
+              onImportExcel={importProductsCSV}
+              importAccept=".csv,.xlsx,.xls"
+              onExportExcel={exportProductsCSV}
+              onPrint={() => printElement('sales-products-printable', 'کاتالوگ محصولات نهایی')}
+              extraSecondaryActions={
+                <>
+                  {selectedProductIds.length > 0 && (
+                    <ErpButton
+                      variant="primary"
+                      size="sm"
+                      onClick={handleBatchDeleteProducts}
+                      icon={<Trash2 className="h-3.5 w-3.5" />}
+                    >
+                      حذف دسته‌ای ({toPersianDigits(selectedProductIds.length)})
+                    </ErpButton>
+                  )}
+                  <ErpButton
+                    variant="danger"
+                    size="sm"
+                    onClick={clearAllProducts}
+                    icon={<Trash2 className="h-3.5 w-3.5" />}
+                    title="حذف کلی کاتالوگ محصولات نهایی"
+                  >
+                    حذف کلی کاتالوگ
+                  </ErpButton>
+                </>
+              }
+            />
+
+            <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>گروه و دسته‌بندی محصول</label>
                 <select
                   id="filter-cat"
-                  className="w-full px-3.5 py-2.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-200 focus:outline-none focus:border-rose-500 cursor-pointer h-[38px] flex items-center font-sans font-bold"
+                  className={UNIFIED_FILTER_SELECT_CLASS}
                   value={selectedCatFilter}
                   onChange={(e) => setSelectedCatFilter(e.target.value)}
                 >
-                  <option value="ALL">همه گروه‌های کالا</option>
+                  <option value="ALL">همه گروه‌های کالا ({toPersianDigits(products.length)})</option>
                   {categories.map(c => (
-                    <option key={c.id} value={c.id} className="bg-slate-950 text-slate-200">{c.name}</option>
+                    <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
               </div>
-            </div>
-
-            {/* Buttons and controls row */}
-            <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800/80 w-full justify-between items-center">
-              <div className="flex flex-wrap gap-2 items-center">
-                <input
-                  type="file"
-                  id="import-prod-csv"
-                  accept=".csv, text/csv, application/vnd.ms-excel"
-                  className="hidden"
-                  onChange={importProductsCSV}
-                />
-                <label
-                  htmlFor="import-prod-csv"
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  title="بارگذاری کاتالوگ محصولات تفکیک شده"
-                >
-                  <Upload className="h-4 w-4 text-rose-500" />
-                  بارگذاری اکسل
-                </label>
-
-                <button
-                  onClick={exportProductsCSV}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  title="دانلود کاتالوگ جاری"
-                >
-                  <Download className="h-4 w-4 text-rose-500" />
-                  خروجی اکسل
-                </button>
-
-                <button
-                  onClick={downloadSampleProductsCSV}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-950/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 border-dashed rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  title="دانلود فایل نمونه اکسل جهت بازنشانی اطلاعات"
-                >
-                  <FileSpreadsheet className="h-4 w-4 text-slate-500" />
-                  فایل نمونه اکسل
-                </button>
-              </div>
-
-              <div className="flex flex-wrap gap-2 items-center">
-                {selectedProductIds.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleBatchDeleteProducts}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-all shadow-lg shadow-rose-600/20"
-                    title="حذف محصولات انتخاب شده به صورت گروهی"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    حذف دسته‌ای ({toPersianDigits(selectedProductIds.length)} مورد)
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={clearAllProducts}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-950/20 hover:bg-rose-950/40 text-rose-400 border border-rose-500/20 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  title="حذف کلی کاتالوگ محصولات نهایی"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  حذف کلی کاتالوگ
-                </button>
-              </div>
-            </div>
+            </UnifiedFilterBar>
           </div>
+          )}
 
-          {/* 2. PRODUCT DEFINITION FORM (LOCATED BETWEEN SEARCH AND PRODUCTS TABLE) */}
+          {/* 2. PRODUCT DEFINITION FORM (FULL-WIDTH TOGGLEABLE VIEW) */}
+          {isProductFormOpen && (
           <div className="bg-slate-900/60 border border-slate-800 backdrop-blur-md p-5 rounded-2xl space-y-4 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                <div className="p-1.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg">
-                  <Plus className="h-4 w-4" />
-                </div>
-                {editingProduct ? 'ویرایش شناسنامه محصول نهایی' : 'تعریف محصول جدید در کاتالوگ'}
-              </h3>
-              {editingProduct && (
-                <span className="text-[11px] font-mono px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-lg font-bold">
-                  در حال ویرایش: {editingProduct.name} ({editingProduct.code})
-                </span>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                  <div className="p-1.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg">
+                    <Plus className="h-4 w-4" />
+                  </div>
+                  {editingProduct ? 'ویرایش شناسنامه محصول نهایی' : 'تعریف محصول جدید در کاتالوگ'}
+                </h3>
+                {editingProduct && (
+                  <span className="text-[11px] font-mono px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-lg font-bold">
+                    در حال ویرایش: {editingProduct.name} ({editingProduct.code})
+                  </span>
+                )}
+              </div>
+              <ErpButton
+                type="button"
+                variant="secondary"
+                size="sm"
+                icon={<ArrowRight className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  setEditingProduct(null);
+                  setIsProductFormOpen(false);
+                }}
+              >
+                انصراف و بازگشت
+              </ErpButton>
             </div>
 
             <form onSubmit={handleSaveProduct} className="space-y-4">
@@ -3532,19 +3631,23 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   <Save className="h-4 w-4" />
                   {editingProduct ? 'ثبت و همسانی شناسنامه محصول' : 'افزودن محصول به کاتالوگ'}
                 </button>
-                {editingProduct && (
-                  <button
-                    type="button"
-                    onClick={() => setEditingProduct(null)}
-                    className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-                  >
-                    لغو ویرایش
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingProduct(null);
+                    setIsProductFormOpen(false);
+                  }}
+                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  انصراف و بازگشت
+                </button>
               </div>
             </form>
           </div>
+          )}
 
+          {!isProductFormOpen && (
+          <>
           {/* 3. COPY / SEED CATALOG BANNER (IF EMPTY) */}
           {products.length === 0 && periodsWithProducts.length > 0 && (
             <div className="bg-gradient-to-r from-rose-950/20 to-slate-900 border border-rose-500/20 p-5 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4">
@@ -3694,9 +3797,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           )}
 
           {/* 4. PRODUCTS TABLE (FULL WIDTH UNDER THE DEFINITION FORM) */}
-          <div className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/40 backdrop-blur-md shadow-xl">
+          <div id="sales-products-printable" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md shadow-xl">
             <table className="min-w-full text-right text-xs">
-              <thead className="bg-slate-900/80 text-slate-400 border-b border-slate-800/80">
+              <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800">
                 <tr>
                   <th className="px-4 py-3 text-center" style={{ width: '40px' }}>
                     <input
@@ -3813,7 +3916,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                       <td className="px-4 py-4 text-center">
                         <div className="flex justify-center gap-1.5">
                           <button
-                            onClick={() => setEditingProduct(p)}
+                            onClick={() => { setEditingProduct(p); setIsProductFormOpen(true); }}
                             className="text-xs text-slate-200 border border-slate-800 bg-slate-900 hover:bg-slate-800 p-1 px-2.5 rounded-lg transition-all cursor-pointer"
                           >
                             ویرایش
@@ -3832,6 +3935,8 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
               </tbody>
             </table>
           </div>
+          </>
+          )}
         </div>
       )}
 
@@ -4037,52 +4142,31 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                   </div>
                 </div>
 
-                <div className="relative w-full">
-                  <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-zinc-500" />
-                  </span>
-                  <input
-                    id="pcat-search-inp"
-                    type="text"
-                    placeholder="جستجو در دسته‌بندی‌ها یا نام دپارتمان..."
-                    className="w-full pl-3 pr-10 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-101 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-sans transition-all"
-                    value={prodCatSearch}
-                    onChange={(e) => setProdCatSearch(e.target.value)}
-                  />
-                </div>
-                
-                {/* Buttons and controls row underneath */}
-                <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-zinc-850/60 w-full justify-start">
-                  <button
-                    onClick={downloadSampleProductCategoriesCSV}
-                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-850 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                    title="دانلود فایل اکسل نمونه دسته‌بندی محصول"
-                  >
-                    <Download className="h-4 w-4 text-zinc-400" /> نمونه دسته‌ها
-                  </button>
-                  <button
-                    onClick={exportPCatCSV}
-                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-850 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  >
-                    <FileSpreadsheet className="h-4 w-4 text-emerald-500" /> خروجی اکسل
-                  </button>
-                  <label className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-850 rounded-xl text-xs font-bold cursor-pointer transition-all shadow-md">
-                    <Plus className="h-4 w-4 text-blue-500" /> واردات
-                    <input type="file" accept=".csv" onChange={importPCatCSV} className="hidden" />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={clearAllProductCategories}
-                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-rose-955/15 hover:bg-rose-955/30 text-rose-400 border border-rose-955/30 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-md"
-                  >
-                    <Trash2 className="h-4 w-4" /> حذف کلی دسته‌ها
-                  </button>
-                </div>
+                <UnifiedToolbar
+                  searchValue={prodCatSearch}
+                  onSearchChange={setProdCatSearch}
+                  searchPlaceholder="جستجو در دسته‌بندی‌ها یا نام دپارتمان..."
+                  onDownloadTemplate={downloadSampleProductCategoriesCSV}
+                  onImportExcel={importPCatCSV}
+                  importAccept=".csv,.xlsx,.xls"
+                  onExportExcel={exportPCatCSV}
+                  onPrint={() => printElement('sales-categories-printable', 'فهرست دسته‌بندی محصولات و دپارتمان‌ها')}
+                  extraSecondaryActions={
+                    <ErpButton
+                      variant="danger"
+                      size="sm"
+                      onClick={clearAllProductCategories}
+                      icon={<Trash2 className="h-3.5 w-3.5" />}
+                    >
+                      حذف کلی دسته‌ها
+                    </ErpButton>
+                  }
+                />
               </div>
 
-              <div className="border border-zinc-800 rounded-2xl overflow-x-auto bg-zinc-950/20 backdrop-blur-md">
+              <div id="sales-categories-printable" className="border border-slate-800 rounded-2xl overflow-x-auto bg-slate-950/70 backdrop-blur-md">
                 <table className="min-w-full text-right text-xs">
-                  <thead className="bg-zinc-900/40 text-zinc-400 border-b border-zinc-800/80">
+                  <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800">
                     <tr>
                       <th className="px-4 py-3.5 font-bold tracking-wider">عنوان دسته‌بندی محصول</th>
                       <th className="px-4 py-3.5 font-bold tracking-wider w-[30%]">دپارتمان تولیدی تخصیص‌یافته</th>
@@ -4270,29 +4354,20 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
             {/* Table Side */}
             <div className="md:col-span-2 space-y-4">
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-4 rounded-2xl border border-zinc-800 backdrop-blur-md">
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-zinc-500" />
-                  </span>
-                  <input
-                    id="pkg-search-input"
-                    type="text"
-                    value={pkgSearch}
-                    onChange={(e) => setPkgSearch(e.target.value)}
-                    placeholder="جستجو در انواع بسته‌بندی..."
-                    className="w-full pl-3 pr-10 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all font-medium"
-                  />
-                </div>
+              <UnifiedToolbar
+                searchValue={pkgSearch}
+                onSearchChange={setPkgSearch}
+                searchPlaceholder="جستجو در انواع بسته‌بندی..."
+                onDownloadTemplate={downloadSamplePackagingExcel}
+                onImportExcel={importPackagingFile}
+                importAccept=".xlsx,.xls,.csv"
+                onExportExcel={exportPackagingExcel}
+                onPrint={() => printElement('sales-packaging-printable', 'فهرست انواع بسته‌بندی محصولات')}
+              />
 
-                <div className="text-xs text-zinc-400 bg-zinc-950 px-3 py-1.5 rounded-xl border border-zinc-800 font-bold">
-                  تعداد بسته‌بندی‌ها: <span className="text-rose-400">{toPersianDigits(searchedPkgTypes.length)}</span>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto border border-zinc-800/80 rounded-2xl bg-zinc-950/20 backdrop-blur-md">
-                <table className="min-w-full divide-y divide-zinc-850 text-right">
-                  <thead className="bg-zinc-900/60 text-zinc-400 text-xs">
+              <div id="sales-packaging-printable" className="overflow-x-auto border border-slate-800 rounded-2xl bg-slate-950/70 backdrop-blur-md">
+                <table className="min-w-full divide-y divide-slate-800 text-right">
+                  <thead className="bg-slate-900/90 text-slate-400 text-xs">
                     <tr>
                       <th className="px-4 py-3.5 font-bold tracking-wider">عنوان نوع بسته‌بندی</th>
                       <th className="px-4 py-3.5 font-bold tracking-wider">توضیحات و مشخصات</th>
@@ -4367,58 +4442,36 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           <div className="space-y-6">
             <div className="space-y-5">
               <div className="bg-slate-950 border border-slate-850 rounded-3xl p-6 shadow-xl space-y-5 text-slate-100">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b pb-4.5 border-slate-850 gap-4">
-                  <div>
-                    <h4 className="text-sm font-extrabold text-white flex items-center gap-2">
-                      <FileSpreadsheet className="h-4.5 w-4.5 text-rose-500 animate-pulse" />
-                      ثبت و تنظیم فاکتورهای فروش: <span className="text-rose-500 font-black">ماه {PERSIAN_MONTHS[selectedSalesMonth - 1]} {toPersianDigits(selectedSalesYear)}</span>
-                    </h4>
-                    <span className="text-[10px] text-zinc-400 block mt-1 leading-normal">
-                      ثبت به صورت تک‌ردیفی، لغو فاکتورها، و یا بارگذاری فایل اکسل برای ماه {PERSIAN_MONTHS[selectedSalesMonth - 1]}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                    <button
-                      type="button"
-                      onClick={downloadSamplePeriodicSalesCSV}
-                      className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-zinc-800 hover:bg-zinc-750 text-zinc-300 border border-zinc-700 rounded-xl text-xs font-bold cursor-pointer transition-all"
-                      title="دانلود فایل اکسل نمونه برای ثبت فروش دوره"
-                    >
-                      <Download className="h-4 w-4 text-zinc-400" />
-                      نمونه اکسل فروش
-                    </button>
-                    
-                    <label className="flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-700/20 border border-blue-500/20 hover:bg-blue-700 hover:text-white text-blue-400 rounded-xl text-xs font-bold cursor-pointer transition-all">
-                      <Plus className="h-4 w-4" />
-                      بارگذاری اکسل فروش
-                      <input
-                        id="sales-excel-import"
-                        type="file"
-                        accept=".csv"
-                        onChange={importPeriodicSalesCSV}
-                        className="hidden"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={clearAllSales}
-                      className="flex-grow sm:flex-initial flex items-center justify-center gap-1 px-3 py-2 bg-rose-955/45 text-rose-400 border border-rose-905/60 hover:bg-rose-900/40 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                    >
-                      <Trash2 className="h-4 w-4" /> پاکسازی کل فروش
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowAdvancedImport(!showAdvancedImport)}
-                      className={`flex-grow sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 ${showAdvancedImport ? 'bg-indigo-650 text-white shadow-md' : 'bg-indigo-950/45 text-indigo-400 border border-indigo-900/60 hover:bg-indigo-900/40'} rounded-xl text-xs font-bold transition-all cursor-pointer`}
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      {showAdvancedImport ? 'پنهان‌سازی فرم پیشرفته' : 'اکسل پیشرفته دوگانه (فاکتور + ریز تراکنش)'}
-                    </button>
-                  </div>
-                </div>
+                <UnifiedToolbar
+                  searchValue={salesSearchText}
+                  onSearchChange={setSalesSearchText}
+                  searchPlaceholder="جستجو در فاکتورهای فروش (کد یا نام کالا)..."
+                  onDownloadTemplate={downloadSamplePeriodicSalesCSV}
+                  onImportExcel={importPeriodicSalesCSV}
+                  importAccept=".csv,.xlsx,.xls"
+                  onExportExcel={exportMonthlySalesExcel}
+                  onPrint={() => printElement('sales-records-printable', `فروش ماهانه ${PERSIAN_MONTHS[selectedSalesMonth - 1]} ${toPersianDigits(selectedSalesYear)}`)}
+                  extraSecondaryActions={
+                    <>
+                      <ErpButton
+                        variant={showAdvancedImport ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setShowAdvancedImport(!showAdvancedImport)}
+                        icon={<Sparkles className="h-3.5 w-3.5" />}
+                      >
+                        {showAdvancedImport ? 'پنهان‌سازی فرم پیشرفته' : 'اکسل پیشرفته دوگانه'}
+                      </ErpButton>
+                      <ErpButton
+                        variant="danger"
+                        size="sm"
+                        onClick={clearAllSales}
+                        icon={<Trash2 className="h-3.5 w-3.5" />}
+                      >
+                        پاکسازی کل فروش
+                      </ErpButton>
+                    </>
+                  }
+                />
 
                 {/* Advanced Dual-Excel Import Panel */}
                 {showAdvancedImport && (
@@ -4932,9 +4985,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     </div>
 
                     {/* Sales Records Listing Table with Search, Edit, and Delete */}
-                    <div className="border border-slate-850 rounded-2xl overflow-hidden bg-slate-900/40 overflow-x-auto">
+                    <div id="sales-records-printable" className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-950/70 overflow-x-auto">
                       <table className="min-w-full text-right text-xs">
-                        <thead className="bg-slate-900 border-b border-slate-850">
+                        <thead className="bg-slate-900/90 border-b border-slate-800">
                           <tr>
                             <th className="px-4 py-3.5 font-bold text-zinc-400 w-[12%] text-center">کد محصول</th>
                             <th className="px-4 py-3.5 font-bold text-zinc-400">نام محصول / حسابداری گاتان</th>
@@ -5495,6 +5548,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
           </div>
         </div>
       )}
+      </div>
 
       {confirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn animate-duration-200" dir="rtl">

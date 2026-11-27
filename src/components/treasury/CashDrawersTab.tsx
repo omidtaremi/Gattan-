@@ -11,9 +11,22 @@ import {
   UserCheck, ArrowUpDown, ChevronDown, Check, Eye, RefreshCw, Wallet, ShieldAlert
 } from 'lucide-react';
 import { 
-  toPersianDigits, formatWithCommas, parseNumber, downloadCSV, printElement, matchPersianString 
+  toPersianDigits, formatWithCommas, parseNumber, printElement, matchPersianString 
 } from '../../utils/persianUtils';
-import { nextSimpleId, getPrefixForCollection } from '../../utils/simpleId';
+import { nextSimpleId, createSimpleIdGenerator, getPrefixForCollection } from '../../utils/simpleId';
+import {
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from '../ui/UnifiedErpUi';
+import {
+  exportRowsToExcel,
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../../utils/tableIoUtils';
 
 interface CashDrawersTabProps {
   db: AppDatabase;
@@ -26,6 +39,7 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
   const [activeSubView, setActiveSubView] = useState<'list' | 'form'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [cashierFilter, setCashierFilter] = useState<string>('all');
   const [editingDrawer, setEditingDrawer] = useState<CashDrawer | null>(null);
 
   // Form State
@@ -95,9 +109,11 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
       }
       if (statusFilter === 'active' && !d.isActive) return false;
       if (statusFilter === 'inactive' && d.isActive) return false;
+      if (cashierFilter === 'unassigned' && d.cashierId) return false;
+      if (cashierFilter !== 'all' && cashierFilter !== 'unassigned' && d.cashierId !== cashierFilter) return false;
       return true;
     });
-  }, [drawers, searchQuery, statusFilter, cashierMap]);
+  }, [drawers, searchQuery, statusFilter, cashierFilter, cashierMap]);
 
   const handleOpenNew = () => {
     setEditingDrawer(null);
@@ -192,70 +208,92 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
     );
   };
 
-  const handleExportCSV = () => {
-    const headers = ['کد صندوق', 'نام صندوق', 'محل استقرار', 'صندوق‌دار مسئول', 'موجودی اولیه (ریال)', 'موجودی لحظه‌ای (ریال)', 'سقف مجاز نقدینگی', 'کد حسابداری', 'وضعیت'];
-    const rows = filteredDrawers.map(d => [
-      d.code,
-      d.name,
-      d.location,
-      d.cashierId ? (cashierMap[d.cashierId] || '-') : '-',
-      d.initialBalance || 0,
-      drawerBalances[d.id] || d.initialBalance || 0,
-      d.maxLimit || 0,
-      d.accountingCode || '-',
-      d.isActive ? 'فعال' : 'غیرفعال'
-    ]);
-    downloadCSV('گزارش_صندوق_های_نقدی.csv', headers, rows);
+  const handleExportExcel = () => {
+    const rows = filteredDrawers.map(d => ({
+      'کد صندوق': d.code,
+      'نام صندوق': d.name,
+      'محل استقرار': d.location || '',
+      'صندوق‌دار مسئول': d.cashierId ? (cashierMap[d.cashierId] || '-') : 'مشترک',
+      'موجودی اولیه (ریال)': d.initialBalance || 0,
+      'موجودی لحظه‌ای (ریال)': drawerBalances[d.id] || d.initialBalance || 0,
+      'سقف مجاز نقدینگی (ریال)': d.maxLimit || 0,
+      'کد حسابداری': d.accountingCode || '',
+      'وضعیت': d.isActive ? 'فعال' : 'غیرفعال',
+    }));
+    exportRowsToExcel(rows, 'صندوق‌های نقدی', 'گزارش_صندوق_های_نقدی');
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTemplateExcel(
+      ['کد صندوق', 'نام صندوق', 'محل استقرار', 'موجودی اولیه (ریال)', 'سقف مجاز نقدینگی (ریال)', 'کد حسابداری', 'وضعیت', 'توضیحات'],
+      [{
+        'کد صندوق': 'CSH-01',
+        'نام صندوق': 'صندوق پیشخوان فروشگاه',
+        'محل استقرار': 'پیشخوان اصلی',
+        'موجودی اولیه (ریال)': 5000000,
+        'سقف مجاز نقدینگی (ریال)': 100000000,
+        'کد حسابداری': '102001',
+        'وضعیت': 'فعال',
+        'توضیحات': '',
+      }],
+      'قالب_صندوق',
+      'نمونه_صندوق_های_نقدی'
+    );
+  };
+
+  const handleImportExcel = async (file: File) => {
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) return;
+      const currentList = db.cashDrawers || [];
+      const genId = createSimpleIdGenerator(currentList, getPrefixForCollection('cashDrawers'));
+      const imported: CashDrawer[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const drawerName = pickRowField(row, ['نام صندوق', 'عنوان', 'name']);
+        if (!drawerName) continue;
+        const drawerCode = pickRowField(row, ['کد صندوق', 'کد', 'code']) || `CSH-${(drawers.length + i + 1).toString().padStart(2, '0')}`;
+        const statusRaw = pickRowField(row, ['وضعیت', 'status']);
+        imported.push({
+          id: genId(),
+          periodId: activePeriodId,
+          code: drawerCode,
+          name: drawerName,
+          location: pickRowField(row, ['محل استقرار', 'محل', 'location']) || 'پیشخوان فروشگاه',
+          initialBalance: parseNumber(pickRowField(row, ['موجودی اولیه (ریال)', 'موجودی اولیه', 'initialBalance'])) || 0,
+          maxLimit: parseNumber(pickRowField(row, ['سقف مجاز نقدینگی (ریال)', 'سقف مجاز نقدینگی', 'maxLimit'])) || 0,
+          accountingCode: pickRowField(row, ['کد حسابداری', 'accountingCode']),
+          isActive: statusRaw !== 'غیرفعال',
+          notes: pickRowField(row, ['توضیحات', 'notes']),
+          createdAt: new Date().toLocaleDateString('fa-IR'),
+        });
+      }
+      if (imported.length > 0) {
+        onUpdateDb({ ...db, cashDrawers: [...imported, ...currentList] });
+      }
+    } catch (err) {
+      console.error('Cash drawers import error:', err);
+    }
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || statusFilter !== 'all' || cashierFilter !== 'all');
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setCashierFilter('all');
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Action & KPI Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">تعداد کل صندوق‌ها</span>
-            <span className="text-2xl font-black text-white mt-1 block">{toPersianDigits(stats.totalCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <Vault className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">صندوق‌های فعال</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">{toPersianDigits(stats.activeCount)}</span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <CheckCircle className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع موجودی اولیه صندوق‌ها</span>
-            <span className="text-lg font-black text-cyan-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalInitial))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Coins className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-          <div>
-            <span className="text-xs text-slate-400 font-medium block">مجموع نقدینگی حاضر در صندوق‌ها</span>
-            <span className="text-lg font-black text-rose-300 mt-1 block">
-              {toPersianDigits(formatWithCommas(stats.totalCurrent))} <span className="text-[10px] text-slate-400 font-normal">ریال</span>
-            </span>
-          </div>
-          <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-            <Wallet className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+      {/* Unified KPI Strip */}
+      <KpiStrip
+        items={[
+          { label: 'تعداد کل صندوق‌ها', value: stats.totalCount, sublabel: 'صندوق' },
+          { label: 'صندوق‌های فعال', value: stats.activeCount, sublabel: 'فعال', tone: 'success' },
+          { label: 'مجموع موجودی اولیه', value: toPersianDigits(formatWithCommas(stats.totalInitial)), sublabel: 'ریال', tone: 'info' },
+          { label: 'مجموع نقدینگی حاضر', value: toPersianDigits(formatWithCommas(stats.totalCurrent)), sublabel: 'ریال', tone: 'warning' },
+        ]}
+      />
 
       {/* Main Container */}
       {activeSubView === 'form' ? (
@@ -419,7 +457,7 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
               </button>
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-amber-600/30 transition-all cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all cursor-pointer"
               >
                 <Save className="w-4 h-4" />
                 {editingDrawer ? 'ذخیره تغییرات' : 'ثبت نهایی صندوق'}
@@ -430,59 +468,49 @@ export default function CashDrawersTab({ db, onUpdateDb, activePeriodId, askConf
       ) : (
         /* List View */
         <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-          {/* Controls Bar */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3 flex-1">
-              <div className="relative flex-1 min-w-[240px]">
-                <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="جستجو بر اساس نام صندوق، کد، محل استقرار یا نام مسئول..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-white focus:border-amber-500 outline-none transition-colors placeholder:text-slate-500"
-                />
-              </div>
+          {/* Unified Toolbar & Filter Bar */}
+          <UnifiedToolbar
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="جستجو بر اساس نام صندوق، کد، محل استقرار یا نام مسئول..."
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            onDownloadTemplate={handleDownloadTemplate}
+            onImportExcel={handleImportExcel}
+            onExportExcel={handleExportExcel}
+            onPrint={() => printElement('cash-drawers-table-print', 'فهرست صندوق‌های نقدی')}
+            onAdd={handleOpenNew}
+            addLabel="تعریف صندوق جدید"
+          />
 
+          <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2">
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>صندوق‌دار مسئول</label>
+              <select
+                value={cashierFilter}
+                onChange={(e) => setCashierFilter(e.target.value)}
+                className={UNIFIED_FILTER_SELECT_CLASS}
+              >
+                <option value="all">همه مسئولین</option>
+                <option value="unassigned">مشترک / بدون مسئول ثابت</option>
+                {cashiers.map(c => (
+                  <option key={c.id} value={c.id}>{c.fullName}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت صندوق</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:border-amber-500 outline-none transition-colors"
+                className={UNIFIED_FILTER_SELECT_CLASS}
               >
                 <option value="all">همه وضعیت‌ها</option>
                 <option value="active">فقط فعال</option>
                 <option value="inactive">غیرفعال</option>
               </select>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportCSV}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="خروجی فایل CSV اکسل"
-              >
-                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">اکسل</span>
-              </button>
-
-              <button
-                onClick={() => printElement('cash-drawers-table-print')}
-                className="p-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                title="چاپ لیست صندوق‌ها"
-              >
-                <Printer className="w-4 h-4 text-cyan-400" />
-                <span className="hidden sm:inline">چاپ</span>
-              </button>
-
-              <button
-                onClick={handleOpenNew}
-                className="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-amber-600/30 transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>تعریف صندوق جدید</span>
-              </button>
-            </div>
-          </div>
+          </UnifiedFilterBar>
 
           {/* Drawers Table */}
           <div id="cash-drawers-table-print" className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60">

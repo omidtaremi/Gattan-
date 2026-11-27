@@ -25,7 +25,22 @@ import {
 } from '../utils/persianUtils';
 import ShamsiDatePicker from './ShamsiDatePicker';
 import { nextSimpleId } from '../utils/simpleId';
-import { ModuleHeader, ModulePrimaryTabs, ErpButton, ERP_BUTTON_LABELS } from './ui/UnifiedErpUi';
+import {
+  ModuleHeader,
+  ModulePrimaryTabs,
+  ErpButton,
+  ERP_BUTTON_LABELS,
+  KpiStrip,
+  UnifiedToolbar,
+  UnifiedFilterBar,
+  UNIFIED_FILTER_SELECT_CLASS,
+  UNIFIED_FILTER_LABEL_CLASS,
+} from './ui/UnifiedErpUi';
+import {
+  downloadTemplateExcel,
+  readSpreadsheetRows,
+  pickRowField,
+} from '../utils/tableIoUtils';
 import CopyFromPeriodModal from './ui/CopyFromPeriodModal';
 import {
   FileText,
@@ -1603,14 +1618,81 @@ export default function ProcurementManagement({
     }
   };
 
+  const handleDownloadProcurementTemplate = () => {
+    downloadTemplateExcel(
+      ['نام کالا', 'نام تامین‌کننده', 'تعداد سفارش', 'واحد', 'توضیحات'],
+      [
+        { 'نام کالا': 'آرد قنادی', 'نام تامین‌کننده': 'آسیاب گاتان', 'تعداد سفارش': 5, 'واحد': 'کیسه', 'توضیحات': 'تحویل صبح' },
+        { 'نام کالا': 'شکر سفید', 'نام تامین‌کننده': 'بازرگانی نمونه', 'تعداد سفارش': 2, 'واحد': 'کیسه', 'توضیحات': '' },
+      ],
+      'سفارش خرید',
+      'نمونه_سفارش_خرید_تدارکات'
+    );
+  };
+
+  const handleImportProcurementExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        setToast({ type: 'warning', message: 'فایل اکسل خالی است یا سطر معتبری یافت نشد.' });
+        return;
+      }
+      const periodProducts = (db.products || []).filter(p => p.periodId === activePeriodId);
+      const addedLines: ProcurementOrderItem[] = [];
+      for (const row of rows) {
+        const rawItemName = String(pickRowField(row, ['نام کالا', 'کالا', 'محصول', 'item', 'name']) || '').trim();
+        if (!rawItemName) continue;
+        const matchedRaw = rawItems.find(it => matchPersianString(it.name, rawItemName) || it.code === rawItemName);
+        const matchedProd = !matchedRaw
+          ? periodProducts.find(pr => matchPersianString(pr.name, rawItemName) || pr.code === rawItemName)
+          : undefined;
+        if (!matchedRaw && !matchedProd) continue;
+        const rawSupName = String(pickRowField(row, ['نام تامین‌کننده', 'تامین‌کننده', 'فروشنده', 'supplier']) || '').trim();
+        const matchedSup = rawSupName ? activeSuppliers.find(s => matchPersianString(s.name, rawSupName)) : undefined;
+        const qty = parseNumber(String(pickRowField(row, ['تعداد سفارش', 'تعداد', 'مقدار', 'qty']) || '1')) || 1;
+        const note = String(pickRowField(row, ['توضیحات', 'یادداشت', 'note']) || '').trim();
+        const isProduct = Boolean(matchedProd);
+        const targetId = matchedRaw ? matchedRaw.id : matchedProd!.id;
+        const priceInfo = getLastPurchaseInfo(targetId, isProduct, matchedSup?.id);
+        addedLines.push({
+          lineId: generateLineId(),
+          rawMaterialId: isProduct ? undefined : targetId,
+          productId: isProduct ? targetId : undefined,
+          supplierId: matchedSup?.id || priceInfo.supplierId || undefined,
+          qtyProposed: qty,
+          estimatedCostPerUnit: priceInfo.price,
+          totalEstimatedCost: priceInfo.price * qty,
+          lastPurchasePrice: priceInfo.price,
+          lastPurchasePriceSource: priceInfo.source,
+          lastPurchaseDate: priceInfo.date,
+          itemStatus: 'pending',
+          isReceived: false,
+          rowNotes: note || undefined,
+        });
+      }
+      if (addedLines.length === 0) {
+        setToast({ type: 'warning', message: 'هیچ ردیف کالای منطبق با فهرست اقلام/محصولات در فایل یافت نشد.' });
+        return;
+      }
+      setBasketItems(prev => [...prev, ...addedLines]);
+      setActiveTab('create');
+      setToast({ type: 'success', message: `${toPersianDigits(addedLines.length)} قلم از فایل اکسل به سبد درخواست هفتگی اضافه شد.` });
+    } catch {
+      setToast({ type: 'warning', message: 'خطا در خواندن فایل اکسل تدارکات.' });
+    }
+  };
+
   // ==================== RENDER ====================
   return (
     <div
-      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl sm:rounded-3xl min-h-[600px] shadow-xl font-sans p-3.5 sm:p-6 text-right"
+      className="space-y-6 animate-fadeIn pb-12 text-right font-sans"
       dir="rtl"
     >
-      {/* UNIFIED MODULE HEADER & PRIMARY TABS */}
-      <div className="mb-5">
+      {/* UNIFIED MODULE HEADER + PRIMARY TABS */}
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <ModuleHeader
           icon={<ShoppingCart className="h-5 w-5" />}
           title="سفارشات هفتگی کالا و کارتابل تدارکات"
@@ -1624,7 +1706,7 @@ export default function ProcurementManagement({
                 <ErpButton
                   variant="secondary"
                   size="sm"
-                  icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
+                  icon={<AlertTriangle className="h-3.5 w-3.5 text-amber-400" />}
                   onClick={() => setActiveTab('backlog')}
                 >
                   {toPersianDigits(previousBacklogRows.length)} قلم جامانده
@@ -1658,7 +1740,10 @@ export default function ProcurementManagement({
             { id: 'create', label: editingOrderId ? 'ویرایش درخواست سفارش' : 'ثبت درخواست هفتگی', icon: <Plus className="h-4 w-4" />, count: basketItems.length || undefined },
           ]}
         />
+      </div>
 
+      {/* Main Content Card */}
+      <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
         {/* INLINE TOAST NOTIFICATION */}
         {toast && (
           <div
@@ -1690,7 +1775,17 @@ export default function ProcurementManagement({
             </button>
           </div>
         )}
-      </div>
+
+        {activeTab !== 'create' && (
+          <KpiStrip
+            items={[
+              { label: 'کل اقلام کارتابل فعال', value: toPersianDigits(reportStats.totalLines), sublabel: `${toPersianDigits(ordersHistory.length)} درخواست ثبت‌شده`, tone: 'default' },
+              { label: 'در انتظار خرید', value: toPersianDigits(reportStats.pendingLines), sublabel: `${toPersianDigits(previousBacklogRows.length)} قلم جامانده قبلی`, tone: 'warning' },
+              { label: 'خریداری‌شده (در مسیر تحویل)', value: toPersianDigits(reportStats.purchasedLines), sublabel: 'منتظر تایید دریافت', tone: 'info' },
+              { label: 'تایید دریافت‌شده', value: toPersianDigits(reportStats.receivedLines), sublabel: 'تحویل کامل به انبار', tone: 'success' },
+            ]}
+          />
+        )}
 
       {/* ==================== TAB 1: CREATE / EDIT MULTI-ITEM WEEKLY ORDER ==================== */}
       {activeTab === 'create' && (
@@ -2420,119 +2515,79 @@ export default function ProcurementManagement({
             </div>
           )}
 
-          {/* Buyer Filter & Controls Bar */}
-          <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-4 space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              <select
-                value={reportSupplierFilter}
-                onChange={e => setReportSupplierFilter(e.target.value)}
-                className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white cursor-pointer"
-              >
-                <option value="ALL">همه تامین‌کنندگان</option>
-                <option value="OPEN">فقط اقلام سفارش آزاد (بدون تامین‌کننده)</option>
-                {activeSuppliers.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-
-              <div className="relative sm:col-span-2">
-                <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                  <Search className="h-4 w-4 text-slate-400" />
-                </span>
-                <input
-                  type="text"
-                  placeholder="جستجوی نام کالا، تامین‌کننده، عنوان سفارش یا نام تحویل‌گیرنده..."
-                  value={reportSearch}
-                  onChange={e => setReportSearch(e.target.value)}
-                  className="w-full pr-10 pl-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
-              {/* Status Segmented Filter */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex flex-wrap bg-slate-200/70 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 gap-1">
-                  {(
-                    [
-                      { key: 'all', label: `همه (${toPersianDigits(reportStats.totalLines)})` },
-                      { key: 'pending', label: `در انتظار خرید (${toPersianDigits(reportStats.pendingLines)})` },
-                      { key: 'purchased', label: `خریداری شده (${toPersianDigits(reportStats.purchasedLines)})` },
-                      { key: 'received', label: `تایید دریافت (${toPersianDigits(reportStats.receivedLines)})` }
-                    ] as const
-                  ).map(st => (
-                    <button
-                      key={st.key}
-                      type="button"
-                      onClick={() => setReportStatusFilter(st.key)}
-                      className={`px-3 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap ${
-                        reportStatusFilter === st.key
-                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {st.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* View Mode Toggle (Default: Grouped by Supplier) */}
-                <div className="flex bg-slate-200/70 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setReportViewMode('bySupplier')}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap ${
-                      reportViewMode === 'bySupplier'
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <LayoutGrid className="h-3.5 w-3.5" />
-                    <span>تفکیک تامین‌کننده</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReportViewMode('table')}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap ${
-                      reportViewMode === 'table'
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <List className="h-3.5 w-3.5" />
-                    <span>جدول کامل</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Export & Print Buttons */}
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={printComprehensiveReport}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
-                >
-                  <Printer className="h-3.5 w-3.5 shrink-0" />
-                  <span>چاپ لیست خرید</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => exportOrdersReportCSV(false)}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-bold cursor-pointer whitespace-nowrap"
-                >
-                  <Download className="h-3.5 w-3.5 shrink-0" />
-                  <span>اکسل گزارش</span>
-                </button>
-                <button
-                  type="button"
+          {/* Unified Buyer Toolbar & Filter Bar */}
+          <div className="space-y-3">
+            <UnifiedToolbar
+              searchValue={reportSearch}
+              onSearchChange={setReportSearch}
+              searchPlaceholder="جستجوی نام کالا، تامین‌کننده، عنوان سفارش یا نام تحویل‌گیرنده..."
+              hasActiveFilters={Boolean(reportSearch || reportSupplierFilter !== 'ALL' || reportStatusFilter !== 'all')}
+              onClearFilters={() => {
+                setReportSearch('');
+                setReportSupplierFilter('ALL');
+                setReportStatusFilter('all');
+              }}
+              onDownloadTemplate={handleDownloadProcurementTemplate}
+              onImportExcel={handleImportProcurementExcel}
+              importAccept=".xlsx,.xls,.csv"
+              onExportExcel={() => exportOrdersReportCSV(false)}
+              onPrint={printComprehensiveReport}
+              extraSecondaryActions={
+                <ErpButton
+                  variant="secondary"
+                  size="sm"
                   onClick={() => exportOrdersReportCSV(true)}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                  icon={<Download className="h-3.5 w-3.5 text-amber-400" />}
                 >
-                  <Download className="h-3.5 w-3.5 shrink-0" />
-                  <span>اکسل خریداری‌نشده‌ها</span>
-                </button>
+                  اکسل خریداری‌نشده‌ها
+                </ErpButton>
+              }
+              onAdd={() => setActiveTab('create')}
+              addLabel="درخواست هفتگی جدید"
+            />
+
+            <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-3">
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>تامین‌کننده</label>
+                <select
+                  value={reportSupplierFilter}
+                  onChange={e => setReportSupplierFilter(e.target.value)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="ALL">همه تامین‌کنندگان</option>
+                  <option value="OPEN">فقط اقلام سفارش آزاد (بدون تامین‌کننده)</option>
+                  {activeSuppliers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
               </div>
-            </div>
+
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت خرید و تحویل</label>
+                <select
+                  value={reportStatusFilter}
+                  onChange={e => setReportStatusFilter(e.target.value as any)}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="all">همه وضعیت‌ها ({toPersianDigits(reportStats.totalLines)})</option>
+                  <option value="pending">در انتظار خرید ({toPersianDigits(reportStats.pendingLines)})</option>
+                  <option value="purchased">خریداری شده ({toPersianDigits(reportStats.purchasedLines)})</option>
+                  <option value="received">تایید دریافت ({toPersianDigits(reportStats.receivedLines)})</option>
+                </select>
+              </div>
+
+              <div>
+                <label className={UNIFIED_FILTER_LABEL_CLASS}>حالت نمایش کارتابل</label>
+                <select
+                  value={reportViewMode}
+                  onChange={e => setReportViewMode(e.target.value as 'bySupplier' | 'table')}
+                  className={UNIFIED_FILTER_SELECT_CLASS}
+                >
+                  <option value="bySupplier">تفکیک بر اساس تامین‌کننده</option>
+                  <option value="table">جدول کامل یکپارچه</option>
+                </select>
+              </div>
+            </UnifiedFilterBar>
           </div>
 
           {/* VIEW MODE A: FULL TABLE (DESKTOP) + CARDS (MOBILE) */}
@@ -3563,6 +3618,7 @@ export default function ProcurementManagement({
           </div>
         </div>
       )}
+      </div>
       <CopyFromPeriodModal
         open={showCopyModal}
         onClose={() => setShowCopyModal(false)}
