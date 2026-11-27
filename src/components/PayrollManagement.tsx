@@ -32,6 +32,7 @@ import {
   didEmployeeDepartInMonth,
   didSettleLeaveThroughMonth,
   findFirstAttendanceDateForCode,
+  findLastAttendanceDateForEmployee,
   formatMonthlyLeaveHM,
   getMonthlyLeaveMinutesForYearMonth,
   isDepartedOrSettlingInMonth,
@@ -1917,6 +1918,41 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [settlementPreselectEmpCode, setSettlementPreselectEmpCode] = useState<string>('');
   const [settlementPreselectContext, setSettlementPreselectContext] = useState<{ year: number; month: number; readOnly?: boolean } | null>(null);
   const [pendingSettlementPreview, setPendingSettlementPreview] = useState<ProvisionalSettlementPreview | null>(null);
+  const [departureModalState, setDepartureModalState] = useState<{
+    employee: Personnel;
+    date: string;
+    reason: string;
+    suggestedDate: string;
+    suggestedSourceLabel: string;
+    lastAttendanceInMonth: string;
+    lastAttendanceInPeriod: string;
+    hasExistingDeparture: boolean;
+    wasMonthLocked: boolean;
+  } | null>(null);
+  const [departureModalError, setDepartureModalError] = useState<string>('');
+  const [pendingDepartureRelock, setPendingDepartureRelock] = useState<{
+    year: number;
+    month: number;
+    lockKey: string;
+    employeeCode: string;
+    employeeName: string;
+    expectedDepartureDate: string;
+    action: 'save' | 'cancel';
+  } | null>(null);
+
+  const activePeriodSettlementByEmpCode = useMemo(() => {
+    const map = new Map<string, any>();
+    (db.personnelSettlements || []).forEach(s => {
+      if (s.periodId !== activePeriodId) return;
+      const code = String(s.employeeCode || '').trim();
+      if (!code) return;
+      const prev = map.get(code);
+      if (!prev || (s.settlementType || 'with_departure') === 'with_departure') {
+        map.set(code, s);
+      }
+    });
+    return map;
+  }, [db.personnelSettlements, activePeriodId]);
 
   useEffect(() => {
     if (activeTab !== 'settlement' && pendingSettlementPreview) {
@@ -12720,14 +12756,20 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   // ==========================================
   // 12-MONTH PAYROLL LIST REGISTRATION & MANAGEMENT
   // ==========================================
-  const handleRegisterMonthlyPayroll = (targetMonth: number = calcMonth, targetYear: number = calcYear) => {
+  const handleRegisterMonthlyPayroll = (
+    targetMonth: number = calcMonth,
+    targetYear: number = calcYear,
+    options?: { silent?: boolean }
+  ) => {
     const monthName = PERSIAN_MONTHS_NAMES[targetMonth - 1] || `ماه ${targetMonth}`;
     const targetPeriodExists = (db.payrollPeriods || []).some(
       pp => pp.periodId === activePeriodId && Number(pp.year) === Number(targetYear) && Number(pp.month) === Number(targetMonth)
     );
     const targetLockKey = `${targetYear}-${targetMonth}`;
     if (targetPeriodExists && !recalculatedMonths[targetLockKey]) {
-      alert(`سند حقوق ماه «${monthName} ${toPersianDigits(targetYear)}» قفل شده است. جهت اصلاح یا ثبت مجدد ابتدا دکمه «بازگشایی قفل و محاسبه مجدد حقوق» را بزنید.`);
+      if (!options?.silent) {
+        alert(`سند حقوق ماه «${monthName} ${toPersianDigits(targetYear)}» قفل شده است. جهت اصلاح یا ثبت مجدد ابتدا دکمه «بازگشایی قفل و محاسبه مجدد حقوق» را بزنید.`);
+      }
       return;
     }
     // Finalize & synchronize month attendance records (auto-register unknown codes & link employeeId)
@@ -13067,8 +13109,152 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       ? `\n✓ تعداد ${toPersianDigits(registeredUnknownAttCount)} پرسنل جدید با عنوان «نامشخص» به کادر پرسنلی اضافه شد.`
       : '';
 
-    alert(`لیست حقوق ماه «${monthName} ${toPersianDigits(targetYear)}» با موفقیت برای دوره جاری ثبت و نهایی گردید.\n\n✓ تعداد ${toPersianDigits(totalEmployees)} فیش حقوقی ثبت شد.\n✓ جمع کل خالص پرداختی: ${toPersianDigits(formatWithCommas(totalNetPayable))} ریال\n✓ جمع هزینه کارفرما (حقوق + بیمه ۲۳٪): ${toPersianDigits(formatWithCommas(totalCost))} ریال${attendanceSyncNote}${unknownRegisteredNote}`);
+    if (!options?.silent) {
+      alert(`لیست حقوق ماه «${monthName} ${toPersianDigits(targetYear)}» با موفقیت برای دوره جاری ثبت و نهایی گردید.\n\n✓ تعداد ${toPersianDigits(totalEmployees)} فیش حقوقی ثبت شد.\n✓ جمع کل خالص پرداختی: ${toPersianDigits(formatWithCommas(totalNetPayable))} ریال\n✓ جمع هزینه کارفرما (حقوق + بیمه ۲۳٪): ${toPersianDigits(formatWithCommas(totalCost))} ریال${attendanceSyncNote}${unknownRegisteredNote}`);
+    }
   };
+
+  // ====== PAYROLL TABLE QUICK DEPARTURE DECLARATION (OPEN & LOCKED MONTHS) ======
+  const openDepartureDeclarationModal = (emp: Personnel) => {
+    setDepartureModalError('');
+    const lastAttMonth = findLastAttendanceDateForEmployee(db, emp, activePeriodId, calcYear, calcMonth);
+    const lastAttPeriod = lastAttMonth || findLastAttendanceDateForEmployee(db, emp, activePeriodId);
+
+    const empContracts = (db.personnelContracts || []).filter(
+      c => c.periodId === activePeriodId && c.employeeCode.trim() === String(emp.employeeCode || '').trim()
+    );
+    const latestContractEnd =
+      empContracts
+        .map(c => normalizeRateDateYMD(c.contractEndDate))
+        .filter((d): d is string => Boolean(d))
+        .sort()
+        .reverse()[0] || normalizeRateDateYMD(emp.contractEndDate);
+
+    const monthEndYMD = `${calcYear}/${String(calcMonth).padStart(2, '0')}/${String(getShamsiMonthDays(calcYear, calcMonth)).padStart(2, '0')}`;
+
+    let suggestedDate = '';
+    let suggestedSourceLabel = '';
+    if (lastAttMonth) {
+      suggestedDate = shiftJalaliYMD(lastAttMonth, 1);
+      suggestedSourceLabel = `یک روز پس از آخرین تردد ماه ${curMonthName} (${toPersianDigits(lastAttMonth)})`;
+    } else if (lastAttPeriod) {
+      suggestedDate = shiftJalaliYMD(lastAttPeriod, 1);
+      suggestedSourceLabel = `یک روز پس از آخرین تردد ثبت‌شده در دوره (${toPersianDigits(lastAttPeriod)})`;
+    } else if (latestContractEnd) {
+      suggestedDate = shiftJalaliYMD(latestContractEnd, 1);
+      suggestedSourceLabel = `یک روز پس از اتمام قرارداد (${toPersianDigits(latestContractEnd)})`;
+    } else {
+      suggestedDate = shiftJalaliYMD(monthEndYMD, 1);
+      suggestedSourceLabel = `یک روز پس از پایان ماه ${curMonthName} (${toPersianDigits(monthEndYMD)})`;
+    }
+
+    const existingDepNorm = emp.departureDate && String(emp.departureDate).trim()
+      ? normalizeDateStr(String(emp.departureDate).trim())
+      : '';
+
+    setDepartureModalState({
+      employee: emp,
+      date: existingDepNorm || suggestedDate,
+      reason: emp.departureReason || 'استعفا',
+      suggestedDate,
+      suggestedSourceLabel,
+      lastAttendanceInMonth: lastAttMonth,
+      lastAttendanceInPeriod: lastAttPeriod,
+      hasExistingDeparture: Boolean(existingDepNorm),
+      wasMonthLocked: isMonthLocked
+    });
+  };
+
+  const handleConfirmDepartureFromPayroll = (action: 'save' | 'cancel') => {
+    if (!departureModalState) return;
+    setDepartureModalError('');
+
+    const targetEmp = departureModalState.employee;
+    const empName = targetEmp.fullName || `${targetEmp.firstName || ''} ${targetEmp.lastName || ''}`.trim() || targetEmp.employeeCode;
+
+    let normalizedDepDate = '';
+    if (action === 'save') {
+      const rawDate = toEnglishDigits(departureModalState.date || '').trim();
+      const parsed = parseJalali(rawDate);
+      if (!parsed || parsed.y < 1300 || parsed.m < 1 || parsed.m > 12 || parsed.d < 1 || parsed.d > 31) {
+        setDepartureModalError('لطفاً تاریخ ترک کار معتبری با فرمت شمسی (مثلاً ۱۴۰۵/۰۴/۱۵) وارد نمایید.');
+        return;
+      }
+      normalizedDepDate = normalizeDateStr(rawDate);
+    }
+
+    const nextDepDate = action === 'save' ? normalizedDepDate : undefined;
+    const nextDepReason = action === 'save' ? (departureModalState.reason || 'استعفا') : undefined;
+    const nextIsActive = action === 'save' ? false : true;
+
+    const updatedPersonnel = (db.personnel || []).map(p => {
+      const isMatch =
+        (targetEmp.id && p.id === targetEmp.id) ||
+        (p.periodId === activePeriodId && p.employeeCode.trim() === String(targetEmp.employeeCode || '').trim());
+      if (!isMatch) return p;
+      return {
+        ...p,
+        isActive: nextIsActive,
+        departureDate: nextDepDate,
+        departureReason: nextDepReason
+      };
+    });
+
+    const shouldAutoRelock = isMonthLocked;
+
+    onUpdateDb({
+      ...db,
+      personnel: updatedPersonnel
+    });
+
+    setDepartureModalState(null);
+
+    if (shouldAutoRelock) {
+      setRecalculatedMonths(prev => ({
+        ...prev,
+        [currentMonthLockKey]: true
+      }));
+      setPendingDepartureRelock({
+        year: calcYear,
+        month: calcMonth,
+        lockKey: currentMonthLockKey,
+        employeeCode: targetEmp.employeeCode,
+        employeeName: empName,
+        expectedDepartureDate: nextDepDate || '',
+        action
+      });
+    } else {
+      alert(
+        action === 'save'
+          ? `ترک کار پرسنل «${empName}» به تاریخ ${toPersianDigits(normalizedDepDate)} با موفقیت ثبت شد و محاسبات ماه ${curMonthName} به‌روزرسانی گردید.`
+          : `ترک کار پرسنل «${empName}» لغو شد و وضعیت به شاغل فعال بازگشت.`
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (!pendingDepartureRelock) return;
+    if (calcYear !== pendingDepartureRelock.year || calcMonth !== pendingDepartureRelock.month) return;
+    if (!recalculatedMonths[pendingDepartureRelock.lockKey]) return;
+
+    const freshEmp = (db.personnel || []).find(
+      p => p.periodId === activePeriodId && p.employeeCode.trim() === pendingDepartureRelock.employeeCode.trim()
+    );
+    const currentDep = freshEmp?.departureDate ? normalizeDateStr(freshEmp.departureDate) : '';
+    if (currentDep !== pendingDepartureRelock.expectedDepartureDate) return;
+
+    const { month, year, employeeName, expectedDepartureDate, action } = pendingDepartureRelock;
+    setPendingDepartureRelock(null);
+
+    handleRegisterMonthlyPayroll(month, year, { silent: true });
+
+    const monthName = PERSIAN_MONTHS_NAMES[month - 1] || `ماه ${month}`;
+    alert(
+      action === 'save'
+        ? `ترک کار پرسنل «${employeeName}» به تاریخ ${toPersianDigits(expectedDepartureDate)} ثبت شد؛ قفل سند ماه «${monthName} ${toPersianDigits(year)}» به‌صورت خودکار باز، محاسبات به‌روزرسانی و سند مجدداً قفل گردید.`
+        : `ترک کار پرسنل «${employeeName}» لغو شد؛ قفل سند ماه «${monthName} ${toPersianDigits(year)}» به‌صورت خودکار باز، محاسبات به‌روزرسانی و سند مجدداً قفل گردید.`
+    );
+  }, [pendingDepartureRelock, db.personnel, recalculatedMonths, attendancePayrollCalculations, calcYear, calcMonth, activePeriodId]);
 
   const handleDeleteMonthlyPayroll = (targetMonth: number, targetYear: number) => {
     const monthName = PERSIAN_MONTHS_NAMES[targetMonth - 1] || `ماه ${targetMonth}`;
@@ -17813,49 +17999,78 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                                   {/* Action */}
                                   <td className="px-2 py-2 text-center bg-slate-50">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setSelectedPayslipEmpCode(item.employeeCode);
-                                          setIsPayslipModalOpen(true);
-                                        }}
-                                        className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                        title="مشاهده و چاپ فیش رسمی حقوق ثبت‌شده"
-                                      >
-                                        <FileText className="h-3.5 w-3.5 text-white" />
-                                        <span>فیش</span>
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSettlementPreselectEmpCode(item.employeeCode);
-                                          setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
-                                          setActiveTab('settlement');
-                                        }}
-                                        className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
-                                          didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
-                                            ? 'bg-amber-600 hover:bg-amber-500'
-                                            : 'bg-rose-600 hover:bg-rose-500'
-                                        }`}
-                                        title={
-                                          didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
-                                            ? 'مشاهده و ویرایش برگه تسویه حساب'
-                                            : 'محاسبه و ثبت تسویه حساب بر اساس لیست‌های حقوق ثبت‌شده دوره مالی'
-                                        }
-                                      >
-                                        <Receipt className="h-3 w-3 text-white" />
-                                        <span>
-                                          {didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
-                                            ? 'تسویه حساب (ثبت‌شده)'
-                                            : 'تسویه حساب'}
-                                        </span>
-                                      </button>
-                                      <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
-                                        🔒 قفل
-                                      </span>
-                                    </div>
+                                    {(() => {
+                                      const hasRegisteredDeparture = Boolean(emp?.departureDate && String(emp.departureDate).trim());
+                                      const existingSettlement = activePeriodSettlementByEmpCode.get(String(item.employeeCode || '').trim());
+                                      const canShowSettlement = hasRegisteredDeparture || Boolean(existingSettlement);
+
+                                      return (
+                                        <div className="flex items-center justify-center gap-1 flex-wrap">
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSelectedPayslipEmpCode(item.employeeCode);
+                                              setIsPayslipModalOpen(true);
+                                            }}
+                                            className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                            title="مشاهده و چاپ فیش رسمی حقوق ثبت‌شده"
+                                          >
+                                            <FileText className="h-3.5 w-3.5 text-white" />
+                                            <span>فیش</span>
+                                          </button>
+                                          {emp?.id && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                openDepartureDeclarationModal(emp);
+                                              }}
+                                              className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs border ${
+                                                hasRegisteredDeparture
+                                                  ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                                                  : 'bg-slate-800 hover:bg-rose-600 text-white border-slate-700'
+                                              }`}
+                                              title={
+                                                hasRegisteredDeparture
+                                                  ? `ویرایش یا لغو ترک کار ثبت‌شده (${toPersianDigits(emp.departureDate || '')}) — با بازگشایی و قفل مجدد خودکار سند`
+                                                  : `اعلام ترک کار ${emp.firstName || ''} ${emp.lastName || ''} (با بازگشایی و قفل مجدد خودکار سند)`
+                                              }
+                                            >
+                                              <UserMinus className="h-3 w-3" />
+                                              <span>{hasRegisteredDeparture ? 'ویرایش ترک کار' : 'اعلام ترک کار'}</span>
+                                            </button>
+                                          )}
+                                          {canShowSettlement && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSettlementPreselectEmpCode(item.employeeCode);
+                                                setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
+                                                setActiveTab('settlement');
+                                              }}
+                                              className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
+                                                existingSettlement
+                                                  ? 'bg-amber-600 hover:bg-amber-500'
+                                                  : 'bg-rose-600 hover:bg-rose-500'
+                                              }`}
+                                              title={
+                                                existingSettlement
+                                                  ? 'ویرایش برگه تسویه حساب ثبت‌شده این پرسنل'
+                                                  : 'محاسبه و ثبت تسویه حساب بر اساس لیست‌های حقوق ثبت‌شده دوره مالی'
+                                              }
+                                            >
+                                              <Receipt className="h-3 w-3 text-white" />
+                                              <span>{existingSettlement ? 'ویرایش تسویه حساب' : 'تسویه حساب'}</span>
+                                            </button>
+                                          )}
+                                          <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
+                                            🔒 قفل
+                                          </span>
+                                        </div>
+                                      );
+                                    })()}
                                   </td>
                                 </tr>
                               );
@@ -18045,57 +18260,81 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                               {/* عملیات و فیش رسمی */}
                               <td className="px-2 py-2 text-center bg-slate-50">
-                                <div className="flex items-center justify-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedPayslipEmpCode(row.employee.employeeCode);
-                                      setIsPayslipModalOpen(true);
-                                    }}
-                                    className="p-1 px-2.5 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                    title={`مشاهده و چاپ فیش رسمی حقوق ${row.employee.firstName} ${row.employee.lastName}`}
-                                  >
-                                    <FileText className="h-3.5 w-3.5 text-rose-400" />
-                                    <span>فیش حقوق</span>
-                                  </button>
-                                  {!isMonthLocked ? (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setPendingSettlementPreview({
-                                          employeeCode: row.employee.employeeCode,
-                                          year: calcYear,
-                                          month: calcMonth,
-                                          settlementType: 'with_departure'
-                                        });
-                                        setSettlementPreselectEmpCode(row.employee.employeeCode);
-                                        setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
-                                        setActiveTab('settlement');
-                                      }}
-                                      className="p-1 px-2.5 bg-rose-600 hover:bg-rose-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                      title={`محاسبه و انجام تسویه حساب برای ${row.employee.firstName} ${row.employee.lastName}`}
-                                    >
-                                      <Receipt className="h-3 w-3 text-white" />
-                                      <span>تسویه حساب</span>
-                                    </button>
-                                  ) : didEmployeeDepartInMonth(row.employee, calcYear, calcMonth, db.personnelSettlements, activePeriodId) ? (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSettlementPreselectEmpCode(row.employee.employeeCode);
-                                        setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: true });
-                                        setActiveTab('settlement');
-                                      }}
-                                      className="p-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                      title={`مشاهده برگه تسویه حساب ${row.employee.firstName} ${row.employee.lastName}`}
-                                    >
-                                      <Receipt className="h-3 w-3 text-white" />
-                                      <span>مشاهده تسویه حساب</span>
-                                    </button>
-                                  ) : null}
-                                </div>
+                                {(() => {
+                                  const hasRegisteredDeparture = Boolean(row.employee?.departureDate && String(row.employee.departureDate).trim());
+                                  const existingSettlement = activePeriodSettlementByEmpCode.get(String(row.employee.employeeCode || '').trim());
+                                  const canShowSettlement = hasRegisteredDeparture || Boolean(existingSettlement);
+
+                                  return (
+                                    <div className="flex items-center justify-center gap-1 flex-wrap">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedPayslipEmpCode(row.employee.employeeCode);
+                                          setIsPayslipModalOpen(true);
+                                        }}
+                                        className="p-1 px-2.5 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                        title={`مشاهده و چاپ فیش رسمی حقوق ${row.employee.firstName} ${row.employee.lastName}`}
+                                      >
+                                        <FileText className="h-3.5 w-3.5 text-rose-400" />
+                                        <span>فیش حقوق</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openDepartureDeclarationModal(row.employee);
+                                        }}
+                                        className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs border ${
+                                          hasRegisteredDeparture
+                                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                                            : 'bg-slate-800 hover:bg-rose-600 text-white border-slate-700'
+                                        }`}
+                                        title={
+                                          hasRegisteredDeparture
+                                            ? `ویرایش یا لغو ترک کار ثبت‌شده (${toPersianDigits(row.employee.departureDate || '')})`
+                                            : `اعلام و ثبت ترک کار برای ${row.employee.firstName} ${row.employee.lastName}`
+                                        }
+                                      >
+                                        <UserMinus className="h-3 w-3" />
+                                        <span>{hasRegisteredDeparture ? 'ویرایش ترک کار' : 'اعلام ترک کار'}</span>
+                                      </button>
+                                      {canShowSettlement && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!isMonthLocked && !existingSettlement) {
+                                              setPendingSettlementPreview({
+                                                employeeCode: row.employee.employeeCode,
+                                                year: calcYear,
+                                                month: calcMonth,
+                                                settlementType: 'with_departure'
+                                              });
+                                            }
+                                            setSettlementPreselectEmpCode(row.employee.employeeCode);
+                                            setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
+                                            setActiveTab('settlement');
+                                          }}
+                                          className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
+                                            existingSettlement
+                                              ? 'bg-amber-600 hover:bg-amber-500'
+                                              : 'bg-rose-600 hover:bg-rose-500'
+                                          }`}
+                                          title={
+                                            existingSettlement
+                                              ? `ویرایش برگه تسویه حساب ${row.employee.firstName} ${row.employee.lastName}`
+                                              : `محاسبه و انجام تسویه حساب برای ${row.employee.firstName} ${row.employee.lastName}`
+                                          }
+                                        >
+                                          <Receipt className="h-3 w-3 text-white" />
+                                          <span>{existingSettlement ? 'ویرایش تسویه حساب' : 'تسویه حساب'}</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </td>
                             </tr>
                           ))
@@ -23442,6 +23681,170 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             setSettlementPreselectContext(null);
           }}
         />
+      )}
+
+      {/* Quick Departure Declaration / Edit Modal from Payroll Calculation Table */}
+      {departureModalState && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn font-sans"
+          dir="rtl"
+          onClick={() => setDepartureModalState(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden text-right"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="px-5 py-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-500/15 text-rose-400 rounded-xl border border-rose-500/30">
+                  <UserMinus className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">
+                    {departureModalState.hasExistingDeparture ? 'ویرایش یا لغو ترک کار پرسنل' : 'اعلام و ثبت ترک کار پرسنل'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {departureModalState.employee.fullName || `${departureModalState.employee.firstName || ''} ${departureModalState.employee.lastName || ''}`}{' '}
+                    <span className="font-mono text-slate-300">({toPersianDigits(departureModalState.employee.employeeCode)})</span>
+                    {' — '}ماه {curMonthName} {toPersianDigits(calcYear)}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDepartureModalState(null)}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-4">
+              {/* Attendance & Suggested Date Info */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5 space-y-1.5 text-[11px]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-slate-400 font-bold">
+                    تاریخ پیشنهادی ترک کار:
+                  </span>
+                  <span className="font-mono font-black text-emerald-400">
+                    {toPersianDigits(departureModalState.suggestedDate)}
+                  </span>
+                </div>
+                <p className="text-[10.5px] text-slate-300 leading-relaxed">
+                  مبنای پیشنهاد: <strong className="text-sky-300">{departureModalState.suggestedSourceLabel}</strong>
+                </p>
+                {normalizeDateStr(departureModalState.date) !== departureModalState.suggestedDate && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDepartureModalError('');
+                      setDepartureModalState(prev => (prev ? { ...prev, date: prev.suggestedDate } : null));
+                    }}
+                    className="mt-1 px-2.5 py-1 bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                  >
+                    اعمال تاریخ پیشنهادی ({toPersianDigits(departureModalState.suggestedDate)})
+                  </button>
+                )}
+              </div>
+
+              {/* Editable Date + Reason */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-300">
+                    تاریخ ترک کار (قابل اصلاح):
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    placeholder="1405/04/15"
+                    value={toPersianDigits(departureModalState.date)}
+                    onChange={(e) => {
+                      setDepartureModalError('');
+                      setDepartureModalState(prev =>
+                        prev ? { ...prev, date: toEnglishDigits(e.target.value) } : null
+                      );
+                    }}
+                    className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 focus:border-rose-500 rounded-xl text-xs font-mono font-black text-rose-300 text-center focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-300">
+                    علت ترک کار:
+                  </label>
+                  <select
+                    value={departureModalState.reason}
+                    onChange={(e) =>
+                      setDepartureModalState(prev => (prev ? { ...prev, reason: e.target.value } : null))
+                    }
+                    className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 focus:border-rose-500 rounded-xl text-xs text-slate-100 font-bold focus:outline-none cursor-pointer"
+                  >
+                    <option value="استعفا">استعفای کارمند</option>
+                    <option value="اتمام قرارداد">اتمام مدت قرارداد کاری</option>
+                    <option value="ترک کار بدون استعفا">ترک کار بدون استعفا</option>
+                    <option value="اخراج">اخراج</option>
+                    <option value="توافق طرفین">توافق طرفین (تسویه توافقی)</option>
+                    <option value="اخراج / قطع همکاری">اخراج / قطع همکاری توسط کارفرما</option>
+                    <option value="تعدیل نیرو">تعدیل نیرو</option>
+                    <option value="بازنشستگی">بازنشستگی</option>
+                    <option value="ازکارافتادگی">ازکارافتادگی</option>
+                    <option value="سایر">سایر دلایل</option>
+                  </select>
+                </div>
+              </div>
+
+              {departureModalState.wasMonthLocked && (
+                <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-3 flex items-start gap-2 text-[10.5px] text-amber-200 leading-relaxed">
+                  <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                  <span>
+                    سند حقوق ماه <strong>{curMonthName} {toPersianDigits(calcYear)}</strong> در حال حاضر قفل است. با تایید این فرم، قفل سند به‌صورت خودکار باز شده، ترک کار ثبت و محاسبات حقوق به‌روزرسانی می‌شود و سپس سند مجدداً قفل خواهد شد.
+                  </span>
+                </div>
+              )}
+
+              {departureModalError && (
+                <div className="bg-rose-950/50 border border-rose-500/50 rounded-xl p-3 flex items-center gap-2 text-[11px] font-bold text-rose-200">
+                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                  <span>{departureModalError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-3.5 bg-slate-950/80 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                {departureModalState.hasExistingDeparture && (
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmDepartureFromPayroll('cancel')}
+                    className="px-3 py-2 bg-rose-950/50 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 rounded-xl text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>لغو ترک کار (شاغل فعال)</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDepartureModalState(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  انصراف
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmDepartureFromPayroll('save')}
+                  className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-black transition-colors shadow-md cursor-pointer"
+                >
+                  {departureModalState.hasExistingDeparture ? 'ذخیره اصلاح ترک کار' : 'ثبت ترک کار'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 12-Month Annual Payroll Summary Modal */}

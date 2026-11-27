@@ -2342,7 +2342,7 @@ export default function PersonnelSettlementTab({
 
     const existing = ctxReadOnly
       ? (existingWithDeparture || empSettlements[0])
-      : (existingWithDeparture || existingMatchingMonthWithoutDeparture);
+      : (existingWithDeparture || existingMatchingMonthWithoutDeparture || empSettlements[empSettlements.length - 1]);
 
     if (existing) {
       handleOpenEdit(existing, ctxReadOnly, initialContext || undefined);
