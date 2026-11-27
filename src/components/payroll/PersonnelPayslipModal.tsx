@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   Printer, 
@@ -176,12 +177,29 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
 
   // Sync index if initialEmployeeCode changes
-  React.useEffect(() => {
+  useEffect(() => {
     if (initialEmployeeCode && payslips.length > 0) {
       const idx = payslips.findIndex(p => p.employee.employeeCode === initialEmployeeCode);
       if (idx >= 0) setCurrentIndex(idx);
     }
   }, [initialEmployeeCode, payslips]);
+
+  // Escape key to close & lock background body scroll while open
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
 
   // Filtered indices for live search
   const filteredIndices = useMemo(() => {
@@ -198,6 +216,13 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
       })
       .map(({ i }) => i);
   }, [payslips, searchQuery]);
+
+  // Jump to first match when search narrows out current index
+  useEffect(() => {
+    if (searchQuery.trim() && filteredIndices.length > 0 && !filteredIndices.includes(currentIndex)) {
+      setCurrentIndex(filteredIndices[0]);
+    }
+  }, [searchQuery, filteredIndices, currentIndex]);
 
   const currentPayslip = payslips[currentIndex] || payslips[0];
 
@@ -919,42 +944,63 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
   const currentFridayRoundedHours = formatRoundedPayslipHour(currentPayslip.fridayWorkHours, currentPayslip.fridayWorkHoursHM);
   const currentHolidayRoundedHours = formatRoundedPayslipHour(currentPayslip.holidayWorkHours, currentPayslip.holidayWorkHoursHM);
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/85 backdrop-blur-sm flex justify-center items-start p-2 sm:p-4 md:p-6" dir="rtl">
-      <div className="bg-slate-900 border border-slate-750 w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden my-auto flex flex-col max-h-[96vh]">
+  const modalContent = (
+    <div
+      className="fixed inset-0 z-[9999] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-hidden"
+      dir="rtl"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700 w-full max-w-5xl h-[94dvh] max-h-[94dvh] rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
         
         {/* Top Control Bar */}
-        <div className="p-4 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2.5 bg-rose-500/10 text-rose-400 rounded-2xl border border-rose-500/20">
-              <FileText className="h-5 w-5" />
+        <div className="px-3.5 py-2.5 sm:px-4 sm:py-3 bg-slate-950 border-b border-slate-800 space-y-2.5 shrink-0">
+          {/* Row 1: Title + Pinned Close Button */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-2 bg-rose-500/10 text-rose-400 rounded-xl border border-rose-500/20 shrink-0">
+                <FileText className="h-4 w-4 sm:h-5 sm:w-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-xs sm:text-sm font-black text-white flex items-center gap-2 flex-wrap">
+                  <span className="truncate">فیش رسمی حقوق و دستمزد پرسنل</span>
+                  <span className="hidden md:inline text-[10px] text-emerald-400 font-bold border-r border-slate-700 pr-2">
+                    استاندارد مصوب قانون کار و تامین اجتماعی
+                  </span>
+                </h3>
+                <p className="text-[10px] sm:text-[10.5px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                  <span>دوره:</span>
+                  <strong className="text-slate-200">{currentPayslip.monthName} {toPersianDigits(year)}</strong>
+                  <span className="text-slate-600">·</span>
+                  <span>تعداد کل فیش‌ها:</span>
+                  <strong className="text-rose-400">{toPersianDigits(payslips.length)}</strong>
+                  <span>نفر</span>
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-black text-white flex items-center gap-2">
-                <span>فیش رسمی حقوق و دستمزد پرسنل</span>
-                <span className="text-[10px] text-emerald-400 font-bold border-r border-slate-750 pr-2">
-                  استاندارد مصوب قانون کار و تامین اجتماعی
-                </span>
-              </h3>
-              <p className="text-[10.5px] text-slate-400 mt-0.5 flex items-center gap-1.5">
-                <span>دوره:</span>
-                <strong className="text-slate-200">{currentPayslip.monthName} {toPersianDigits(year)}</strong>
-                <span className="text-slate-600">·</span>
-                <span>تعداد کل فیش‌ها:</span>
-                <strong className="text-rose-400">{toPersianDigits(payslips.length)}</strong>
-                <span>نفر</span>
-              </p>
-            </div>
+
+            {/* Prominent Always-Visible Close Button */}
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-2.5 py-1.5 sm:px-3 sm:py-2 bg-rose-600/15 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/35 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+              title="بستن پنجره فیش حقوق (Esc)"
+            >
+              <X className="h-4 w-4" />
+              <span>بستن</span>
+            </button>
           </div>
 
-          {/* Quick Actions */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Row 2: Print Layout & Quick Actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-800/70">
             {/* Layout switch: A5 Dual on A4 vs A5 Single vs A4 Full */}
-            <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs">
+            <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 text-[11px] sm:text-xs flex-wrap gap-0.5">
               <button
                 type="button"
                 onClick={() => setLayoutMode('a5_dual')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 whitespace-nowrap ${
                   layoutMode === 'a5_dual' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-400 hover:text-white'
                 }`}
                 title="چاپ دو فیش A5 در یک برگ A4 (بالا و پایین با خط برش وسط)"
@@ -965,7 +1011,7 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
               <button
                 type="button"
                 onClick={() => setLayoutMode('a5_single')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap ${
                   layoutMode === 'a5_single' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-400 hover:text-white'
                 }`}
                 title="ابعاد استاندارد اختصاصی برگه A5"
@@ -975,7 +1021,7 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
               <button
                 type="button"
                 onClick={() => setLayoutMode('a4_portrait')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap ${
                   layoutMode === 'a4_portrait' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-400 hover:text-white'
                 }`}
                 title="قالب استاندارد رسمی تک برگی تمام‌صفحه A4"
@@ -984,54 +1030,47 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
               </button>
             </div>
 
-            {/* Print Current */}
-            <button
-              type="button"
-              onClick={() => handlePrint('current')}
-              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              title="چاپ فیش پرسنل فعلی (در حالت دو فیش در یک A4، نسخه پرسنل و نسخه بایگانی در یک برگه A4 چاپ می‌شود)"
-            >
-              <Printer className="h-3.5 w-3.5" />
-              <span>چاپ فیش</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {/* Print Current */}
+              <button
+                type="button"
+                onClick={() => handlePrint('current')}
+                className="px-2.5 sm:px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-[11px] sm:text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all cursor-pointer whitespace-nowrap"
+                title="چاپ فیش پرسنل فعلی (در حالت دو فیش در یک A4، نسخه پرسنل و نسخه بایگانی در یک برگه A4 چاپ می‌شود)"
+              >
+                <Printer className="h-3.5 w-3.5" />
+                <span>چاپ فیش</span>
+              </button>
 
-            {/* Print All */}
-            <button
-              type="button"
-              onClick={() => handlePrint('all')}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
-              title="چاپ تمامی فیش‌های پرسنل (در حالت دو فیش در یک A4، هر برگه دو فیش را در خود جای می‌دهد)"
-            >
-              <Printer className="h-3.5 w-3.5 text-emerald-400" />
-              <span>چاپ همه ({toPersianDigits(payslips.length)})</span>
-            </button>
+              {/* Print All */}
+              <button
+                type="button"
+                onClick={() => handlePrint('all')}
+                className="px-2.5 sm:px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] sm:text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                title="چاپ تمامی فیش‌های پرسنل (در حالت دو فیش در یک A4، هر برگه دو فیش را در خود جای می‌دهد)"
+              >
+                <Printer className="h-3.5 w-3.5 text-emerald-400" />
+                <span>چاپ همه ({toPersianDigits(payslips.length)})</span>
+              </button>
 
-            {/* Copy button */}
-            <button
-              type="button"
-              onClick={handleCopySummary}
-              className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition-all cursor-pointer"
-              title="کپی خلاصه فیش در کلیپ‌بورد"
-            >
-              {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
-            </button>
-
-            {/* Close */}
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 bg-slate-900 hover:bg-rose-950/60 hover:text-rose-400 text-slate-400 border border-slate-800 rounded-xl transition-all cursor-pointer"
-              title="بستن"
-            >
-              <X className="h-4 w-4" />
-            </button>
+              {/* Copy button */}
+              <button
+                type="button"
+                onClick={handleCopySummary}
+                className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-[11px] font-bold"
+                title="کپی خلاصه فیش در کلیپ‌بورد"
+              >
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                <span className="hidden sm:inline">{copied ? 'کپی شد' : 'کپی'}</span>
+              </button>
+            </div>
           </div>
         </div>
 
         {/* Sub-bar: Navigation, Search & Toggles */}
-        <div className="px-4 py-2.5 bg-slate-950/70 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0 text-xs">
+        <div className="px-3.5 sm:px-4 py-2 bg-slate-950/70 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0 text-xs">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-slate-400 font-bold">انتخاب پرسنل:</span>
+            <span className="text-slate-400 font-bold hidden sm:inline">انتخاب پرسنل:</span>
             
             {/* Next / Prev */}
             <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
@@ -1044,7 +1083,7 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
-              <span className="font-mono px-2 text-slate-200 font-bold">
+              <span className="font-mono px-1.5 text-slate-200 font-bold text-[11px]">
                 {toPersianDigits(currentIndex + 1)} از {toPersianDigits(payslips.length)}
               </span>
               <button
@@ -1062,13 +1101,20 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
             <select
               value={currentIndex}
               onChange={e => setCurrentIndex(Number(e.target.value))}
-              className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 focus:border-rose-500 font-bold max-w-xs cursor-pointer"
+              className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 focus:border-rose-500 font-bold max-w-[200px] sm:max-w-xs cursor-pointer"
             >
-              {payslips.map((p, idx) => (
-                <option key={p.employee.id || idx} value={idx}>
-                  {toPersianDigits(idx + 1)}. {p.employee.fullName || `${p.employee.firstName} ${p.employee.lastName}`} ({toPersianDigits(p.employee.employeeCode)})
-                </option>
-              ))}
+              {filteredIndices.length > 0 ? (
+                filteredIndices.map((idx) => {
+                  const p = payslips[idx];
+                  return (
+                    <option key={p.employee.id || idx} value={idx}>
+                      {toPersianDigits(idx + 1)}. {p.employee.fullName || `${p.employee.firstName} ${p.employee.lastName}`} ({toPersianDigits(p.employee.employeeCode)})
+                    </option>
+                  );
+                })
+              ) : (
+                <option value={currentIndex}>موردی با این جستجو یافت نشد</option>
+              )}
             </select>
 
             {/* Quick search input */}
@@ -1078,15 +1124,15 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 placeholder="جستجوی نام، کد ملی، پرسنلی..."
-                className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl pr-8 pl-3 py-1.5 focus:border-rose-500 w-44 font-medium"
+                className="bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl pr-8 pl-3 py-1.5 focus:border-rose-500 w-40 sm:w-44 font-medium"
               />
-              <Search className="h-3.5 w-3.5 text-slate-500 absolute right-2.5 top-2.5" />
+              <Search className="h-3.5 w-3.5 text-slate-500 absolute right-2.5 top-2" />
             </div>
           </div>
 
-          <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
             {layoutMode === 'a5_dual' && (
-              <div className="flex items-center gap-1.5 text-[11px] text-amber-300 font-bold bg-amber-950/40 border border-amber-700/50 px-2.5 py-1 rounded-xl">
+              <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-amber-300 font-bold bg-amber-950/40 border border-amber-700/50 px-2.5 py-1 rounded-xl">
                 <Scissors className="h-3.5 w-3.5 text-amber-400" />
                 <span>چاپ اقتصادی: ۲ فیش A5 در هر برگ A4 با خط برش</span>
               </div>
@@ -1115,8 +1161,8 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
         </div>
 
         {/* Modal Scrollable Body: High-Fidelity Paper Simulation */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-5 md:p-6 bg-slate-950/80 flex justify-center">
-          <div className="w-full max-w-4xl bg-white rounded-xl shadow-2xl p-4 sm:p-6 md:p-7 font-sans border-2 border-slate-800 text-slate-950 select-text">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2.5 sm:p-4 md:p-5 bg-slate-950/80">
+          <div className="w-full max-w-4xl mx-auto bg-white rounded-xl shadow-2xl p-3 sm:p-5 md:p-6 font-sans border-2 border-slate-800 text-slate-950 select-text">
             
             {/* Header Section */}
             <div className="pb-3 mb-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-right border-b-2 border-slate-900">
@@ -1159,7 +1205,8 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
               <div className="font-black text-xs px-3 py-1.5 rounded-t-lg bg-slate-900 text-white border border-slate-900">
                 ۱. مشخصات هویتی، استخدامی و حساب بانکی پرسنل
               </div>
-              <table className="w-full text-right text-xs border-collapse border border-slate-400">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[540px] text-right text-xs border-collapse border border-slate-400">
                 <tbody>
                   <tr className="border-b border-slate-300">
                     <td className="p-2 font-black w-1/6 border-l border-slate-300 text-slate-900">نام و خانوادگی:</td>
@@ -1220,6 +1267,7 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* Block 2: Attendance Metrics & Wage Rate Bases */}
@@ -1522,7 +1570,7 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
                 <p className="text-[10.5px] leading-relaxed text-justify border-b border-slate-300 pb-2 text-black font-semibold">
                   <strong>اقرارنامه و رسید دریافت دستمزد (ماده ۳۷ قانون کار):</strong> این فیش به منزله برگه رسمی اعلام کارکرد و حقوق ماهیانه کارگر صادر گردیده و پرسنل با امضای ذیل آن اعلام می‌دارد که کلیه حقوق و مزایای قانونی ماه جاری را بر اساس ارقام مندرج و پس از کسر کسورات قانونی به طور کامل دریافت نموده و نسبت به این دوره ادعایی ندارد.
                 </p>
-                <div className="grid grid-cols-4 gap-3 text-center text-xs font-bold pt-1 text-slate-900">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-xs font-bold pt-1 text-slate-900">
                   <div className="h-14 flex flex-col justify-between">
                     <span>تنظیم‌کننده (امور مالی):</span>
                     <span className="text-[9px] font-mono text-slate-500">......................................</span>
@@ -1546,7 +1594,34 @@ export const PersonnelPayslipModal: React.FC<PersonnelPayslipModalProps> = ({
           </div>
         </div>
 
+        {/* Pinned Bottom Footer Bar */}
+        <div className="px-3.5 sm:px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0">
+          <span className="text-[11px] text-slate-400 truncate">
+            فیش فعلی: <strong className="text-slate-200">{currentFullName}</strong> ({toPersianDigits(currentPayslip.employee.employeeCode)})
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handlePrint('current')}
+              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              <span>چاپ فیش</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 text-xs font-black rounded-xl transition-all cursor-pointer"
+            >
+              بستن پنجره
+            </button>
+          </div>
+        </div>
+
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') return modalContent;
+  return createPortal(modalContent, document.body);
 };
