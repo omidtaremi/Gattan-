@@ -1869,9 +1869,9 @@ export default function CustomerProductionOrders({
               </strong>
             </div>
 
-            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block">مانده وصولی (تحویل)</span>
-              <strong className="text-sm sm:text-base font-mono font-black text-amber-700 dark:text-amber-400 block mt-1.5">
+            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block truncate">مانده وصولی (تحویل)</span>
+              <strong className="text-xs sm:text-sm font-mono font-black text-amber-700 dark:text-amber-400 block mt-1.5 tabular-nums tracking-tight break-words">
                 {toPersianDigits(formatWithCommas(boardStats.totalRemaining))} <span className="text-[10px] font-sans">ریال</span>
               </strong>
             </div>

@@ -5797,11 +5797,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             <span className="text-[10.5px] font-bold text-emerald-300/90">
                               ارزش ریالی این ردیف شمارش
                             </span>
-                            <div className="flex items-baseline gap-1.5 mt-1">
-                              <strong className="text-base font-black text-emerald-300 font-mono">
+                            <div className="flex flex-wrap items-baseline gap-1.5 mt-1 min-w-0">
+                              <strong className="text-xs sm:text-sm font-black text-emerald-300 font-mono tabular-nums tracking-tight break-words">
                                 {formatWithCommas(calculatedLiveCountVal.val)}
                               </strong>
-                              <span className="text-[11px] font-bold text-emerald-400/80">ریال</span>
+                              <span className="text-[10px] font-bold text-emerald-400/80 shrink-0">ریال</span>
                             </div>
                             <span className="text-[10px] text-zinc-400 font-mono mt-1">
                               نرخ واحد: {formatWithCommas(selectedCountItemData.price)} ریال
@@ -6418,9 +6418,9 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
 
       {/* ==================== BOTTOM SYSTEM HIGHLIGHTS: SUMMARY REPORT ==================== */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-6 border-t border-zinc-800/80 mt-8">
-        <div className="p-4.5 bg-zinc-900/40 rounded-2xl border border-zinc-800 backdrop-blur-md shadow-lg">
+        <div className="p-4.5 bg-zinc-900/40 rounded-2xl border border-zinc-800 backdrop-blur-md shadow-lg min-w-0">
           <span className="block text-[11px] font-bold text-zinc-400">ارزش ریالی موجود در آخرین انبارگردانی فعال</span>
-          <strong className="block text-lg font-black text-zinc-100 font-mono mt-1">{formatWithCommas(totalSystemValue)} ریال</strong>
+          <strong className="block text-xs sm:text-sm md:text-[15px] font-black text-zinc-100 font-mono tabular-nums tracking-tight mt-1 break-words">{formatWithCommas(totalSystemValue)} <span className="text-[10px] font-sans font-bold text-zinc-400">ریال</span></strong>
         </div>
         
         <div className="p-4.5 bg-zinc-900/40 rounded-2xl border border-zinc-800 backdrop-blur-md shadow-lg">

@@ -17488,17 +17488,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       <span className="block text-[11px] font-bold text-slate-400">مجموع تعداد کارگران حقوق بگیر</span>
                       <strong className="block text-base font-extrabold text-white mt-1.5 font-mono">{toPersianDigits(reportGrandTotals.empCount)} نفر</strong>
                     </div>
-                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm">
+                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm min-w-0">
                       <span className="block text-[11px] font-bold text-slate-400">حقوق ناخالص متمم پرداختنی</span>
-                      <strong className="block text-base font-extrabold text-emerald-400 mt-1.5 font-mono">{formatWithCommas(reportGrandTotals.paySum)} ریال</strong>
+                      <strong className="block text-xs sm:text-sm font-extrabold text-emerald-400 mt-1.5 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(reportGrandTotals.paySum)} <span className="text-[10px] font-sans font-bold text-slate-400">ریال</span></strong>
                     </div>
-                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm">
+                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm min-w-0">
                       <span className="block text-[11px] font-bold text-slate-400">حق بیمه قانونی تأمین اجتماعی (۲۳٪)</span>
-                      <strong className="block text-base font-extrabold text-amber-400 mt-1.5 font-mono">{formatWithCommas(reportGrandTotals.insSum)} ریال</strong>
+                      <strong className="block text-xs sm:text-sm font-extrabold text-amber-400 mt-1.5 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(reportGrandTotals.insSum)} <span className="text-[10px] font-sans font-bold text-slate-400">ریال</span></strong>
                     </div>
-                    <div className="p-4 bg-gradient-to-br from-rose-950/80 to-slate-950 border border-rose-900/30 text-white rounded-2xl text-right shadow-md">
+                    <div className="p-4 bg-gradient-to-br from-rose-950/80 to-slate-950 border border-rose-900/30 text-white rounded-2xl text-right shadow-md min-w-0">
                       <span className="block text-[11px] font-bold text-rose-300">جمع کل بار هزینه پرسنلی کارگاه</span>
-                      <strong className="block text-base font-extrabold mt-1.5 text-rose-400 font-mono">{formatWithCommas(reportGrandTotals.grandSum)} ریال</strong>
+                      <strong className="block text-xs sm:text-sm font-extrabold mt-1.5 text-rose-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(reportGrandTotals.grandSum)} <span className="text-[10px] font-sans font-bold text-rose-300/80">ریال</span></strong>
                     </div>
                   </div>
 
@@ -17952,54 +17952,54 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     return (
                       <div className="space-y-3">
                         <h5 className="text-[11px] font-black text-slate-400 uppercase tracking-wider text-right">خلاصه وضعیت مالی و بیمه دوره جاری</h5>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2.5">
                           {/* 1 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">جمع کل خالص پرداختی</span>
-                            <div className="text-sm font-black text-emerald-400 font-mono">
-                              {formatWithCommas(totalNetPayable)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">جمع کل خالص پرداختی</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-emerald-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalNetPayable)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 2 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">بیمه سهم کارفرما ۲۰٪</span>
-                            <div className="text-sm font-black text-blue-400 font-mono">
-                              {formatWithCommas(totalEmployerInsurance20)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">بیمه سهم کارفرما ۲۰٪</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-blue-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalEmployerInsurance20)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 3 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">بیمه بیکاری ۳٪</span>
-                            <div className="text-sm font-black text-indigo-400 font-mono">
-                              {formatWithCommas(totalUnemploymentInsurance3)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">بیمه بیکاری ۳٪</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-indigo-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalUnemploymentInsurance3)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 4 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">بیمه سهم کارگر ۷٪</span>
-                            <div className="text-sm font-black text-rose-400 font-mono">
-                              {formatWithCommas(totalWorkerInsurance7)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">بیمه سهم کارگر ۷٪</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-rose-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalWorkerInsurance7)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 5 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">حقوق و مزایای بیمه</span>
-                            <div className="text-sm font-black text-amber-400 font-mono">
-                              {formatWithCommas(totalInsuranceBase)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">حقوق و مزایای بیمه</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-amber-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalInsuranceBase)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 6 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">مشمول مالیات</span>
-                            <div className="text-sm font-black text-purple-400 font-mono">
-                              {formatWithCommas(totalTaxBase)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">مشمول مالیات</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-purple-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalTaxBase)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                           {/* 7 */}
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400">جمع کل مالیات حقوق</span>
-                            <div className="text-sm font-black text-violet-400 font-mono">
-                              {formatWithCommas(totalTax)} <span className="text-[9px] font-bold text-slate-500">ریال</span>
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-xs text-right space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 block truncate">جمع کل مالیات حقوق</span>
+                            <div className="text-xs xl:text-[11.5px] 2xl:text-xs font-black text-violet-400 font-mono tabular-nums tracking-tight leading-snug break-words">
+                              {formatWithCommas(totalTax)} <span className="text-[9px] font-sans font-bold text-slate-500">ریال</span>
                             </div>
                           </div>
                         </div>
@@ -20778,7 +20778,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   { label: 'کل قراردادهای دوره', value: toPersianDigits(periodContractsAll.length), sublabel: 'قرارداد ثبت‌شده', tone: 'default' },
                   { label: 'قراردادهای فعال جاری', value: toPersianDigits(activeContractsCount), sublabel: 'در حال اجرا', tone: 'success' },
                   { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning', valueClassName: 'text-sm sm:text-base tracking-tight' },
-                  { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info', valueClassName: 'text-xs sm:text-sm md:text-[15px] tracking-tight break-all' }
+                  { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info' }
                 ]}
               />
             )}

@@ -2264,8 +2264,8 @@ export default function SalesAnalysisDashboard({
               میانگین فروش ماه به ازاء روز ({toPersianDigits(stats.uniqueDaysCount)} روز معامله)
             </span>
           </div>
-          <div className="mt-2 text-right">
-            <span className="text-base font-black text-rose-400 font-mono block">
+          <div className="mt-2 text-right min-w-0">
+            <span className="text-xs sm:text-sm font-black text-rose-400 font-mono tabular-nums tracking-tight block break-words">
               {formatMax2(stats.avgDailyRevenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
             <p className="text-[9px] text-slate-500 mt-1">میانگین فاکتور فروش در روز: {formatDec2(stats.avgDailyInvoices)} عدد</p>
@@ -2281,8 +2281,8 @@ export default function SalesAnalysisDashboard({
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 block" />
             فروش کل ماه جاری
           </span>
-          <div className="mt-4 text-right">
-            <span className="text-base font-black text-emerald-400 font-mono block">
+          <div className="mt-4 text-right min-w-0">
+            <span className="text-xs sm:text-sm font-black text-emerald-400 font-mono tabular-nums tracking-tight block break-words">
               {formatMax2(stats.revenue)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
             <p className="text-[9px] text-slate-500 mt-1">کل حجم فیزیکی: {formatDec2(stats.volume)} عدد</p>
@@ -2315,8 +2315,8 @@ export default function SalesAnalysisDashboard({
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block" />
             میانگین ارزش فاکتور
           </span>
-          <div className="mt-4 text-right">
-            <span className="text-base font-black text-amber-400 font-mono block">
+          <div className="mt-4 text-right min-w-0">
+            <span className="text-xs sm:text-sm font-black text-amber-400 font-mono tabular-nums tracking-tight block break-words">
               {formatMax2(stats.averageInvoiceVal)} <span className="text-[9.5px] text-slate-450 font-sans">ریال</span>
             </span>
             <p className="text-[9px] text-slate-500 mt-1">متوسط سبد خرید نقدی معاملات</p>

@@ -7275,30 +7275,30 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
 
           {/* KPI Dashboard Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
-            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
+            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between min-w-0">
               <span className="text-xs text-slate-400 font-medium">مجموع درآمد دوره قبل ({comparisonPrevLabel})</span>
-              <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-lg font-black text-white font-mono">{formatWithCommas(Math.round(processedComparisonTotals.priorRevSum))}</span>
-                <span className="text-[10px] text-slate-500">ریال</span>
+              <div className="mt-2 flex flex-wrap items-baseline gap-1 min-w-0">
+                <span className="text-xs sm:text-sm font-black text-white font-mono tabular-nums tracking-tight break-words">{formatWithCommas(Math.round(processedComparisonTotals.priorRevSum))}</span>
+                <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
               </div>
             </div>
-            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
+            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between min-w-0">
               <span className="text-xs text-slate-400 font-medium">مجموع درآمد ماه جاری ({PERSIAN_MONTHS[selectedCogsMonth - 1]} {toPersianDigits(selectedCogsYear)})</span>
-              <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-lg font-black text-white font-mono">{formatWithCommas(Math.round(processedComparisonTotals.currentRevSum))}</span>
-                <span className="text-[10px] text-slate-500">ریال</span>
+              <div className="mt-2 flex flex-wrap items-baseline gap-1 min-w-0">
+                <span className="text-xs sm:text-sm font-black text-white font-mono tabular-nums tracking-tight break-words">{formatWithCommas(Math.round(processedComparisonTotals.currentRevSum))}</span>
+                <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
               </div>
             </div>
-            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
+            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between min-w-0">
               <span className="text-xs text-slate-400 font-medium">تغییر ریالی درآمد کل</span>
-              <div className="mt-2 flex items-center justify-between">
-                <div className="flex items-baseline gap-1">
-                  <span className={`text-lg font-black font-mono ${processedComparisonTotals.revGrowthSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+                <div className="flex flex-wrap items-baseline gap-1 min-w-0">
+                  <span className={`text-xs sm:text-sm font-black font-mono tabular-nums tracking-tight break-words ${processedComparisonTotals.revGrowthSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {processedComparisonTotals.revGrowthSum >= 0 ? '+' : ''}{formatWithCommas(Math.round(processedComparisonTotals.revGrowthSum))}
                   </span>
-                  <span className="text-[10px] text-slate-500">ریال</span>
+                  <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
                 </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${processedComparisonTotals.revGrowthSum >= 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border shrink-0 ${processedComparisonTotals.revGrowthSum >= 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
                   {processedComparisonTotals.revGrowthSum >= 0 ? 'رشد' : 'کاهش'}
                 </span>
               </div>

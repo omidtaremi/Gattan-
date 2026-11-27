@@ -485,22 +485,22 @@ export default function ExpenseManagement({ db, onUpdateDb, activePeriodId }: Ex
             <h3 className="text-sm font-extrabold text-white border-b border-slate-800 pb-2">بیلان کل و خلاصه تراز سربار دوره</h3>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono select-none">
-              <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-center">
+              <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-center min-w-0">
                 <span className="block text-[10px] text-slate-400 font-sans font-semibold">مجموع کل هزینه‌ها</span>
-                <strong className="block text-sm font-bold text-slate-100 mt-1">
-                  {formatWithCommas(operational + distribution + administrative + financial)} ریال
+                <strong className="block text-xs sm:text-[13px] font-bold text-slate-100 mt-1 tabular-nums tracking-tight break-words">
+                  {formatWithCommas(operational + distribution + administrative + financial)} <span className="text-[10px] font-sans text-slate-400">ریال</span>
                 </strong>
               </div>
-              <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/25 text-center text-rose-400">
+              <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/25 text-center text-rose-400 min-w-0">
                 <span className="block text-[10px] text-rose-300 font-sans font-semibold">تخفیفات و برگشت‌ها</span>
-                <strong className="block text-sm font-bold mt-1">
-                  {formatWithCommas(returnsOfExpense)} ریال
+                <strong className="block text-xs sm:text-[13px] font-bold mt-1 tabular-nums tracking-tight break-words">
+                  {formatWithCommas(returnsOfExpense)} <span className="text-[10px] font-sans text-rose-300/80">ریال</span>
                 </strong>
               </div>
-              <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/25 text-center">
+              <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/25 text-center min-w-0">
                 <span className="block text-[10px] font-sans text-emerald-400 font-semibold">هزینه سربار خالص توزیع‌پذیر</span>
-                <strong className="block text-sm font-black text-white mt-1">
-                  {formatWithCommas(netOverheadVal)} ریال
+                <strong className="block text-xs sm:text-[13px] font-black text-white mt-1 tabular-nums tracking-tight break-words">
+                  {formatWithCommas(netOverheadVal)} <span className="text-[10px] font-sans text-emerald-300/80">ریال</span>
                 </strong>
               </div>
             </div>

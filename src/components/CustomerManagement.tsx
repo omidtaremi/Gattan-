@@ -735,11 +735,11 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
               </div>
             </div>
 
-            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-              <span className="text-[11px] text-cyan-400 block mb-1">مجموع سقف اعتبار ریالی</span>
-              <div className="flex items-baseline justify-between">
-                <span className="text-lg font-black text-cyan-400 font-mono">{formatWithCommas(stats.totalCredit)}</span>
-                <span className="text-[10px] text-slate-500">ریال</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+              <span className="text-[11px] text-cyan-400 block mb-1 truncate">مجموع سقف اعتبار ریالی</span>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-1.5 gap-y-0.5 min-w-0">
+                <span className="text-xs sm:text-[13px] md:text-sm font-black text-cyan-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalCredit)}</span>
+                <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
               </div>
             </div>
 

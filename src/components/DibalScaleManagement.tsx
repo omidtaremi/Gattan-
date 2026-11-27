@@ -4527,8 +4527,8 @@ app.listen(8080, () => {
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-xs font-bold text-slate-400">کل فروش ترازو (تومان/ریال)</p>
-                  <h4 className="text-xl font-black text-emerald-400 mt-2 font-mono">
-                    {formatWithCommas(toPersianDigits(58450000))} <span className="text-xs font-sans text-slate-400">ریال</span>
+                  <h4 className="text-sm sm:text-base font-black text-emerald-400 mt-2 font-mono tabular-nums tracking-tight break-words">
+                    {formatWithCommas(toPersianDigits(58450000))} <span className="text-[10px] font-sans text-slate-400">ریال</span>
                   </h4>
                   <div className="text-[10px] text-slate-300 mt-2 space-y-1">
                     <div className="flex items-center gap-1.5">
@@ -4588,8 +4588,8 @@ app.listen(8080, () => {
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-xs font-bold text-slate-400">میانگین ارزش هر فاکتور</p>
-                  <h4 className="text-xl font-black text-amber-400 mt-2 font-mono">
-                    {formatWithCommas(toPersianDigits(913280))} <span className="text-xs font-sans text-slate-400">ریال</span>
+                  <h4 className="text-sm sm:text-base font-black text-amber-400 mt-2 font-mono tabular-nums tracking-tight break-words">
+                    {formatWithCommas(toPersianDigits(913280))} <span className="text-[10px] font-sans text-slate-400">ریال</span>
                   </h4>
                   <p className="text-[10px] text-slate-400 mt-1">میانگین ترکیبی: {toPersianDigits('۲.۲۳')} kg + {toPersianDigits('۰.۸۹')} عدد/فاکتور</p>
                 </div>

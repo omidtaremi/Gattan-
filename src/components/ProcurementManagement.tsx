@@ -2440,9 +2440,9 @@ export default function ProcurementManagement({
               </strong>
             </div>
 
-            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block">برآورد کل ریالی</span>
-              <strong className="text-sm sm:text-base font-mono font-black text-rose-700 dark:text-rose-400 block mt-1.5">
+            <div className="col-span-2 sm:col-span-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block truncate">برآورد کل ریالی</span>
+              <strong className="text-xs sm:text-sm font-mono font-black text-rose-700 dark:text-rose-400 block mt-1.5 tabular-nums tracking-tight break-words">
                 {toPersianDigits(formatWithCommas(reportStats.totalOrderedCost))} <span className="text-[10px] font-sans">ریال</span>
               </strong>
             </div>

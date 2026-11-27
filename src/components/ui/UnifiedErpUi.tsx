@@ -893,6 +893,7 @@ export interface KpiItem {
   sublabel?: string;
   tone?: 'default' | 'success' | 'danger' | 'warning' | 'info';
   valueClassName?: string;
+  isAmount?: boolean;
 }
 
 export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
@@ -921,6 +922,19 @@ export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
       {items.map((item, idx) => {
         const tone = item.tone ?? 'default';
         const displayValue = typeof item.value === 'number' ? item.value.toLocaleString('fa-IR') : item.value;
+        const valueStr = String(displayValue);
+        const sublabelStr = item.sublabel ?? '';
+        const sublabelHasOwnAmount = /[,٬\d۰-۹]/.test(sublabelStr) && /ریال|تومان/.test(sublabelStr);
+        const isAmountValue =
+          item.isAmount === true ||
+          (!sublabelHasOwnAmount && /ریال|تومان/.test(sublabelStr)) ||
+          /ریال|تومان/.test(valueStr) ||
+          /[,٬]/.test(valueStr);
+
+        const defaultValueClass = isAmountValue
+          ? 'text-xs sm:text-[13px] md:text-sm leading-snug tracking-tight break-words'
+          : 'text-lg sm:text-xl truncate';
+
         return (
           <div
             key={`${item.label}-${idx}`}
@@ -929,15 +943,22 @@ export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
             <span className={`text-[11px] font-bold block mb-1 truncate ${labelTone[tone]}`}>
               {item.label}
             </span>
-            <div className="flex items-baseline justify-between gap-1.5 min-w-0">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-1.5 gap-y-0.5 min-w-0">
               <span
-                title={String(displayValue)}
-                className={`font-black font-mono tabular-nums min-w-0 ${item.valueClassName ?? 'text-lg sm:text-xl truncate'} ${valueTone[tone]}`}
+                title={valueStr}
+                className={`font-black font-mono tabular-nums min-w-0 ${item.valueClassName ?? defaultValueClass} ${valueTone[tone]}`}
               >
                 {displayValue}
               </span>
               {item.sublabel && (
-                <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0 truncate">
+                <span
+                  title={sublabelStr}
+                  className={`text-[10px] text-slate-400 dark:text-slate-500 ${
+                    sublabelHasOwnAmount
+                      ? 'font-mono tabular-nums tracking-tight break-words'
+                      : 'shrink-0 truncate'
+                  }`}
+                >
                   {item.sublabel}
                 </span>
               )}

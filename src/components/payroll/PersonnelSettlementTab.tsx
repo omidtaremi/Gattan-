@@ -2943,42 +2943,42 @@ export default function PersonnelSettlementTab({
           </div>
         </div>
 
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-          <span className="text-[11px] text-amber-400 block font-bold mb-1">مجموع حقوق و مزایا</span>
-          <div className="flex items-baseline justify-between gap-1">
-            <span className="text-sm font-black text-amber-400 font-mono truncate">{formatWithCommas(stats.totalGross)}</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+          <span className="text-[11px] text-amber-400 block font-bold mb-1 truncate">مجموع حقوق و مزایا</span>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-1 gap-y-0.5 min-w-0">
+            <span className="text-xs lg:text-[11.5px] xl:text-xs font-black text-amber-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalGross)}</span>
             <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
           </div>
         </div>
 
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-          <span className="text-[11px] text-cyan-400 block font-bold mb-1">مجموع سنوات خدمت</span>
-          <div className="flex items-baseline justify-between gap-1">
-            <span className="text-sm font-black text-cyan-400 font-mono truncate">{formatWithCommas(stats.totalSeverance)}</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+          <span className="text-[11px] text-cyan-400 block font-bold mb-1 truncate">مجموع سنوات خدمت</span>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-1 gap-y-0.5 min-w-0">
+            <span className="text-xs lg:text-[11.5px] xl:text-xs font-black text-cyan-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalSeverance)}</span>
             <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
           </div>
         </div>
 
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-          <span className="text-[11px] text-emerald-400 block font-bold mb-1">مجموع عیدی و پاداش</span>
-          <div className="flex items-baseline justify-between gap-1">
-            <span className="text-sm font-black text-emerald-400 font-mono truncate">{formatWithCommas(stats.totalBonus)}</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+          <span className="text-[11px] text-emerald-400 block font-bold mb-1 truncate">مجموع عیدی و پاداش</span>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-1 gap-y-0.5 min-w-0">
+            <span className="text-xs lg:text-[11.5px] xl:text-xs font-black text-emerald-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalBonus)}</span>
             <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
           </div>
         </div>
 
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-          <span className="text-[11px] text-indigo-400 block font-bold mb-1">بازخرید مرخصی</span>
-          <div className="flex items-baseline justify-between gap-1">
-            <span className="text-sm font-black text-indigo-400 font-mono truncate">{formatWithCommas(stats.totalUnusedLeave)}</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+          <span className="text-[11px] text-indigo-400 block font-bold mb-1 truncate">بازخرید مرخصی</span>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-1 gap-y-0.5 min-w-0">
+            <span className="text-xs lg:text-[11.5px] xl:text-xs font-black text-indigo-400 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalUnusedLeave)}</span>
             <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
           </div>
         </div>
 
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-rose-500/30">
-          <span className="text-[11px] text-rose-400 block font-bold mb-1">خالص قابل پرداخت</span>
-          <div className="flex items-baseline justify-between gap-1">
-            <span className="text-sm font-black text-rose-300 font-mono truncate">{formatWithCommas(stats.totalFinalNet)}</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-rose-500/30 min-w-0">
+          <span className="text-[11px] text-rose-400 block font-bold mb-1 truncate">خالص قابل پرداخت</span>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-1 gap-y-0.5 min-w-0">
+            <span className="text-xs lg:text-[11.5px] xl:text-xs font-black text-rose-300 font-mono tabular-nums tracking-tight break-words">{formatWithCommas(stats.totalFinalNet)}</span>
             <span className="text-[10px] text-slate-500 shrink-0">ریال</span>
           </div>
         </div>
@@ -4535,7 +4535,7 @@ export default function PersonnelSettlementTab({
 
                   <div className="text-left">
                     <span className="text-[11px] text-slate-300 font-bold block">مانده قابل پرداخت به پرسنل:</span>
-                    <span className="text-2xl font-black text-rose-400 font-mono">
+                    <span className="text-base sm:text-lg font-black text-rose-400 font-mono tabular-nums tracking-tight break-words">
                       {formatWithCommas(settlementSummary.finalNetPayable)} <span className="text-xs text-slate-200 font-sans">ریال</span>
                     </span>
                   </div>
