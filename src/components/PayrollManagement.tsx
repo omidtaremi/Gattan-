@@ -37,7 +37,8 @@ import {
   isDepartedOrSettlingInMonth,
   normalizeMonthlyLeaveHMInput,
   ProvisionalSettlementPreview,
-  resolveDepartedMonthAttendancePerf
+  resolveDepartedMonthAttendancePerf,
+  resolveMonthlyInsuranceEligibility
 } from '../utils/payrollSettlementSync';
 import {
   getPeriodPayrollRules,
@@ -4512,7 +4513,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           : ['dailyBaseSalary', 'dailyInsuranceSalary', 'baseSalary', 'housingAllowance', 'foodAllowance', 'baseYearsRate', 'jobAllowance']
       );
 
-      const isInsured = emp.hasInsurance !== false;
+      const monthInsEligibility = resolveMonthlyInsuranceEligibility(
+        emp,
+        Number(calcYear),
+        Number(calcMonth),
+        totalDaysInMonth,
+        totalDaysInMonth
+      );
+      const isInsured = monthInsEligibility.isInsuredForMonth;
       const hasComplementary = emp.complementaryInsurance === true || emp.hasSupplementaryInsurance === true;
       const calSupplementaryPremium = hasComplementary ? (emp.supplementaryInsurancePremium || 0) : 0;
 
@@ -5035,10 +5043,23 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         : 0;
       const netCalculatedSalary = Math.max(0, grossCalculatedSalary - b.calWorkerPremium - calculatedTax);
 
-      // User overrides on worked & insurance days
+      // User overrides on worked & insurance days (enforcing personnel insuranceDate eligibility)
       const defaultPayrollDays = isNormalWorkFullOrMore ? b.totalDaysInMonth : attendanceDaysWorked;
       const userWorkDaysCount = userWorkDays[emp.employeeCode] !== undefined ? userWorkDays[emp.employeeCode] : defaultPayrollDays;
-      const userInsuranceDaysCount = userInsuranceDays[emp.employeeCode] !== undefined ? userInsuranceDays[emp.employeeCode] : defaultPayrollDays;
+      const insEligibility = resolveMonthlyInsuranceEligibility(
+        emp,
+        Number(calcYear),
+        Number(calcMonth),
+        b.totalDaysInMonth,
+        defaultPayrollDays
+      );
+      const isInsuredEffective = insEligibility.isInsuredForMonth;
+      const rawUserInsuranceDays = userInsuranceDays[emp.employeeCode] !== undefined
+        ? userInsuranceDays[emp.employeeCode]
+        : insEligibility.defaultInsuranceDays;
+      const userInsuranceDaysCount = isInsuredEffective
+        ? Math.min(Math.max(0, rawUserInsuranceDays), insEligibility.maxInsurableCalendarDays)
+        : 0;
 
       const monthlyBaseSalaryCalculated = Math.round(b.contractDailyBaseSalary * userWorkDaysCount);
       const td = b.totalDaysInMonth;
@@ -5063,24 +5084,29 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         ? (b.contractDailyBaseSalary || Math.round(monthlyBaseSalaryCalculated / (userWorkDaysCount || 30)))
         : b.effectiveDailyInsuranceSalary;
 
+      const hasActiveInsuranceDays = isInsuredEffective && userInsuranceDaysCount > 0;
       const totalDailyInsuranceBase = effectiveDailyInsuranceSalary + dailySeniorityRateVal;
-      const insuranceMonthlyBaseSalary = totalDailyInsuranceBase * userInsuranceDaysCount;
+      const insuranceMonthlyBaseSalary = hasActiveInsuranceDays ? totalDailyInsuranceBase * userInsuranceDaysCount : 0;
 
-      const insHousingAllowance = td > 0 ? Math.round((b.contractHousingAllowanceValue / td) * userInsuranceDaysCount) : 0;
-      const insFoodAllowance = td > 0 ? Math.round((b.contractFoodAllowanceValue / td) * userInsuranceDaysCount) : 0;
-      const insJobAllowance = td > 0 ? Math.round((b.calJobAllowance / td) * userInsuranceDaysCount) : 0;
+      const insHousingAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractHousingAllowanceValue / td) * userInsuranceDaysCount) : 0;
+      const insFoodAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractFoodAllowanceValue / td) * userInsuranceDaysCount) : 0;
+      const insChildAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractChildAllowanceValue / td) * userInsuranceDaysCount) : 0;
+      const insMarriageAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractMarriageAllowanceValue / td) * userInsuranceDaysCount) : 0;
+      const insJobAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.calJobAllowance / td) * userInsuranceDaysCount) : 0;
 
       let insuranceMonthlyBenefits = 0;
-      if (b.insHousingSelected) insuranceMonthlyBenefits += insHousingAllowance;
-      if (b.insFoodSelected) insuranceMonthlyBenefits += insFoodAllowance;
-      if (b.insChildSelected) insuranceMonthlyBenefits += childAllowance;
-      if (b.insMarriageSelected) insuranceMonthlyBenefits += marriageAllowance;
-      if (b.insJobSelected) insuranceMonthlyBenefits += insJobAllowance;
+      if (hasActiveInsuranceDays) {
+        if (b.insHousingSelected) insuranceMonthlyBenefits += insHousingAllowance;
+        if (b.insFoodSelected) insuranceMonthlyBenefits += insFoodAllowance;
+        if (b.insChildSelected) insuranceMonthlyBenefits += insChildAllowance;
+        if (b.insMarriageSelected) insuranceMonthlyBenefits += insMarriageAllowance;
+        if (b.insJobSelected) insuranceMonthlyBenefits += insJobAllowance;
+      }
 
-      const computedInsBaseUser = insuranceMonthlyBaseSalary + insuranceMonthlyBenefits;
-      const calEmployerInsurance20 = (b.isInsured && b.isEmpSubjectTo20) ? Math.round(computedInsBaseUser * 0.20) : 0;
-      const calUnemploymentInsurance3 = (b.isInsured && b.isEmpSubjectTo3) ? Math.round(computedInsBaseUser * 0.03) : 0;
-      const calWorkerInsurance7 = (b.isInsured && b.isEmpSubjectTo7) ? Math.round(computedInsBaseUser * 0.07) : 0;
+      const computedInsBaseUser = hasActiveInsuranceDays ? (insuranceMonthlyBaseSalary + insuranceMonthlyBenefits) : 0;
+      const calEmployerInsurance20 = (hasActiveInsuranceDays && b.isEmpSubjectTo20) ? Math.round(computedInsBaseUser * 0.20) : 0;
+      const calUnemploymentInsurance3 = (hasActiveInsuranceDays && b.isEmpSubjectTo3) ? Math.round(computedInsBaseUser * 0.03) : 0;
+      const calWorkerInsurance7 = (hasActiveInsuranceDays && b.isEmpSubjectTo7) ? Math.round(computedInsBaseUser * 0.07) : 0;
       const totalInsurance30 = calEmployerInsurance20 + calUnemploymentInsurance3 + calWorkerInsurance7;
 
       let computedTaxBaseUser = 0;
@@ -5250,6 +5276,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         isNormalWorkFullOrMore,
         daysWorkedCount,
         isDepartedNoLeavePad,
+        isInsured: isInsuredEffective,
+        insuranceStartDate: insEligibility.insuranceStartDate,
+        startsMidMonth: insEligibility.startsMidMonth,
+        maxInsurableCalendarDays: insEligibility.maxInsurableCalendarDays,
+        insuranceReason: insEligibility.reason,
         rawOtHours,
         rawFridayHours: b.rawFridayHours,
         rawHolidayHours
@@ -8796,8 +8827,24 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const monthlyYears = Math.round((monthlyBase / 365) * 30);
       const monthlyEidi = Math.round(((monthlyBase * 2) / 365) * 30);
       const gross = monthlyBase + food + housing + child + marriage + resolvedSeniorityBase + monthlyYears + monthlyEidi;
-      const insBase = (contract?.contractDailyInsuranceSalary || activeRates?.dailyInsuranceSalary || dailyBase) * 30 + food + housing;
-      const ins7 = Math.round(insBase * 0.07);
+      const fallbackInsEligibility = resolveMonthlyInsuranceEligibility(
+        emp,
+        Number(calcYear),
+        Number(calcMonth),
+        totalDaysInMonth,
+        totalDaysInMonth
+      );
+      const fallbackInsDays = fallbackInsEligibility.isInsuredForMonth ? fallbackInsEligibility.defaultInsuranceDays : 0;
+      const fallbackHasIns = fallbackInsEligibility.isInsuredForMonth && fallbackInsDays > 0;
+      const insBase = fallbackHasIns
+        ? (
+            (contract?.contractDailyInsuranceSalary || activeRates?.dailyInsuranceSalary || dailyBase) * fallbackInsDays +
+            Math.round(((food + housing) / (totalDaysInMonth || 30)) * fallbackInsDays)
+          )
+        : 0;
+      const ins7 = (fallbackHasIns && emp.isSubjectToWorkerPremium !== false) ? Math.round(insBase * 0.07) : 0;
+      const ins20 = (fallbackHasIns && emp.isSubjectToEmployerPremium !== false) ? Math.round(insBase * 0.20) : 0;
+      const ins3 = (fallbackHasIns && emp.isSubjectToUnemploymentPremium !== false) ? Math.round(insBase * 0.03) : 0;
       const net = gross - ins7;
 
       const bankAcc = (emp.bankAccounts && emp.bankAccounts.length > 0) ? emp.bankAccounts[0] : undefined;
@@ -8841,7 +8888,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         requiredWorkDays: 24,
         requiredHours: 192,
         actualWorkedDays: 30,
-        insuranceDays: 30,
+        insuranceDays: fallbackInsDays,
         workedHoursHM: '۱۹۲:۰۰',
         overtimeHoursHM: '۰:۰۰',
         fridayWorkHoursHM: '۰:۰۰',
@@ -8886,11 +8933,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         insurableBase: insBase,
         taxableBase: 0,
-        employerInsurance20: Math.round(insBase * 0.20),
-        unemploymentInsurance3: Math.round(insBase * 0.03),
-        totalEmployerInsurance23: Math.round(insBase * 0.23),
-        totalInsurance30: Math.round(insBase * 0.30),
-        totalEmployerCost: gross + Math.round(insBase * 0.23)
+        employerInsurance20: ins20,
+        unemploymentInsurance3: ins3,
+        totalEmployerInsurance23: ins20 + ins3,
+        totalInsurance30: ins7 + ins20 + ins3,
+        totalEmployerCost: gross + ins20 + ins3
       };
     });
   }, [isPayslipModalOpen, attendancePayrollCalculations.rows, activeAttendancePerfRows, monthlyRegisteredPayrollItems, isMonthLocked, personnel, personnelByCodeMap, allocMap, departmentNameMap, db.personnelContracts, db.salaryBaseRates, calcYear, calcMonth, activePeriodId]);
@@ -9413,6 +9460,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [batchStartDate, setBatchStartDate] = useState<string>('');
   const [batchEndDate, setBatchEndDate] = useState<string>('');
   const [batchDurationMonths, setBatchDurationMonths] = useState<string>('۱۲');
+  const [contractFormValidationError, setContractFormValidationError] = useState<string>('');
+  const [batchContractNotice, setBatchContractNotice] = useState<{
+    type: 'error' | 'success';
+    title: string;
+    details: string[];
+  } | null>(null);
 
   // ====== DEMOGRAPHICS & FORM STATES ======
   const [birthCertificateNumber, setBirthCertificateNumber] = useState('');
@@ -10053,31 +10106,287 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     return matchedSeniorityRule ? matchedSeniorityRule.dailyRate * 30 : 0;
   };
 
+  // ====== CONTRACT DATE RESOLUTION & VALIDATION HELPERS (ACTIVE PERIOD & DEPARTURE RULES) ======
+  const getJalaliDaysInMonthLocal = (year: number, month: number): number => {
+    if (month <= 6) return 31;
+    if (month <= 11) return 30;
+    const r = ((year % 33) + 33) % 33;
+    const isLeap = r === 1 || r === 5 || r === 9 || r === 13 || r === 17 || r === 22 || r === 26 || r === 30;
+    return isLeap ? 30 : 29;
+  };
+
+  const shiftJalaliYMD = (rawDate: string | undefined | null, deltaDays: 1 | -1): string => {
+    const norm = normalizeRateDateYMD(rawDate);
+    if (!norm) return '';
+    const [yStr, mStr, dStr] = norm.split('/');
+    let y = parseInt(yStr, 10);
+    let m = parseInt(mStr, 10);
+    let d = parseInt(dStr, 10);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return '';
+
+    if (deltaDays === 1) {
+      const maxD = getJalaliDaysInMonthLocal(y, m);
+      if (d < maxD) {
+        d += 1;
+      } else if (m < 12) {
+        m += 1;
+        d = 1;
+      } else {
+        y += 1;
+        m = 1;
+        d = 1;
+      }
+    } else {
+      if (d > 1) {
+        d -= 1;
+      } else if (m > 1) {
+        m -= 1;
+        d = getJalaliDaysInMonthLocal(y, m);
+      } else {
+        y -= 1;
+        m = 12;
+        d = getJalaliDaysInMonthLocal(y, 12);
+      }
+    }
+    return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`;
+  };
+
+  const findFirstAttendanceDateForPersonnelInActivePeriod = (emp: Personnel | null | undefined): string => {
+    if (!emp) return '';
+    const records = db.attendanceRecords || [];
+    if (records.length === 0) return '';
+
+    const cleanTok = (v: any) => toEnglishDigits(String(v || '')).trim().toLowerCase();
+    const stripZeros = (v: string) => {
+      const s = v.replace(/^0+/, '');
+      return s === '' && v !== '' ? '0' : s;
+    };
+
+    const empTokenSet = new Set<string>();
+    const addToken = (raw: any) => {
+      const c = cleanTok(raw);
+      if (!c) return;
+      empTokenSet.add(c);
+      empTokenSet.add(stripZeros(c));
+    };
+
+    const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
+    if (rawAtt) {
+      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(addToken);
+    }
+    addToken(emp.employeeCode);
+    addToken(emp.id);
+
+    if (empTokenSet.size === 0) return '';
+
+    const dates: string[] = [];
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      if (!rec || rec.periodId !== activePeriodId) continue;
+      if (!Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+
+      const recAtt = cleanTok(rec.attendanceCode);
+      const recEmpId = cleanTok(rec.employeeId);
+      const matches =
+        (recAtt && (empTokenSet.has(recAtt) || empTokenSet.has(stripZeros(recAtt)))) ||
+        (recEmpId && (empTokenSet.has(recEmpId) || empTokenSet.has(stripZeros(recEmpId))));
+
+      if (!matches) continue;
+      const normDate = normalizeRateDateYMD(rec.date);
+      if (normDate && normDate >= activePeriodStartDate && normDate <= activePeriodEndDate) {
+        dates.push(normDate);
+      }
+    }
+
+    if (dates.length === 0) return '';
+    dates.sort();
+    return dates[0];
+  };
+
+  const resolveSuggestedContractDatesForPersonnel = (
+    emp: Personnel | null | undefined,
+    excludeContractId?: string | null
+  ) => {
+    if (!emp) {
+      return {
+        suggestedStartDate: activePeriodStartDate,
+        startSource: 'period_start' as const,
+        startSourceLabel: `اولین روز دوره مالی (${toPersianDigits(activePeriodStartDate)})`,
+        latestPriorContractEndDate: '',
+        firstAttendanceDate: '',
+        departureDate: '',
+        dayBeforeDeparture: '',
+        maxAllowedEndDate: activePeriodEndDate,
+        suggestedEndDate: activePeriodEndDate,
+        hasDepartureRestriction: false,
+        cannotRegisterReason: ''
+      };
+    }
+
+    const rawDep = emp.departureDate || (emp as any).personnel?.departureDate || '';
+    const depYMD = normalizeRateDateYMD(rawDep);
+    const dayBeforeDep = depYMD ? shiftJalaliYMD(depYMD, -1) : '';
+    const hasDepartureRestriction = Boolean(depYMD && dayBeforeDep && depYMD <= activePeriodEndDate);
+    const maxAllowedEndDate = hasDepartureRestriction
+      ? (dayBeforeDep < activePeriodEndDate ? dayBeforeDep : activePeriodEndDate)
+      : activePeriodEndDate;
+
+    // 1. Check prior contracts strictly within active fiscal period
+    const priorContracts = (db.personnelContracts || []).filter(c =>
+      c.periodId === activePeriodId &&
+      c.employeeCode.trim() === emp.employeeCode.trim() &&
+      (!excludeContractId || c.id !== excludeContractId)
+    );
+    const priorEndDates = priorContracts
+      .map(c => normalizeRateDateYMD(c.contractEndDate))
+      .filter((d): d is string => Boolean(d))
+      .sort()
+      .reverse();
+    const latestPriorContractEndDate = priorEndDates[0] || '';
+
+    let suggestedStartDate = activePeriodStartDate;
+    let startSource: 'prior_contract' | 'first_attendance' | 'period_start' = 'period_start';
+    let startSourceLabel = `اولین روز سال/دوره مالی (${toPersianDigits(activePeriodStartDate)})`;
+    let firstAttendanceDate = '';
+
+    if (latestPriorContractEndDate) {
+      const nextDay = shiftJalaliYMD(latestPriorContractEndDate, 1);
+      suggestedStartDate = nextDay || activePeriodStartDate;
+      startSource = 'prior_contract';
+      startSourceLabel = `روز بعد از پایان قرارداد قبلی (${toPersianDigits(latestPriorContractEndDate)})`;
+    } else {
+      firstAttendanceDate = findFirstAttendanceDateForPersonnelInActivePeriod(emp);
+      if (firstAttendanceDate) {
+        suggestedStartDate = firstAttendanceDate;
+        startSource = 'first_attendance';
+        startSourceLabel = `اولین روز تردد ثبت‌شده در دوره (${toPersianDigits(firstAttendanceDate)})`;
+      }
+    }
+
+    const suggestedEndDate = hasDepartureRestriction
+      ? (dayBeforeDep >= activePeriodStartDate ? dayBeforeDep : '')
+      : activePeriodEndDate;
+
+    let cannotRegisterReason = '';
+    if (hasDepartureRestriction && dayBeforeDep < activePeriodStartDate) {
+      cannotRegisterReason = `این پرسنل در تاریخ ${toPersianDigits(depYMD)} (پیش از شروع دوره مالی) ترک کار کرده است و امکان ثبت قرارداد در دوره «${activePeriodLabel}» وجود ندارد.`;
+    } else if (suggestedStartDate > activePeriodEndDate) {
+      cannotRegisterReason = `قرارداد قبلی این پرسنل تا تاریخ ${toPersianDigits(latestPriorContractEndDate)} ثبت شده و روز بعد (${toPersianDigits(suggestedStartDate)}) خارج از بازه دوره مالی فعال است.`;
+    } else if (hasDepartureRestriction && suggestedStartDate > maxAllowedEndDate) {
+      cannotRegisterReason = `این پرسنل در تاریخ ${toPersianDigits(depYMD)} ترک کار کرده است و حداکثر تاریخ مجاز قرارداد یک روز قبل از ترک کار (${toPersianDigits(maxAllowedEndDate)}) می‌باشد.`;
+    }
+
+    return {
+      suggestedStartDate,
+      startSource,
+      startSourceLabel,
+      latestPriorContractEndDate,
+      firstAttendanceDate,
+      departureDate: depYMD,
+      dayBeforeDeparture: dayBeforeDep,
+      maxAllowedEndDate,
+      suggestedEndDate,
+      hasDepartureRestriction,
+      cannotRegisterReason
+    };
+  };
+
+  const validateContractDateRangeForPersonnel = (
+    emp: Personnel | null | undefined,
+    rawStart: string,
+    rawEnd: string
+  ): { ok: boolean; start: string; end: string; message: string } => {
+    if (!rawStart.trim() || !rawEnd.trim()) {
+      return {
+        ok: false,
+        start: '',
+        end: '',
+        message: 'وارد کردن هر دو تاریخ شروع و پایان قرارداد الزامی است.'
+      };
+    }
+
+    const normStart = normalizeRateDateYMD(rawStart);
+    const normEnd = normalizeRateDateYMD(rawEnd);
+    if (!normStart || !normEnd) {
+      return {
+        ok: false,
+        start: '',
+        end: '',
+        message: 'فرمت تاریخ شروع یا پایان قرارداد معتبر نیست (فرمت صحیح: ۱۴۰۵/۰۱/۰۱).'
+      };
+    }
+
+    if (normStart > normEnd) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        message: 'تاریخ شروع قرارداد نمی‌تواند بزرگ‌تر از تاریخ پایان قرارداد باشد.'
+      };
+    }
+
+    // Strict active fiscal period boundary check
+    if (normStart < activePeriodStartDate || normEnd > activePeriodEndDate) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        message: `امکان ثبت قرارداد در تاریخ خارج از دوره مالی فعال «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وجود ندارد.`
+      };
+    }
+
+    // Strict departure date check (max allowed = 1 day before departureDate)
+    if (emp) {
+      const rawDep = emp.departureDate || (emp as any).personnel?.departureDate || '';
+      const depYMD = normalizeRateDateYMD(rawDep);
+      if (depYMD) {
+        const dayBeforeDep = shiftJalaliYMD(depYMD, -1);
+        if (normStart >= depYMD || normEnd >= depYMD) {
+          return {
+            ok: false,
+            start: normStart,
+            end: normEnd,
+            message: `این پرسنل در تاریخ ${toPersianDigits(depYMD)} ترک کار کرده است. ثبت قرارداد صرفاً تا یک روز قبل از تاریخ ترک کار (حداکثر تا ${toPersianDigits(dayBeforeDep)}) امکان‌پذیر است.`
+          };
+        }
+      }
+    }
+
+    return { ok: true, start: normStart, end: normEnd, message: '' };
+  };
+
   const handleSaveContract = () => {
+    setContractFormValidationError('');
     if (!selContractEmpCode) {
-      alert('لطفاً ابتدا پرسنل مورد نظر را مشخص کنید.');
+      setContractFormValidationError('لطفاً ابتدا پرسنل مورد نظر را مشخص کنید.');
       return;
     }
     if (!conStartDate || !conEndDate) {
-      alert('بازه زمانی شروع و پایان قرارداد الزامی است.');
+      setContractFormValidationError('بازه زمانی شروع و پایان قرارداد الزامی است.');
       return;
     }
     const emp = db.personnel.find(p => p.employeeCode === selContractEmpCode && p.periodId === activePeriodId);
     if (!emp) {
-      alert('پرسنل انتخاب شده یافت نشد.');
+      setContractFormValidationError('پرسنل انتخاب شده یافت نشد.');
       return;
     }
 
-    const startYear = getJalaliYear(conStartDate);
+    const dateValidation = validateContractDateRangeForPersonnel(emp, conStartDate, conEndDate);
+    if (!dateValidation.ok) {
+      setContractFormValidationError(dateValidation.message);
+      return;
+    }
+
+    const startYear = getJalaliYear(dateValidation.start);
     const periodRatesList = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
     const resolvedContractRate = (conSalaryBaseRateId
       ? (periodRatesList.find((r: any) => r.id === conSalaryBaseRateId) || (db.salaryBaseRates || []).find((r: any) => r.id === conSalaryBaseRateId))
       : undefined)
-      || findSalaryBaseRateByDate(periodRatesList, conStartDate, startYear)
-      || findSalaryBaseRateByDate(db.salaryBaseRates || [], conStartDate, startYear);
+      || findSalaryBaseRateByDate(periodRatesList, dateValidation.start, startYear)
+      || findSalaryBaseRateByDate(db.salaryBaseRates || [], dateValidation.start, startYear);
 
     if (!resolvedContractRate) {
-      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || conStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`);
+      setContractFormValidationError(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || conStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`);
       return;
     }
 
@@ -10294,6 +10603,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     });
 
     // Reset Form
+    setContractFormValidationError('');
     setEditContractId(null);
     setSelContractEmpCode('');
     setConEmployeeCode('');
@@ -10429,6 +10739,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConRole('');
     setConNotes('');
     setConIsActive(true);
+    setContractFormValidationError('');
   };
 
   const handleNewContract = () => {
@@ -10475,58 +10786,156 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   const handleBatchCreateContracts = () => {
+    setBatchContractNotice(null);
     if (!batchStartDate || !batchEndDate) {
-      alert('لطفا تاریخ شروع و پایان قرارداد دسته جمعی را وارد نمایید.');
+      setBatchContractNotice({
+        type: 'error',
+        title: 'تاریخ شروع و پایان قرارداد دسته‌جمعی الزامی است',
+        details: [`لطفاً بازه زمانی معتبری در محدوده دوره مالی «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وارد نمایید.`]
+      });
       return;
     }
-    
+
+    const batchRangeValidation = validateContractDateRangeForPersonnel(null, batchStartDate, batchEndDate);
+    if (!batchRangeValidation.ok) {
+      setBatchContractNotice({
+        type: 'error',
+        title: 'بازه تاریخ قرارداد دسته‌جمعی نامعتبر است',
+        details: [batchRangeValidation.message]
+      });
+      return;
+    }
+    const batchStartNorm = batchRangeValidation.start;
+    const batchEndNorm = batchRangeValidation.end;
+
     const activeEmployees = (db.personnel || []).filter(p => p.periodId === activePeriodId);
     if (activeEmployees.length === 0) {
-      alert('هیچ پرسنل فعالی در این دوره جهت صدور قرارداد یافت نشد.');
+      setBatchContractNotice({
+        type: 'error',
+        title: 'پرسنلی در این دوره یافت نشد',
+        details: ['هیچ پرسنلی در این دوره جهت صدور قرارداد دسته‌جمعی ثبت نشده است.']
+      });
       return;
     }
 
-    const startYear = getJalaliYear(batchStartDate);
+    const startYear = getJalaliYear(batchStartNorm);
     const periodRatesForBatch = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-    const rateForBatchYear = findSalaryBaseRateByDate(periodRatesForBatch, batchStartDate, startYear)
-      || findSalaryBaseRateByDate(db.salaryBaseRates || [], batchStartDate, startYear);
-    if (!rateForBatchYear) {
-      alert(`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || batchStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`);
+    const fallbackRateForBatch = findSalaryBaseRateByDate(periodRatesForBatch, batchStartNorm, startYear)
+      || findSalaryBaseRateByDate(db.salaryBaseRates || [], batchStartNorm, startYear);
+    if (!fallbackRateForBatch) {
+      setBatchContractNotice({
+        type: 'error',
+        title: 'عدم وجود نرخ پایه دستمزد',
+        details: [`امکان ثبت قرارداد به دلیل عدم ورود اطلاعات پایه حقوق و دستمزد برای بازه/سال ${toPersianDigits(startYear || batchStartDate)} وجود ندارد. لطفاً ابتدا در بخش قوانین و ثوابت دستمزد، اطلاعات دوره متناظر را ثبت نمایید.`]
+      });
       return;
     }
 
-    const defaultDailyRate = rateForBatchYear.dailyBaseSalary || 4333333;
-    const durationNum = parseInt(toEnglishDigits(batchDurationMonths)) || 12;
-
-    const existingContracts = db.personnelContracts || [];
-    const skippedPersonnelNames: string[] = [];
-    const employeesToProcess: Personnel[] = [];
+    const skippedAlreadyCovered: string[] = [];
+    const skippedDeparted: string[] = [];
+    const skippedInvalidRange: string[] = [];
+    const cappedDepartedDetails: string[] = [];
+    const plannedByEmpCode = new Map<string, {
+      startYMD: string;
+      endYMD: string;
+      durationMonths: number;
+      rate: SalaryBaseRate;
+    }>();
 
     activeEmployees.forEach(p => {
-      const hasContract = existingContracts.some(c => c.periodId === activePeriodId && c.employeeCode === p.employeeCode);
-      if (hasContract) {
-        const pName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}` || p.employeeCode;
-        skippedPersonnelNames.push(pName);
-      } else {
-        employeesToProcess.push(p);
+      const pName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode;
+      const suggestion = resolveSuggestedContractDatesForPersonnel(p, null);
+
+      // Start date rule:
+      // 1) Has prior contract in active period -> day after latest prior contract end
+      // 2) No prior contract & has attendance in active period -> first attendance date
+      // 3) No prior contract & no attendance -> batchStartNorm (defaults to first day of fiscal year/period)
+      const empStartNorm =
+        suggestion.startSource === 'prior_contract'
+          ? suggestion.suggestedStartDate
+          : suggestion.startSource === 'first_attendance'
+            ? suggestion.suggestedStartDate
+            : batchStartNorm;
+
+      let empEndNorm = batchEndNorm;
+
+      // Departure restriction: cap to 1 day before departureDate
+      if (suggestion.hasDepartureRestriction) {
+        if (!suggestion.dayBeforeDeparture || suggestion.dayBeforeDeparture < activePeriodStartDate) {
+          skippedDeparted.push(`${pName} (تاریخ ترک کار: ${toPersianDigits(suggestion.departureDate)} — پیش از شروع دوره)`);
+          return;
+        }
+        if (empStartNorm > suggestion.maxAllowedEndDate) {
+          skippedDeparted.push(`${pName} (تاریخ ترک کار: ${toPersianDigits(suggestion.departureDate)} — حداکثر تاریخ مجاز: ${toPersianDigits(suggestion.maxAllowedEndDate)})`);
+          return;
+        }
+        if (empEndNorm > suggestion.maxAllowedEndDate) {
+          empEndNorm = suggestion.maxAllowedEndDate;
+          cappedDepartedDetails.push(`${pName} (ترک کار: ${toPersianDigits(suggestion.departureDate)} ← پایان قرارداد: ${toPersianDigits(empEndNorm)})`);
+        }
       }
+
+      if (empStartNorm > empEndNorm) {
+        if (suggestion.startSource === 'prior_contract') {
+          skippedAlreadyCovered.push(`${pName} (قرارداد قبلی تا ${toPersianDigits(suggestion.latestPriorContractEndDate)})`);
+        } else {
+          skippedInvalidRange.push(`${pName} (شروع ${toPersianDigits(empStartNorm)} پس از پایان ${toPersianDigits(empEndNorm)})`);
+        }
+        return;
+      }
+
+      const finalCheck = validateContractDateRangeForPersonnel(p, empStartNorm, empEndNorm);
+      if (!finalCheck.ok) {
+        skippedInvalidRange.push(`${pName}: ${finalCheck.message}`);
+        return;
+      }
+
+      const empStartYear = getJalaliYear(finalCheck.start);
+      const matchedEmpRate =
+        findSalaryBaseRateByDate(periodRatesForBatch, finalCheck.start, empStartYear)
+        || findSalaryBaseRateByDate(db.salaryBaseRates || [], finalCheck.start, empStartYear)
+        || fallbackRateForBatch;
+
+      const calcMonths = calculateJalaliContractMonths(finalCheck.start, finalCheck.end);
+      plannedByEmpCode.set(p.employeeCode, {
+        startYMD: finalCheck.start,
+        endYMD: finalCheck.end,
+        durationMonths: calcMonths > 0 ? calcMonths : 1,
+        rate: matchedEmpRate
+      });
     });
 
-    if (employeesToProcess.length === 0) {
-      alert(`تمامی پرسنل فعال در این دوره از قبل دارای قرارداد هستند و قرارداد جدیدی صادر نشد. در صورت نیاز به صدور مجدد، ابتدا باید قرارداد قبلی آن‌ها را حذف نمایید.\n\nپرسنل دارای قرارداد:\n${skippedPersonnelNames.join('، ')}`);
+    if (plannedByEmpCode.size === 0) {
+      const details: string[] = [];
+      if (skippedAlreadyCovered.length > 0) {
+        details.push(`دارای قرارداد تا پایان بازه (${toPersianDigits(skippedAlreadyCovered.length)} نفر): ${skippedAlreadyCovered.join('، ')}`);
+      }
+      if (skippedDeparted.length > 0) {
+        details.push(`دارای تاریخ ترک کار پیش از شروع قرارداد (${toPersianDigits(skippedDeparted.length)} نفر): ${skippedDeparted.join('، ')}`);
+      }
+      if (skippedInvalidRange.length > 0) {
+        details.push(`خارج از بازه مجاز (${toPersianDigits(skippedInvalidRange.length)} نفر): ${skippedInvalidRange.join('، ')}`);
+      }
+      setBatchContractNotice({
+        type: 'error',
+        title: 'هیچ قرارداد جدیدی برای صدور دسته‌جمعی واجد شرایط نبود',
+        details: details.length > 0 ? details : ['تمام پرسنل این دوره از قبل پوشش قراردادی دارند یا مشمول محدودیت ترک کار هستند.']
+      });
       return;
     }
 
     const newContracts: PersonnelContract[] = [];
     const nextBatchContractId = createSimpleIdGenerator(db.personnelContracts || [], getPrefixForCollection('personnelContracts'));
     const updatedPersonnel = db.personnel.map(p => {
-      const isToProcess = employeesToProcess.some(emp => emp.employeeCode === p.employeeCode && emp.periodId === p.periodId);
-      if (p.periodId === activePeriodId && isToProcess) {
-        const finalDailySalaryNum = defaultDailyRate;
+      const plan = p.periodId === activePeriodId ? plannedByEmpCode.get(p.employeeCode) : undefined;
+      if (plan) {
+        const finalDailySalaryNum = plan.rate.dailyBaseSalary || 4333333;
         const baseSalaryNum = finalDailySalaryNum * 30;
+        const startDisp = toPersianDigits(plan.startYMD);
+        const endDisp = toPersianDigits(plan.endYMD);
 
         const calculatedFields = calculateContractFieldsForDb(
-          { contractStartDate: batchStartDate, contractEndDate: batchEndDate, contractDailySalary: finalDailySalaryNum, salaryBaseRateId: rateForBatchYear.id },
+          { contractStartDate: startDisp, contractEndDate: endDisp, contractDailySalary: finalDailySalaryNum, salaryBaseRateId: plan.rate.id },
           p,
           db,
           activePeriodId,
@@ -10534,16 +10943,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         );
 
         const contractId = nextBatchContractId();
-        
+
         const contractObject = {
           role: p.role || 'کارگر خط تولید',
-          contractStartDate: batchStartDate,
-          contractEndDate: batchEndDate,
-          contractDurationMonths: durationNum,
+          contractStartDate: startDisp,
+          contractEndDate: endDisp,
+          contractDurationMonths: plan.durationMonths,
           contractBaseSalary: baseSalaryNum,
           contractDailySalary: finalDailySalaryNum,
           contractSeniorityBase: calculatedFields.calculatedSeniorityBase,
-          salaryBaseRateId: rateForBatchYear.id,
+          salaryBaseRateId: plan.rate.id,
           ...calculatedFields
         };
 
@@ -10551,9 +10960,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           id: contractId,
           employeeCode: p.employeeCode,
           periodId: activePeriodId,
-          contractStartDate: batchStartDate,
-          contractEndDate: batchEndDate,
-          contractDurationMonths: durationNum,
+          contractStartDate: startDisp,
+          contractEndDate: endDisp,
+          contractDurationMonths: plan.durationMonths,
           contractBaseSalary: baseSalaryNum,
           contractDailySalary: finalDailySalaryNum,
           contractSeniorityBase: calculatedFields.calculatedSeniorityBase,
@@ -10561,7 +10970,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           notes: 'ثبت صادر شده به صورت دسته جمعی',
           createdAt: new Date().toISOString(),
           contract: contractObject,
-          salaryBaseRateId: rateForBatchYear.id,
+          salaryBaseRateId: plan.rate.id,
           isActive: true,
           ...calculatedFields
         };
@@ -10573,9 +10982,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           baseSalary: baseSalaryNum,
           baseSalaryInsurance: (p.hasInsurance !== false) ? baseSalaryNum : 0,
           role: p.role || 'کارگر خط تولید',
-          contractStartDate: batchStartDate,
-          contractEndDate: batchEndDate,
-          contractDurationMonths: durationNum,
+          contractStartDate: startDisp,
+          contractEndDate: endDisp,
+          contractDurationMonths: plan.durationMonths,
           contractBaseSalary: baseSalaryNum,
           contractDailySalary: finalDailySalaryNum,
         };
@@ -10599,11 +11008,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     setShowBatchContractForm(false);
 
-    let msg = `قرارداد پرسنلی جدید برای تعداد ${toPersianDigits(newContracts.length)} پرسنل با موفقیت به صورت دسته جمعی صادر و در سیستم ثبت گردید.`;
-    if (skippedPersonnelNames.length > 0) {
-      msg += `\n\n⚠️ توجه: برای ${toPersianDigits(skippedPersonnelNames.length)} پرسنل زیر به دلیل داشتن قرارداد در این دوره، قرارداد جدید صادر نشد (در صورت نیاز به صدور مجدد، ابتدا قرارداد قبلی آن‌ها را حذف نمایید):\n${skippedPersonnelNames.join('، ')}`;
+    const summaryDetails: string[] = [];
+    if (cappedDepartedDetails.length > 0) {
+      summaryDetails.push(`محدودسازی پایان قرارداد تا یک روز قبل از ترک کار (${toPersianDigits(cappedDepartedDetails.length)} نفر): ${cappedDepartedDetails.join(' | ')}`);
     }
-    alert(msg);
+    if (skippedDeparted.length > 0) {
+      summaryDetails.push(`عدم صدور به دلیل تاریخ ترک کار (${toPersianDigits(skippedDeparted.length)} نفر): ${skippedDeparted.join(' | ')}`);
+    }
+    if (skippedAlreadyCovered.length > 0) {
+      summaryDetails.push(`دارای قرارداد تا پایان بازه (${toPersianDigits(skippedAlreadyCovered.length)} نفر): ${skippedAlreadyCovered.join('، ')}`);
+    }
+    if (skippedInvalidRange.length > 0) {
+      summaryDetails.push(`عدم صدور به دلیل بازه تاریخ (${toPersianDigits(skippedInvalidRange.length)} نفر): ${skippedInvalidRange.join(' | ')}`);
+    }
+
+    setBatchContractNotice({
+      type: 'success',
+      title: `قرارداد جدید برای ${toPersianDigits(newContracts.length)} پرسنل با موفقیت به صورت دسته‌جمعی صادر شد.`,
+      details: summaryDetails
+    });
   };
 
   const handleSaveDailyAttendanceCorrection = (dateStr: string, entryTime: string, exitTime: string, emp: Personnel) => {
@@ -17263,28 +17686,44 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               </td>
 
                               {/* روز کارکرد بیمه ( ورود توسط کاربر) */}
-                              <td className="px-3 py-2 text-center bg-teal-50/30 border-l min-w-[145px]">
+                              <td
+                                className="px-3 py-2 text-center bg-teal-50/30 border-l min-w-[145px]"
+                                title={row.insuranceReason || (row.insuranceStartDate ? `تاریخ شروع بیمه: ${toPersianDigits(row.insuranceStartDate)}` : undefined)}
+                              >
                                 <BufferedInput
                                   type="number"
                                   min={0}
-                                  max={31}
+                                  max={row.isInsured ? (row.maxInsurableCalendarDays || 31) : 0}
                                   step={1}
-                                  disabled={isMonthLocked}
+                                  disabled={isMonthLocked || !row.isInsured}
                                   value={row.userInsuranceDaysCount}
                                   onCommit={(val) => {
-                                    if (isMonthLocked || val === row.userInsuranceDaysCount) return;
+                                    if (isMonthLocked || !row.isInsured) return;
+                                    const cappedVal = Math.min(Math.max(0, val), row.maxInsurableCalendarDays || 31);
+                                    if (cappedVal === row.userInsuranceDaysCount) return;
                                     setUserInsuranceDays(prev => ({
                                       ...prev,
-                                      [row.employee.employeeCode]: val
+                                      [row.employee.employeeCode]: cappedVal
                                     }));
-                                    persistManualOverride('insuranceDays', row.employee.employeeCode, val);
+                                    persistManualOverride('insuranceDays', row.employee.employeeCode, cappedVal);
                                   }}
                                   className={`w-full min-w-[110px] max-w-[135px] border-2 rounded-xl text-center font-black py-1.5 px-3 font-mono text-sm focus:outline-none shadow-xs transition-all mx-auto block ${
-                                    isMonthLocked
-                                      ? 'bg-slate-100 border-slate-300 text-slate-500 cursor-not-allowed'
+                                    isMonthLocked || !row.isInsured
+                                      ? 'bg-slate-100 border-slate-300 text-slate-400 cursor-not-allowed'
                                       : 'bg-white border-teal-300 hover:border-teal-400 focus:border-teal-500 text-slate-900 focus:ring-2 focus:ring-teal-400/30'
                                   }`}
                                 />
+                                {!row.isInsured ? (
+                                  <span className="block text-[9.5px] font-bold text-slate-500 mt-1 leading-tight">
+                                    {row.insuranceStartDate
+                                      ? `شروع بیمه: ${toPersianDigits(row.insuranceStartDate)}`
+                                      : (row.employee.hasInsurance === false ? 'بیمه غیرفعال' : 'بدون تاریخ شروع بیمه')}
+                                  </span>
+                                ) : row.startsMidMonth ? (
+                                  <span className="block text-[9.5px] font-bold text-teal-700 mt-1 leading-tight">
+                                    از {toPersianDigits(row.insuranceStartDate)} (سقف {toPersianDigits(row.maxInsurableCalendarDays)} روز)
+                                  </span>
+                                ) : null}
                               </td>
 
                               {/* Group 3: Rates */}
@@ -19618,7 +20057,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       <ErpButton
                         variant="secondary"
                         size="sm"
-                        onClick={() => setShowBatchContractForm(!showBatchContractForm)}
+                        onClick={() => {
+                          const nextOpen = !showBatchContractForm;
+                          if (nextOpen) {
+                            setBatchContractNotice(null);
+                            if (!batchStartDate) setBatchStartDate(toPersianDigits(activePeriodStartDate));
+                            if (!batchEndDate) setBatchEndDate(toPersianDigits(activePeriodEndDate));
+                          }
+                          setShowBatchContractForm(nextOpen);
+                        }}
                         icon={<Layers className="h-3.5 w-3.5 text-emerald-400" />}
                       >
                         صدور دسته‌جمعی
@@ -19724,81 +20171,163 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               </div>
             )}
 
-            {!isContractFormOpen && showBatchContractForm && (
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-scaleIn shadow-xl">
-                <div className="flex items-center justify-between border-b border-slate-850 pb-3">
-                  <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest border-r-4 border-emerald-500 pr-2">
-                    تنظیمات صدور دسته‌جمعی قراردادها جهت کلیه پرسنل
-                  </h4>
+            {!isContractFormOpen && batchContractNotice && (
+              <div className={`rounded-2xl p-4 border text-right space-y-2 ${
+                batchContractNotice.type === 'error'
+                  ? 'bg-rose-950/40 border-rose-500/40 text-rose-100'
+                  : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-100'
+              }`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-black">
+                    {batchContractNotice.type === 'error' ? (
+                      <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                    )}
+                    <span>{batchContractNotice.title}</span>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setShowBatchContractForm(false)}
-                    className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1 rounded-lg cursor-pointer"
+                    onClick={() => setBatchContractNotice(null)}
+                    className="text-slate-400 hover:text-white p-0.5 rounded-lg cursor-pointer"
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1.5 text-right">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ شروع قرارداد دسته جمعی:</label>
-                    <input
-                      type="text"
-                      placeholder="۱۴۰۳/۰۱/۰۱"
-                      value={batchStartDate}
-                      onChange={(e) => setBatchStartDate(toPersianDigits(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5 text-right">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ پایان قرارداد دسته جمعی:</label>
-                    <input
-                      type="text"
-                      placeholder="۱۴۰۳/۱۲/۲۹"
-                      value={batchEndDate}
-                      onChange={(e) => setBatchEndDate(toPersianDigits(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5 text-right">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">مدت قرارداد (محاسبه خودکار):</label>
-                    <input
-                      type="text"
-                      placeholder="محاسبه خودکار..."
-                      value={batchDurationMonths ? `${toPersianDigits(batchDurationMonths)} ماه` : ''}
-                      readOnly
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-emerald-450 font-extrabold focus:outline-none transition-colors font-mono text-center font-bold"
-                    />
-                  </div>
-                </div>
-
-                <div className="bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10 text-[11px] text-slate-300 space-y-1.5 leading-relaxed text-right">
-                  <p className="font-extrabold text-emerald-400">💡 نکات مهم قبل از صدور دسته جمعی:</p>
-                  <p>۱. این عملیات برای تمامی پرسنل فعال در این دوره ({toPersianDigits(activePeriodId)}) قرارداد صادر خواهد کرد.</p>
-                  <p>۲. سمت شغلی هر پرسنل مستقیما از بخش «پرونده پرسنلی» فراخوانی خواهد شد.</p>
-                  <p>۳. حقوق پایه هر کارمند بر اساس پرونده پرسنلی خود وی به عنوان مبنا قرار خواهد گرفت و در قرارداد صادر شده گنجانده می‌شود.</p>
-                </div>
-
-                <div className="flex justify-end gap-2.5 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowBatchContractForm(false)}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer text-slate-300"
-                  >
-                    انصراف
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleBatchCreateContracts}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold rounded-xl transition-all cursor-pointer text-white shadow-md border border-emerald-500/20"
-                  >
-                    صدور و ثبت نهایی قراردادها
-                  </button>
-                </div>
+                {batchContractNotice.details.length > 0 && (
+                  <ul className="space-y-1 text-[11px] text-slate-200 list-disc pr-5 leading-relaxed">
+                    {batchContractNotice.details.map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
+
+            {!isContractFormOpen && showBatchContractForm && (() => {
+              const departedInPeriod = activeEmployees
+                .map(p => ({ emp: p, info: resolveSuggestedContractDatesForPersonnel(p, null) }))
+                .filter(item => item.info.hasDepartureRestriction);
+              const batchRangeCheck = (batchStartDate && batchEndDate)
+                ? validateContractDateRangeForPersonnel(null, batchStartDate, batchEndDate)
+                : null;
+
+              return (
+                <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-scaleIn shadow-xl">
+                  <div className="flex items-center justify-between border-b border-slate-850 pb-3">
+                    <div>
+                      <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest border-r-4 border-emerald-500 pr-2">
+                        تنظیمات صدور دسته‌جمعی قراردادها جهت کلیه پرسنل
+                      </h4>
+                      <p className="text-[10px] text-slate-400 mt-1 pr-3">
+                        بازه مجاز دوره مالی «{activePeriodLabel}»: <span className="font-mono font-bold text-slate-200">{toPersianDigits(activePeriodStartDate)}</span> تا <span className="font-mono font-bold text-slate-200">{toPersianDigits(activePeriodEndDate)}</span>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowBatchContractForm(false)}
+                      className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1 rounded-lg cursor-pointer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ شروع پیش‌فرض (برای پرسنل بدون تردد/قرارداد قبلی):</label>
+                      <input
+                        type="text"
+                        placeholder={toPersianDigits(activePeriodStartDate)}
+                        value={batchStartDate}
+                        onChange={(e) => {
+                          setBatchContractNotice(null);
+                          setBatchStartDate(toPersianDigits(e.target.value));
+                        }}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ پایان قرارداد دسته جمعی:</label>
+                      <input
+                        type="text"
+                        placeholder={toPersianDigits(activePeriodEndDate)}
+                        value={batchEndDate}
+                        onChange={(e) => {
+                          setBatchContractNotice(null);
+                          setBatchEndDate(toPersianDigits(e.target.value));
+                        }}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-[10.5px] font-bold text-slate-300 block">مدت قرارداد (محاسبه خودکار):</label>
+                      <input
+                        type="text"
+                        placeholder="محاسبه خودکار..."
+                        value={batchDurationMonths ? `${toPersianDigits(batchDurationMonths)} ماه` : ''}
+                        readOnly
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-emerald-450 font-extrabold focus:outline-none transition-colors font-mono text-center font-bold"
+                      />
+                    </div>
+                  </div>
+
+                  {batchRangeCheck && !batchRangeCheck.ok && (
+                    <div className="bg-rose-950/40 border border-rose-500/40 rounded-xl p-3 flex items-center gap-2 text-[11px] text-rose-200 font-bold text-right">
+                      <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                      <span>{batchRangeCheck.message}</span>
+                    </div>
+                  )}
+
+                  {departedInPeriod.length > 0 && (
+                    <div className="bg-amber-950/30 border border-amber-500/35 rounded-xl p-3.5 space-y-1.5 text-[11px] text-amber-100 text-right">
+                      <div className="flex items-center gap-1.5 font-extrabold text-amber-300">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        <span>توجه: {toPersianDigits(departedInPeriod.length)} پرسنل دارای تاریخ ترک کار در این دوره هستند (سقف قرارداد تا یک روز قبل از ترک کار):</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {departedInPeriod.map(({ emp, info }) => (
+                          <span key={emp.employeeCode} className="inline-flex items-center gap-1 bg-amber-950/60 border border-amber-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold">
+                            <span className="text-white">{emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}</span>
+                            <span className="text-amber-300 font-mono">ترک کار: {toPersianDigits(info.departureDate)}</span>
+                            {info.dayBeforeDeparture >= activePeriodStartDate ? (
+                              <span className="text-emerald-300 font-mono">(حداکثر: {toPersianDigits(info.dayBeforeDeparture)})</span>
+                            ) : (
+                              <span className="text-rose-300">(غیرقابل صدور)</span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="bg-emerald-500/5 p-4 rounded-xl border border-emerald-500/10 text-[11px] text-slate-300 space-y-1.5 leading-relaxed text-right">
+                    <p className="font-extrabold text-emerald-400">قوانین صدور دسته‌جمعی قراردادها در دوره «{activePeriodLabel}»:</p>
+                    <p>۱. تاریخ شروع هر پرسنل به‌صورت هوشمند تعیین می‌شود: در صورت داشتن قرارداد قبلی در این دوره «روز بعد از پایان قرارداد قبلی»، در غیر این صورت «اولین روز تردد ثبت‌شده» و در نبود تردد، تاریخ شروع بالا (پیش‌فرض اولین روز دوره مالی) لحاظ می‌گردد.</p>
+                    <p>۲. برای پرسنلی که در طول دوره ترک کار کرده‌اند، تاریخ پایان قرارداد به‌صورت خودکار حداکثر تا یک روز قبل از تاریخ ترک کار محدود می‌شود.</p>
+                    <p>۳. ثبت قرارداد در تاریخ خارج از بازه دوره مالی فعال مجاز نیست.</p>
+                  </div>
+
+                  <div className="flex justify-end gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowBatchContractForm(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer text-slate-300"
+                    >
+                      انصراف
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleBatchCreateContracts}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold rounded-xl transition-all cursor-pointer text-white shadow-md border border-emerald-500/20"
+                    >
+                      صدور و ثبت نهایی قراردادها
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="flex flex-col gap-6">
               
@@ -19909,24 +20438,29 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       value={selContractEmpCode}
                       onChange={(e) => {
                         const code = e.target.value;
+                        setContractFormValidationError('');
                         setSelContractEmpCode(code);
                         setConEmployeeCode(code);
                         setOriginalEmpCode(code);
                         const matchedEmp = activeEmployees.find(p => p.employeeCode === code);
                         if (matchedEmp) {
                           setConRole(matchedEmp.role || '');
-                          const conStart = matchedEmp.contractStartDate || matchedEmp.entryDate || '';
+                          const suggestion = resolveSuggestedContractDatesForPersonnel(matchedEmp, editContractId);
+                          const conStart = suggestion.suggestedStartDate;
+                          const conEnd = suggestion.suggestedEndDate;
                           const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStart }, matchedEmp, db, activePeriodId);
                           const dailyVal = contractRates ? contractRates.dailyBaseSalary : (matchedEmp.contractDailySalary || (matchedEmp.baseSalary ? Math.round(matchedEmp.baseSalary / 30) : 4333333));
                           setConDailySalary(formatWithCommas(dailyVal));
                           setConBaseSalary(formatWithCommas(dailyVal * 30));
                           if (contractRates) {
+                            setConSalaryBaseRateId(contractRates.id);
                             setConDailyInsuranceSalary(formatWithCommas(contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary));
                             setConMonthlyInsuranceSalary(formatWithCommas((contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary) * 30));
                           }
-                          setConStartDate(conStart);
-                          setConEndDate(matchedEmp.contractEndDate || '');
-                          setConDurationMonths(String(matchedEmp.contractDurationMonths || ''));
+                          setConStartDate(conStart ? toPersianDigits(conStart) : '');
+                          setConEndDate(conEnd ? toPersianDigits(conEnd) : '');
+                          const autoDur = (conStart && conEnd && conStart <= conEnd) ? calculateJalaliContractMonths(conStart, conEnd) : 0;
+                          setConDurationMonths(autoDur > 0 ? String(autoDur) : '');
                         }
                       }}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors"
@@ -19996,98 +20530,168 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 )}
 
                 {/* Step 2: Contract Fields */}
-                <div className="grid grid-cols-2 gap-3.5">
-                  <div className="space-y-1.5">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ شروع قرارداد:</label>
-                    <input
-                      type="text"
-                      placeholder="۱۴۰۳/۰۱/۰۱"
-                      value={conStartDate}
-                      onChange={(e) => {
-                        const val = toPersianDigits(e.target.value);
-                        setConStartDate(val);
-                        const engDate = toEnglishDigits(val);
-                        if (engDate.length >= 4) {
-                          const startYear = getJalaliYear(engDate);
-                          const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                          const foundRate = findSalaryBaseRateByDate(periodRates, engDate, startYear)
-                            || findSalaryBaseRateByDate(db.salaryBaseRates || [], engDate, startYear);
-                          if (foundRate) {
-                            setConSalaryBaseRateId(foundRate.id);
-                            setConDailySalary(formatWithCommas(foundRate.dailyBaseSalary));
-                            setConBaseSalary(formatWithCommas(foundRate.dailyBaseSalary * 30));
-                            setConDailyInsuranceSalary(formatWithCommas(foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary));
-                            setConMonthlyInsuranceSalary(formatWithCommas((foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary) * 30));
-                          }
-                        }
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ پایان قرارداد:</label>
-                    <input
-                      type="text"
-                      placeholder="۱۴۰۳/۱۲/۲۹"
-                      value={conEndDate}
-                      onChange={(e) => setConEndDate(toPersianDigits(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
-                    />
-                  </div>
+                {(() => {
+                  const dateSuggestion = resolveSuggestedContractDatesForPersonnel(selectedEmployee, editContractId);
+                  const liveDateValidation = (selectedEmployee && conStartDate && conEndDate)
+                    ? validateContractDateRangeForPersonnel(selectedEmployee, conStartDate, conEndDate)
+                    : null;
 
-                  {/* Salary Base Rate Period Selector (Auto-matched by contract start date + Manual override) */}
-                  {(() => {
-                    const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                    const availableRates = periodRates.length > 0 ? periodRates : (db.salaryBaseRates || []);
-                    const autoMatchedRate = conStartDate
-                      ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate))
-                      : undefined;
-                    const activeSelectedRate = conSalaryBaseRateId
-                      ? availableRates.find((r: any) => r.id === conSalaryBaseRateId)
-                      : autoMatchedRate;
-
-                    return (
-                      <div className="col-span-2 bg-slate-900/70 border border-slate-800 rounded-xl p-3 space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <label className="text-[10.5px] font-bold text-slate-300">
-                            دوره ثوابت و نرخ پایه دستمزد (تطبیق خودکار یا انتخاب دستی):
-                          </label>
-                          {activeSelectedRate?.startDate && activeSelectedRate?.endDate && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setConStartDate(toPersianDigits(activeSelectedRate.startDate || ''));
-                                setConEndDate(toPersianDigits(activeSelectedRate.endDate || ''));
-                              }}
-                              className="text-[9.5px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer transition-colors"
-                            >
-                              اعمال بازه تاریخ دوره روی قرارداد
-                            </button>
-                          )}
+                  return (
+                    <div className="grid grid-cols-2 gap-3.5">
+                      {/* Departure date & fiscal period restriction alerts */}
+                      {selectedEmployee && dateSuggestion.hasDepartureRestriction && (
+                        <div className="col-span-2 bg-amber-950/35 border border-amber-500/40 rounded-xl p-3.5 space-y-2 text-right">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 text-xs font-black text-amber-300">
+                              <AlertTriangle className="h-4 w-4 shrink-0" />
+                              <span>هشدار ترک کار پرسنل — تاریخ ترک کار: <span className="font-mono text-white">{toPersianDigits(dateSuggestion.departureDate)}</span></span>
+                            </div>
+                            {dateSuggestion.dayBeforeDeparture >= activePeriodStartDate && normalizeRateDateYMD(conEndDate) !== dateSuggestion.dayBeforeDeparture && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setContractFormValidationError('');
+                                  setConEndDate(toPersianDigits(dateSuggestion.dayBeforeDeparture));
+                                }}
+                                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                              >
+                                تنظیم تاریخ پایان روی {toPersianDigits(dateSuggestion.dayBeforeDeparture)}
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[10.5px] text-amber-100/90 leading-relaxed">
+                            {dateSuggestion.dayBeforeDeparture >= activePeriodStartDate
+                              ? `این پرسنل در تاریخ ${toPersianDigits(dateSuggestion.departureDate)} ترک کار کرده است؛ بنابراین ثبت قرارداد صرفاً تا یک روز قبل از تاریخ ترک کار (حداکثر تا تاریخ ${toPersianDigits(dateSuggestion.dayBeforeDeparture)}) امکان‌پذیر می‌باشد.`
+                              : `این پرسنل در تاریخ ${toPersianDigits(dateSuggestion.departureDate)} (پیش از شروع دوره مالی فعال) ترک کار کرده است و امکان ثبت قرارداد در این دوره وجود ندارد.`}
+                          </p>
                         </div>
-                        <select
-                          value={conSalaryBaseRateId}
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ شروع قرارداد:</label>
+                        <input
+                          type="text"
+                          placeholder={toPersianDigits(activePeriodStartDate)}
+                          value={conStartDate}
                           onChange={(e) => {
-                            const nextId = e.target.value;
-                            setConSalaryBaseRateId(nextId);
-                            const chosen = nextId
-                              ? availableRates.find((r: any) => r.id === nextId)
-                              : (conStartDate ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate)) : undefined);
-                            if (chosen) {
-                              setConDailySalary(formatWithCommas(chosen.dailyBaseSalary));
-                              setConBaseSalary(formatWithCommas(chosen.dailyBaseSalary * 30));
-                              setConDailyInsuranceSalary(formatWithCommas(chosen.dailyInsuranceSalary || chosen.dailyBaseSalary));
-                              setConMonthlyInsuranceSalary(formatWithCommas((chosen.dailyInsuranceSalary || chosen.dailyBaseSalary) * 30));
-                              if (!conStartDate && chosen.startDate) {
-                                setConStartDate(toPersianDigits(chosen.startDate));
-                              }
-                              if (!conEndDate && chosen.endDate) {
-                                setConEndDate(toPersianDigits(chosen.endDate));
+                            setContractFormValidationError('');
+                            const val = toPersianDigits(e.target.value);
+                            setConStartDate(val);
+                            const engDate = toEnglishDigits(val);
+                            if (engDate.length >= 4) {
+                              const startYear = getJalaliYear(engDate);
+                              const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                              const foundRate = findSalaryBaseRateByDate(periodRates, engDate, startYear)
+                                || findSalaryBaseRateByDate(db.salaryBaseRates || [], engDate, startYear);
+                              if (foundRate) {
+                                setConSalaryBaseRateId(foundRate.id);
+                                setConDailySalary(formatWithCommas(foundRate.dailyBaseSalary));
+                                setConBaseSalary(formatWithCommas(foundRate.dailyBaseSalary * 30));
+                                setConDailyInsuranceSalary(formatWithCommas(foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary));
+                                setConMonthlyInsuranceSalary(formatWithCommas((foundRate.dailyInsuranceSalary || foundRate.dailyBaseSalary) * 30));
                               }
                             }
                           }}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-100 focus:outline-none focus:border-rose-500 cursor-pointer"
-                        >
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
+                        />
+                        {selectedEmployee && !editContractId && (
+                          <p className="text-[9.5px] text-slate-400 leading-tight">
+                            پیش‌فرض: <span className="text-slate-200 font-bold">{dateSuggestion.startSourceLabel}</span> (قابل ویرایش)
+                          </p>
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10.5px] font-bold text-slate-300 block">تاریخ پایان قرارداد:</label>
+                        <input
+                          type="text"
+                          placeholder={toPersianDigits(dateSuggestion.maxAllowedEndDate)}
+                          value={conEndDate}
+                          onChange={(e) => {
+                            setContractFormValidationError('');
+                            setConEndDate(toPersianDigits(e.target.value));
+                          }}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center"
+                        />
+                        <p className="text-[9.5px] text-slate-400 leading-tight">
+                          محدوده مجاز دوره: <span className="font-mono text-slate-300">{toPersianDigits(activePeriodStartDate)}</span> تا <span className="font-mono text-slate-300">{toPersianDigits(dateSuggestion.maxAllowedEndDate)}</span>
+                        </p>
+                      </div>
+
+                      {((liveDateValidation && !liveDateValidation.ok) || contractFormValidationError || (selectedEmployee && !editContractId && dateSuggestion.cannotRegisterReason)) && (
+                        <div className="col-span-2 bg-rose-950/45 border border-rose-500/45 rounded-xl p-3 flex items-start gap-2 text-[11px] font-bold text-rose-200 text-right">
+                          <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+                          <span>
+                            {contractFormValidationError
+                              || (liveDateValidation && !liveDateValidation.ok ? liveDateValidation.message : '')
+                              || dateSuggestion.cannotRegisterReason}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Salary Base Rate Period Selector (Auto-matched by contract start date + Manual override) */}
+                      {(() => {
+                        const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                        const availableRates = periodRates.length > 0 ? periodRates : (db.salaryBaseRates || []);
+                        const autoMatchedRate = conStartDate
+                          ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate))
+                          : undefined;
+                        const activeSelectedRate = conSalaryBaseRateId
+                          ? availableRates.find((r: any) => r.id === conSalaryBaseRateId)
+                          : autoMatchedRate;
+
+                        const clampDateToAllowedRange = (rawD: string | undefined, fallbackD: string) => {
+                          const n = normalizeRateDateYMD(rawD);
+                          if (!n) return fallbackD;
+                          if (n < activePeriodStartDate) return activePeriodStartDate;
+                          if (n > dateSuggestion.maxAllowedEndDate) return dateSuggestion.maxAllowedEndDate;
+                          return n;
+                        };
+
+                        return (
+                          <div className="col-span-2 bg-slate-900/70 border border-slate-800 rounded-xl p-3 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <label className="text-[10.5px] font-bold text-slate-300">
+                                دوره ثوابت و نرخ پایه دستمزد (تطبیق خودکار یا انتخاب دستی):
+                              </label>
+                              {activeSelectedRate?.startDate && activeSelectedRate?.endDate && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setContractFormValidationError('');
+                                    const clampedStart = clampDateToAllowedRange(activeSelectedRate.startDate, activePeriodStartDate);
+                                    const clampedEnd = clampDateToAllowedRange(activeSelectedRate.endDate, dateSuggestion.maxAllowedEndDate);
+                                    setConStartDate(toPersianDigits(clampedStart));
+                                    setConEndDate(toPersianDigits(clampedEnd));
+                                  }}
+                                  className="text-[9.5px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-pointer transition-colors"
+                                >
+                                  اعمال بازه تاریخ دوره روی قرارداد
+                                </button>
+                              )}
+                            </div>
+                            <select
+                              value={conSalaryBaseRateId}
+                              onChange={(e) => {
+                                const nextId = e.target.value;
+                                setConSalaryBaseRateId(nextId);
+                                const chosen = nextId
+                                  ? availableRates.find((r: any) => r.id === nextId)
+                                  : (conStartDate ? findSalaryBaseRateByDate(availableRates, conStartDate, getJalaliYear(conStartDate)) : undefined);
+                                if (chosen) {
+                                  setConDailySalary(formatWithCommas(chosen.dailyBaseSalary));
+                                  setConBaseSalary(formatWithCommas(chosen.dailyBaseSalary * 30));
+                                  setConDailyInsuranceSalary(formatWithCommas(chosen.dailyInsuranceSalary || chosen.dailyBaseSalary));
+                                  setConMonthlyInsuranceSalary(formatWithCommas((chosen.dailyInsuranceSalary || chosen.dailyBaseSalary) * 30));
+                                  if (!conStartDate && chosen.startDate) {
+                                    setConStartDate(toPersianDigits(clampDateToAllowedRange(chosen.startDate, activePeriodStartDate)));
+                                  }
+                                  if (!conEndDate && chosen.endDate) {
+                                    setConEndDate(toPersianDigits(clampDateToAllowedRange(chosen.endDate, dateSuggestion.maxAllowedEndDate)));
+                                  }
+                                }
+                              }}
+                              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-100 focus:outline-none focus:border-rose-500 cursor-pointer"
+                            >
                           <option value="">
                             {autoMatchedRate
                               ? `تشخیص خودکار بر اساس تاریخ قرارداد (${autoMatchedRate.title ? `${autoMatchedRate.title} — ` : ''}سال ${toPersianDigits(autoMatchedRate.year)}${autoMatchedRate.startDate ? ` | ${toPersianDigits(autoMatchedRate.startDate)} تا ${toPersianDigits(autoMatchedRate.endDate || '')}` : ''})`
@@ -20197,7 +20801,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       </div>
                     );
                   })()}
-                </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="grid grid-cols-2 gap-3.5">
                   <div className="space-y-1.5">
@@ -21058,6 +21664,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </div>
                   );
                 })()}
+
+                {contractFormValidationError && (
+                  <div className="bg-rose-950/50 border border-rose-500/50 rounded-xl p-3.5 flex items-start gap-2 text-xs font-bold text-rose-200 text-right">
+                    <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
+                    <span>{contractFormValidationError}</span>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center justify-end gap-3 pt-4 border-t border-slate-800">
                   <button

@@ -92,6 +92,158 @@ export function getMonthlyLeaveMinutesForYearMonth(
   return DEFAULT_MONTHLY_LEAVE_MINUTES;
 }
 
+export interface MonthlyInsuranceEligibility {
+  isInsuredForMonth: boolean;
+  insuranceStartDate: string;
+  startsMidMonth: boolean;
+  insurableStartDay: number;
+  maxInsurableCalendarDays: number;
+  defaultInsuranceDays: number;
+  reason: string;
+}
+
+/**
+ * Resolves whether an employee is subject to Social Security insurance in a given Jalali (year, month)
+ * based on their Personnel profile `hasInsurance` flag and `insuranceDate` (تاریخ شروع بیمه تأمین اجتماعی):
+ * - If `hasInsurance === false`: not insured (0 days, 0 premiums).
+ * - If `insuranceDate` is empty or invalid: not insured (0 days, 0 premiums).
+ * - If target month is strictly before `insuranceDate`'s year/month: not insured (0 days, 0 premiums).
+ * - If target month equals `insuranceDate`'s year/month: insured only from `insD` to end of month
+ *   (`maxInsurableCalendarDays = totalDaysInMonth - insD + 1`, default days capped by this limit).
+ * - If target month is strictly after `insuranceDate`'s year/month: insured for full month.
+ */
+export function resolveMonthlyInsuranceEligibility(
+  emp: (Pick<Personnel, 'hasInsurance' | 'insuranceDate'> & { personnel?: any }) | null | undefined,
+  targetYear: number | string,
+  targetMonth: number | string,
+  totalDaysInMonth: number,
+  defaultWorkDays: number
+): MonthlyInsuranceEligibility {
+  const safeDaysInMonth = Math.max(1, Math.min(31, Math.round(Number(totalDaysInMonth) || 30)));
+  const safeWorkDays = Math.max(0, Number(defaultWorkDays) || 0);
+  const yearNum = Number(toEnglishDigits(String(targetYear || '')));
+  const monthNum = Number(toEnglishDigits(String(targetMonth || '')));
+
+  if (!emp || emp.hasInsurance === false) {
+    return {
+      isInsuredForMonth: false,
+      insuranceStartDate: '',
+      startsMidMonth: false,
+      insurableStartDay: 0,
+      maxInsurableCalendarDays: 0,
+      defaultInsuranceDays: 0,
+      reason: 'بیمه تأمین اجتماعی در پرونده پرسنل غیرفعال است'
+    };
+  }
+
+  const rawDateRaw = emp.insuranceDate || emp.personnel?.insuranceDate || '';
+  const rawDate = toEnglishDigits(String(rawDateRaw)).trim();
+  if (!rawDate) {
+    return {
+      isInsuredForMonth: false,
+      insuranceStartDate: '',
+      startsMidMonth: false,
+      insurableStartDay: 0,
+      maxInsurableCalendarDays: 0,
+      defaultInsuranceDays: 0,
+      reason: 'تاریخ شروع بیمه تأمین اجتماعی در پرونده پرسنل ثبت نشده است'
+    };
+  }
+
+  const normalized = normalizeJalaliDate(rawDate);
+  const parts = (normalized || rawDate.replace(/-/g, '/'))
+    .split('/')
+    .map(s => parseInt(s.trim(), 10));
+
+  if (
+    parts.length !== 3 ||
+    parts.some(n => !Number.isFinite(n)) ||
+    parts[0] < 1300 ||
+    parts[0] > 1500 ||
+    parts[1] < 1 ||
+    parts[1] > 12 ||
+    parts[2] < 1 ||
+    parts[2] > 31
+  ) {
+    return {
+      isInsuredForMonth: false,
+      insuranceStartDate: '',
+      startsMidMonth: false,
+      insurableStartDay: 0,
+      maxInsurableCalendarDays: 0,
+      defaultInsuranceDays: 0,
+      reason: 'تاریخ شروع بیمه تأمین اجتماعی در پرونده پرسنل نامعتبر است'
+    };
+  }
+
+  const [insY, insM, insD] = parts;
+  const formattedInsDate = `${insY}/${String(insM).padStart(2, '0')}/${String(insD).padStart(2, '0')}`;
+
+  if (!Number.isFinite(yearNum) || !Number.isFinite(monthNum) || yearNum <= 0 || monthNum < 1 || monthNum > 12) {
+    return {
+      isInsuredForMonth: true,
+      insuranceStartDate: formattedInsDate,
+      startsMidMonth: false,
+      insurableStartDay: 1,
+      maxInsurableCalendarDays: safeDaysInMonth,
+      defaultInsuranceDays: Math.min(safeWorkDays, safeDaysInMonth),
+      reason: ''
+    };
+  }
+
+  if (yearNum < insY || (yearNum === insY && monthNum < insM)) {
+    return {
+      isInsuredForMonth: false,
+      insuranceStartDate: formattedInsDate,
+      startsMidMonth: false,
+      insurableStartDay: 0,
+      maxInsurableCalendarDays: 0,
+      defaultInsuranceDays: 0,
+      reason: `قبل از تاریخ شروع بیمه (${toPersianDigits(formattedInsDate)})`
+    };
+  }
+
+  if (yearNum === insY && monthNum === insM) {
+    if (insD > safeDaysInMonth) {
+      return {
+        isInsuredForMonth: false,
+        insuranceStartDate: formattedInsDate,
+        startsMidMonth: false,
+        insurableStartDay: 0,
+        maxInsurableCalendarDays: 0,
+        defaultInsuranceDays: 0,
+        reason: `قبل از تاریخ شروع بیمه (${toPersianDigits(formattedInsDate)})`
+      };
+    }
+
+    const maxInsurableCalendarDays = Math.max(0, safeDaysInMonth - insD + 1);
+    const startsMidMonth = insD > 1;
+    const defaultInsuranceDays = Math.max(0, Math.min(Math.round(safeWorkDays), maxInsurableCalendarDays));
+
+    return {
+      isInsuredForMonth: maxInsurableCalendarDays > 0,
+      insuranceStartDate: formattedInsDate,
+      startsMidMonth,
+      insurableStartDay: insD,
+      maxInsurableCalendarDays,
+      defaultInsuranceDays,
+      reason: startsMidMonth
+        ? `شروع بیمه از ${toPersianDigits(formattedInsDate)} (حداکثر ${toPersianDigits(maxInsurableCalendarDays)} روز)`
+        : ''
+    };
+  }
+
+  return {
+    isInsuredForMonth: true,
+    insuranceStartDate: formattedInsDate,
+    startsMidMonth: false,
+    insurableStartDay: 1,
+    maxInsurableCalendarDays: safeDaysInMonth,
+    defaultInsuranceDays: Math.max(0, Math.min(safeWorkDays, safeDaysInMonth)),
+    reason: ''
+  };
+}
+
 export function getLeaveBuyoutSalaryItemsForContract(
   c: any,
   emp: any,
@@ -1747,11 +1899,12 @@ export function computeMonthlyPayrollSnapshotForEmployee(
       fridayWorkAmount;
     const grossSalary = Number(lockedItem.grossSalary ?? computedGrossFallback);
 
+    const lockedInsEligibility = resolveMonthlyInsuranceEligibility(emp, targetYear, targetMonth, daysInMonth || 30, workedDays);
     const insurableGross = Number(
-      lockedItem.insurableBase ?? (baseSalary + foodAllowance + housingAllowance)
+      lockedItem.insurableBase ?? (lockedInsEligibility.isInsuredForMonth ? (baseSalary + foodAllowance + housingAllowance) : 0)
     );
     const workerInsuranceShare = Number(
-      lockedItem.workerInsurance7 ?? (emp.hasInsurance !== false ? Math.round(insurableGross * 0.07) : 0)
+      lockedItem.workerInsurance7 ?? (lockedInsEligibility.isInsuredForMonth ? Math.round(insurableGross * 0.07) : 0)
     );
     const payrollTax = Number(lockedItem.payrollTax ?? 0);
     const supplementaryInsurance = Number(lockedItem.supplementaryInsurance ?? 0);
@@ -1849,7 +2002,12 @@ export function computeMonthlyPayrollSnapshotForEmployee(
       : daysInMonth || 30;
 
   const workedDays = manualWorkDays !== undefined ? Number(manualWorkDays) : perf.daysWorkedCount;
-  const insDays = manualInsDays !== undefined ? Number(manualInsDays) : workedDays;
+  const insEligibility = resolveMonthlyInsuranceEligibility(emp, targetYear, targetMonth, td, workedDays);
+  const insDays = insEligibility.isInsuredForMonth
+    ? (manualInsDays !== undefined
+        ? Math.min(Math.max(0, Number(manualInsDays)), insEligibility.maxInsurableCalendarDays)
+        : insEligibility.defaultInsuranceDays)
+    : 0;
 
   const activeBaseDaily = activeRates && Number(activeRates.dailyBaseSalary) > 0 ? Number(activeRates.dailyBaseSalary) : 0;
   const specificContractDaily =
@@ -1935,7 +2093,7 @@ export function computeMonthlyPayrollSnapshotForEmployee(
     (activeRates ? activeRates.dailyInsuranceSalary : 0);
   const hasComplementary = emp.complementaryInsurance === true || emp.hasSupplementaryInsurance === true;
   const supplementaryInsurance = hasComplementary ? (emp.supplementaryInsurancePremium || 0) : 0;
-  const isInsuredGeneral = emp.hasInsurance !== false;
+  const isInsuredGeneral = insEligibility.isInsuredForMonth;
 
   let calJobAllowance = effectiveContract
     ? (effectiveContract.jobAllowance !== undefined ? effectiveContract.jobAllowance : (emp.jobAllowance || 0))
@@ -2057,20 +2215,25 @@ export function computeMonthlyPayrollSnapshotForEmployee(
       : seniorityBase > 0 && workedDays > 0
       ? Math.round(seniorityBase / workedDays)
       : 0;
-  const insMonthlyBase = (effectiveDailyIns + dailySeniorityRate) * insDays;
-  const insFood = td > 0 ? Math.round((contractFoodVal / td) * insDays) : 0;
-  const insHousing = td > 0 ? Math.round((contractHousingVal / td) * insDays) : 0;
-  const insJob = td > 0 ? Math.round((calJobAllowance / td) * insDays) : 0;
+  const hasActiveInsuranceDays = insEligibility.isInsuredForMonth && insDays > 0;
+  const insMonthlyBase = hasActiveInsuranceDays ? (effectiveDailyIns + dailySeniorityRate) * insDays : 0;
+  const insFood = hasActiveInsuranceDays && td > 0 ? Math.round((contractFoodVal / td) * insDays) : 0;
+  const insHousing = hasActiveInsuranceDays && td > 0 ? Math.round((contractHousingVal / td) * insDays) : 0;
+  const insChild = hasActiveInsuranceDays && td > 0 ? Math.round((contractChildVal / td) * insDays) : 0;
+  const insMarriage = hasActiveInsuranceDays && td > 0 ? Math.round((contractMarriageVal / td) * insDays) : 0;
+  const insJob = hasActiveInsuranceDays && td > 0 ? Math.round((calJobAllowance / td) * insDays) : 0;
 
   let insBenefits = 0;
-  if (insKeySet.has('housingAllowance')) insBenefits += insHousing;
-  if (insKeySet.has('foodAllowance')) insBenefits += insFood;
-  if (insKeySet.has('childAllowance')) insBenefits += childAllowance;
-  if (insKeySet.has('marriageAllowance')) insBenefits += marriageAllowance;
-  if (insKeySet.has('jobAllowance')) insBenefits += insJob;
+  if (hasActiveInsuranceDays) {
+    if (insKeySet.has('housingAllowance')) insBenefits += insHousing;
+    if (insKeySet.has('foodAllowance')) insBenefits += insFood;
+    if (insKeySet.has('childAllowance')) insBenefits += insChild;
+    if (insKeySet.has('marriageAllowance')) insBenefits += insMarriage;
+    if (insKeySet.has('jobAllowance')) insBenefits += insJob;
+  }
 
-  const insurableGross = insMonthlyBase + insBenefits;
-  const isInsured = emp.hasInsurance !== false && emp.isSubjectToWorkerPremium !== false;
+  const insurableGross = hasActiveInsuranceDays ? (insMonthlyBase + insBenefits) : 0;
+  const isInsured = hasActiveInsuranceDays && emp.isSubjectToWorkerPremium !== false;
   const workerInsuranceShare = isInsured ? Math.round(insurableGross * 0.07) : 0;
 
   // Tax calculation matching PayrollManagement
