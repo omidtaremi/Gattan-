@@ -1647,16 +1647,19 @@ export default function PersonnelSettlementTab({
           if (con?.contract?.calculatedSeniorityBase && con.contract.calculatedSeniorityBase > 0) {
             return Number(con.contract.calculatedSeniorityBase);
           }
+          if (refLastMonth && refLastMonth.seniorityBase && refLastMonth.seniorityBase > 0 && refLastMonth.workedDays > 0) {
+            return Math.round((refLastMonth.seniorityBase / refLastMonth.workedDays) * 30);
+          }
           if (emp?.dailyYearsDifference && emp.dailyYearsDifference > 0) {
             return Math.round(Number(emp.dailyYearsDifference) * 30);
           }
           if (emp?.yearsBase && emp.yearsBase > 0) {
             return emp.yearsBase > 500000 ? Number(emp.yearsBase) : Math.round(Number(emp.yearsBase) * 30);
           }
-          const insStart = parseJalali(emp?.seniorityBaseStartDate || emp?.entryDate || emp?.insuranceDate || '');
+          const senStart = parseJalali(emp?.seniorityBaseStartDate || '');
           const refDateParsed = parseJalali(con?.contractStartDate || buyoutLookupDate || '');
-          if (insStart && refDateParsed) {
-            const totalMonthsDiff = (refDateParsed.y - insStart.y) * 12 + (refDateParsed.m - insStart.m) + (refDateParsed.d >= insStart.d ? 0 : -1);
+          if (senStart && refDateParsed) {
+            const totalMonthsDiff = (refDateParsed.y - senStart.y) * 12 + (refDateParsed.m - senStart.m) + (refDateParsed.d >= senStart.d ? 0 : -1);
             const completedYears = Math.floor(totalMonthsDiff / 12);
             if (completedYears >= 1) {
               const yrStr = String(contractEndYear);
@@ -1682,9 +1685,6 @@ export default function PersonnelSettlementTab({
                 return Math.round(rule.dailyRate * 30);
               }
             }
-          }
-          if (refLastMonth && refLastMonth.seniorityBase && refLastMonth.seniorityBase > 0 && refLastMonth.workedDays > 0) {
-            return Math.round((refLastMonth.seniorityBase / refLastMonth.workedDays) * 30);
           }
           return 0;
         }

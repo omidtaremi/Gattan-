@@ -8968,16 +8968,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [conIsActive, setConIsActive] = useState<boolean>(true);
   const [viewBasisDays, setViewBasisDays] = useState<number>(30);
 
-  // تعیین تاریخ مبنای محاسبه پایه سنوات پرسنل: تاریخ شروع پایه سنوات -> تاریخ ورود پرسنل -> تاریخ شروع بیمه
-  const resolvePersonnelSeniorityStartDate = (emp: Personnel | null | undefined, fallbackDate: string = ''): string => {
-    if (!emp) return fallbackDate;
-    const sDate = (emp.seniorityBaseStartDate || (emp as any).personnel?.seniorityBaseStartDate || '').trim();
-    if (sDate) return sDate;
-    const eDate = (emp.entryDate || (emp as any).personnel?.entryDate || '').trim();
-    if (eDate) return eDate;
-    const iDate = (emp.insuranceDate || (emp as any).personnel?.insuranceDate || '').trim();
-    if (iDate) return iDate;
-    return fallbackDate;
+  // تاریخ مبنای محاسبه پایه سنوات پرسنل: صرفاً از فیلد «تاریخ شروع پایه سنوات» پرونده پرسنل استفاده می‌شود
+  const resolvePersonnelSeniorityStartDate = (emp: Personnel | null | undefined): string => {
+    if (!emp) return '';
+    return (emp.seniorityBaseStartDate || (emp as any).personnel?.seniorityBaseStartDate || '').trim();
   };
 
   // محاسبه خودکار فوق‌العاده شغلی بر اساس مبلغ خالص پرداختی توافقی (مبنای ۱ روزه با معادل ۲۶ روز کارکرد، ۳۰ روزه یا ۳۱ روزه - تطبیق با بند ۱۴)
@@ -9020,8 +9014,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const calMonthlyEidi = Math.round((dispBaseSalary * 2) / 12);
 
     const tStartDate = conStartDate || emp.contractStartDate || emp.entryDate || '';
-    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp, tStartDate);
-    const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
+    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp);
+    const tDiff = seniorityStartDateRef ? getJalaliDateDifference(seniorityStartDateRef, tStartDate) : null;
     let tempSeniorityYears = 0;
     if (tDiff) {
       const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -9030,13 +9024,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
     const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
-    const foundSeniorityRule = findSeniorityRateRule(
-      db.seniorityRateRules || [],
-      tempSeniorityYears,
-      tStartDate,
-      startYear,
-      activePeriodId
-    );
+    const foundSeniorityRule = (seniorityStartDateRef && tempSeniorityYears > 0)
+      ? findSeniorityRateRule(
+          db.seniorityRateRules || [],
+          tempSeniorityYears,
+          tStartDate,
+          startYear,
+          activePeriodId
+        )
+      : null;
     const parsedConSeniority30 = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
     const calSeniorityBase = parsedConSeniority30 > 0
       ? Math.round((parsedConSeniority30 / 30) * basisDays)
@@ -9530,8 +9526,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const calMonthlyEidi = Math.round((baseVal * 2) / 12);
 
     const tStartDate = startDateStr || emp.contractStartDate || emp.entryDate || '';
-    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp, tStartDate);
-    const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
+    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp);
+    const tDiff = seniorityStartDateRef ? getJalaliDateDifference(seniorityStartDateRef, tStartDate) : null;
     let tempSeniorityYears = 0;
     if (tDiff) {
       const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -9540,13 +9536,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
     const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
-    const foundSeniorityRule = findSeniorityRateRule(
-      db.seniorityRateRules || [],
-      tempSeniorityYears,
-      tStartDate,
-      startYear,
-      activePeriodId
-    );
+    const foundSeniorityRule = (seniorityStartDateRef && tempSeniorityYears > 0)
+      ? findSeniorityRateRule(
+          db.seniorityRateRules || [],
+          tempSeniorityYears,
+          tStartDate,
+          startYear,
+          activePeriodId
+        )
+      : null;
     const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
 
     const calJobAllowance = emp.jobAllowance || 0;
@@ -9879,7 +9877,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const calculateDynamicSeniorityBase = (emp: Personnel | null, conStart: string): number => {
     if (!emp) return 0;
-    const senStartDate = resolvePersonnelSeniorityStartDate(emp, '');
+    const senStartDate = resolvePersonnelSeniorityStartDate(emp);
     if (!senStartDate || !conStart) return 0;
 
     const insGregorian = parseJalaliToGregorianDate(senStartDate);
@@ -12910,7 +12908,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                 employeesSubTab === 'roster'
                   ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-slate-100'
               }`}
             >
               <Users className="h-3.5 w-3.5 shrink-0" />
@@ -12922,7 +12920,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                 employeesSubTab === 'departments'
                   ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-slate-100'
               }`}
             >
               <Briefcase className="h-3.5 w-3.5 shrink-0" />
@@ -12930,7 +12928,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black transition-colors ${
                 employeesSubTab === 'departments'
                   ? 'bg-white/20 text-white'
-                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-300 group-hover:text-slate-900'
+                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-700 group-hover:text-slate-100'
               }`}>
                 {toPersianDigits(categories.length)}
               </span>
@@ -12941,7 +12939,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               className={`group px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                 employeesSubTab === 'personnel_categories'
                   ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-                  : 'text-slate-300 hover:bg-slate-200 hover:text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-slate-100'
               }`}
             >
               <Tag className="h-3.5 w-3.5 shrink-0" />
@@ -12949,7 +12947,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black transition-colors ${
                 employeesSubTab === 'personnel_categories'
                   ? 'bg-white/20 text-white'
-                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-300 group-hover:text-slate-900'
+                  : 'bg-slate-800 text-slate-300 group-hover:bg-slate-700 group-hover:text-slate-100'
               }`}>
                 {toPersianDigits(listPersonnelCategories.length)}
               </span>
@@ -12958,20 +12956,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
           {/* Sub-tab 2: Production Department Categories (CRUD) */}
           {employeesSubTab === 'departments' && (
-            <div className="bg-slate-900/60 p-5 sm:p-6 rounded-2xl border border-slate-800 space-y-4 shadow-xl text-right">
-              <h3 className="text-sm font-extrabold text-slate-100 border-b border-slate-800 pb-3 flex items-center gap-2">
-                <Briefcase className="h-4.5 w-4.5 text-rose-500" />
+            <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 space-y-5 shadow-xl text-right">
+              <h3 className="text-sm font-black text-slate-100 border-b border-slate-800 pb-3.5 flex items-center gap-2">
+                <span className="p-2 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl">
+                  <Briefcase className="h-4 w-4" />
+                </span>
                 مدیریت دپارتمان‌های تولید (دسته‌بندی‌ها)
               </h3>
 
               {/* Add Category inline form */}
-              <form onSubmit={handleAddDeptCategory} className="space-y-2 max-w-xl">
-                <label htmlFor="pcat-name-payroll" className="block text-[11px] font-bold text-slate-350 font-sans">نام دپارتمان تولید جدید</label>
+              <form onSubmit={handleAddDeptCategory} className="space-y-2 max-w-xl bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
+                <label htmlFor="pcat-name-payroll" className="block text-[11px] font-bold text-slate-300 font-sans">نام دپارتمان تولید جدید</label>
                 <div className="flex gap-2">
                   <input
                     id="pcat-name-payroll"
                     type="text"
-                    className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
+                    className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-slate-100 font-bold placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
                     placeholder="مانند: خط پیراشکی"
                     value={newDeptCatName}
                     onChange={(e) => setNewDeptCatName(e.target.value)}
@@ -12979,7 +12979,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   />
                   <button
                     type="submit"
-                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
+                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors shadow-md shadow-rose-600/20"
                   >
                     افزودن
                   </button>
@@ -12987,16 +12987,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               </form>
 
               {/* List of categories with edit and delete */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
                 {categories.map(cat => {
                   const isEditing = editingDeptCatId === cat.id;
                   return (
-                    <div key={cat.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
+                    <div key={cat.id} className="p-3.5 bg-slate-950/70 rounded-2xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-800/50 font-sans">
                       {isEditing ? (
                         <div className="flex gap-1.5 w-full">
                           <input
                             type="text"
-                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-white rounded-lg text-xs focus:outline-none"
+                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-slate-100 rounded-lg text-xs focus:outline-none focus:border-rose-500"
                             value={editingDeptCatName}
                             onChange={(e) => setEditingDeptCatName(e.target.value)}
                             required
@@ -13011,31 +13011,33 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <button
                             type="button"
                             onClick={() => setEditingDeptCatId(null)}
-                            className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
                           >
                             لغو
                           </button>
                         </div>
                       ) : (
                         <>
-                          <span className="text-slate-200 font-bold">{cat.name}</span>
-                          <div className="flex gap-3">
+                          <span className="text-slate-100 font-bold">{cat.name}</span>
+                          <div className="flex gap-1.5">
                             <button
                               type="button"
                               onClick={() => {
                                 setEditingDeptCatId(cat.id);
                                 setEditingDeptCatName(cat.name);
                               }}
-                              className="text-[11px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
+                              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 rounded-lg transition-all cursor-pointer"
+                              title="ویرایش"
                             >
-                              ویرایش
+                              <Edit3 className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteDeptCategory(cat.id, cat.name)}
-                              className="text-[11px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
+                              className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-slate-400 hover:text-rose-400 rounded-lg transition-all cursor-pointer"
+                              title="حذف"
                             >
-                              حذف
+                              <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </>
@@ -13044,7 +13046,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   );
                 })}
                 {categories.length === 0 && (
-                  <div className="md:col-span-2 text-center py-6 text-slate-400 text-xs font-sans">
+                  <div className="md:col-span-2 text-center py-8 text-slate-500 text-xs font-sans">
                     هیچ دپارتمان تولیدی در این دوره مالی یافت نشد.
                   </div>
                 )}
@@ -13054,20 +13056,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
           {/* Sub-tab 3: Personnel Categories (CRUD) */}
           {employeesSubTab === 'personnel_categories' && (
-            <div className="bg-slate-900/60 p-5 sm:p-6 rounded-2xl border border-slate-800 space-y-4 shadow-xl text-right">
-              <h3 className="text-sm font-extrabold text-slate-100 border-b border-slate-800 pb-3 flex items-center gap-2">
-                <Tag className="h-4.5 w-4.5 text-rose-500" />
+            <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 space-y-5 shadow-xl text-right">
+              <h3 className="text-sm font-black text-slate-100 border-b border-slate-800 pb-3.5 flex items-center gap-2">
+                <span className="p-2 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl">
+                  <Tag className="h-4 w-4" />
+                </span>
                 مدیریت دسته‌بندی‌های پرسنل
               </h3>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
                 {/* Search */}
                 <div className="space-y-1.5">
-                  <label htmlFor="search-pers-cat" className="block text-[11px] font-bold text-slate-350 font-sans">جستجوی دسته‌بندی</label>
+                  <label htmlFor="search-pers-cat" className="block text-[11px] font-bold text-slate-300 font-sans">جستجوی دسته‌بندی</label>
                   <input
                     id="search-pers-cat"
                     type="text"
-                    className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-rose-500 font-sans"
+                    className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-slate-100 font-bold placeholder:text-slate-500 focus:outline-none focus:border-rose-500 font-sans"
                     placeholder="جستجو کنید..."
                     value={searchPersonnelCatQuery}
                     onChange={(e) => setSearchPersonnelCatQuery(e.target.value)}
@@ -13076,12 +13080,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                 {/* Add Inline Form */}
                 <form onSubmit={handleAddPersonnelCategory} className="space-y-1.5">
-                  <label htmlFor="new-pers-cat" className="block text-[11px] font-bold text-slate-350 font-sans">نام دسته‌بندی جدید</label>
+                  <label htmlFor="new-pers-cat" className="block text-[11px] font-bold text-slate-300 font-sans">نام دسته‌بندی جدید</label>
                   <div className="flex gap-2">
                     <input
                       id="new-pers-cat"
                       type="text"
-                      className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-1 focus:ring-rose-500"
+                      className="flex-grow px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-slate-100 font-bold placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
                       placeholder="مانند: پرسنل شیفت الف"
                       value={newPersonnelCatName}
                       onChange={(e) => setNewPersonnelCatName(e.target.value)}
@@ -13089,7 +13093,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     />
                     <button
                       type="submit"
-                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors"
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs px-4 py-2 rounded-xl font-bold cursor-pointer transition-colors shadow-md shadow-rose-600/20"
                     >
                       افزودن
                     </button>
@@ -13098,16 +13102,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               </div>
 
               {/* Categories List */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
                 {listPersonnelCategories.map(cat => {
                   const isEditing = editingPersonnelCatId === cat.id;
                   return (
-                    <div key={cat.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-900/80 font-sans">
+                    <div key={cat.id} className="p-3.5 bg-slate-950/70 rounded-2xl border border-slate-800 flex items-center justify-between text-xs transition-colors hover:bg-slate-800/50 font-sans">
                       {isEditing ? (
                         <div className="flex gap-1.5 w-full">
                           <input
                             type="text"
-                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-white rounded-lg text-xs focus:outline-none"
+                            className="flex-grow px-2.5 py-1.5 border border-slate-700 bg-slate-900 text-slate-100 rounded-lg text-xs focus:outline-none focus:border-rose-500"
                             value={editingPersonnelCatName}
                             onChange={(e) => setEditingPersonnelCatName(e.target.value)}
                             required
@@ -13122,31 +13126,33 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <button
                             type="button"
                             onClick={() => setEditingPersonnelCatId(null)}
-                            className="bg-slate-800 hover:bg-slate-750 border border-slate-705 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
+                            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] px-2.5 py-1 rounded-lg font-bold cursor-pointer"
                           >
                             لغو
                           </button>
                         </div>
                       ) : (
                         <>
-                          <span className="text-slate-200 font-bold">{cat.name}</span>
-                          <div className="flex gap-3">
+                          <span className="text-slate-100 font-bold">{cat.name}</span>
+                          <div className="flex gap-1.5">
                             <button
                               type="button"
                               onClick={() => {
                                 setEditingPersonnelCatId(cat.id);
                                 setEditingPersonnelCatName(cat.name);
                               }}
-                              className="text-[11px] text-blue-400 hover:text-blue-350 font-bold font-sans cursor-pointer"
+                              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 rounded-lg transition-all cursor-pointer"
+                              title="ویرایش"
                             >
-                              ویرایش
+                              <Edit3 className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeletePersonnelCategory(cat.id, cat.name)}
-                              className="text-[11px] text-rose-500 hover:text-rose-455 font-bold font-sans cursor-pointer"
+                              className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-slate-400 hover:text-rose-400 rounded-lg transition-all cursor-pointer"
+                              title="حذف"
                             >
-                              حذف
+                              <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </>
@@ -13155,7 +13161,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   );
                 })}
                 {listPersonnelCategories.length === 0 && (
-                  <div className="md:col-span-2 text-center py-6 text-slate-400 text-xs">
+                  <div className="md:col-span-2 text-center py-8 text-slate-500 text-xs">
                     هیچ دسته‌بندی پرسنلی یافت نشد.
                   </div>
                 )}
@@ -13164,20 +13170,59 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           )}
 
           {employeesSubTab === 'roster' && (
-          <div className="space-y-6">
+          <div className="space-y-5">
             {!isPersonnelFormOpen ? (
               <div className="w-full space-y-4">
-                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-205" dir="rtl">
-                  <div className="flex items-center gap-3 w-full xl:w-auto">
-                    <div className="relative w-full xl:w-64">
+                {/* 4 SUMMARY STATS CARDS (Matching CustomerManagement Palette) */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+                    <span className="text-[11px] text-slate-400 block mb-1">کل پرونده‌های پرسنل</span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(personnel.length)}</span>
+                      <span className="text-[10px] text-slate-500">نفر</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+                    <span className="text-[11px] text-emerald-400 block mb-1">پرسنل شاغل فعال</span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xl font-black text-emerald-400 font-mono">
+                        {toPersianDigits(personnel.filter(p => p.isActive && !p.departureDate).length)}
+                      </span>
+                      <span className="text-[10px] text-emerald-500/80">در حال همکاری</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+                    <span className="text-[11px] text-cyan-400 block mb-1">دارای بیمه تأمین اجتماعی</span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xl font-black text-cyan-400 font-mono">
+                        {toPersianDigits(personnel.filter(p => p.hasInsurance !== false).length)}
+                      </span>
+                      <span className="text-[10px] text-slate-500">بیمه‌شده</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
+                    <span className="text-[11px] text-amber-400 block mb-1">ترک کار / غیرفعال</span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xl font-black text-amber-400 font-mono">
+                        {toPersianDigits(personnel.filter(p => !p.isActive || Boolean(p.departureDate)).length)}
+                      </span>
+                      <span className="text-[10px] text-slate-500">پرونده</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* SEARCH & ACTIONS TOOLBAR */}
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800" dir="rtl">
+                  <div className="flex items-center gap-2.5 w-full xl:w-auto">
+                    <div className="relative flex-1 xl:w-72">
                       <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                        <Search className="h-4 w-4 text-slate-400" />
+                        <Search className="h-4 w-4 text-slate-500" />
                       </span>
                       <input
                         id="employee-search-inp"
                         type="text"
-                        placeholder="جستجو کادر پرسنل..."
-                        className="w-full pr-10 pl-3 py-1.5 border rounded-lg text-xs bg-white text-right font-sans"
+                        placeholder="جستجو در نام پرسنل، کد پرسنلی، کد تردد یا سمت..."
+                        className="w-full pr-9 pl-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-rose-500 text-right font-sans"
                         value={empSearch}
                         onChange={(e) => setEmpSearch(e.target.value)}
                       />
@@ -13190,7 +13235,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         resetForm();
                         setIsPersonnelFormOpen(true);
                       }}
-                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/10 shrink-0 transition-all font-sans"
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20 shrink-0 transition-all font-sans"
                     >
                       <Plus className="h-4 w-4" /> افزودن پرسنل
                     </button>
@@ -13198,15 +13243,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                   <div className="flex flex-wrap items-center gap-2">
                     <button
+                      type="button"
                       onClick={downloadSamplePersonnelCSV}
-                      className="text-[11px] bg-white text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-slate-50 shadow-xs"
+                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       title="دانلود فایل نمونه اکسل جهت وارد کردن پرسنل"
                     >
-                      <Download className="h-3.5 w-3.5 text-slate-500" /> دانلود نمونه قالب پرسنل
+                      <Download className="h-3.5 w-3.5 text-slate-400" /> دانلود نمونه قالب
                     </button>
 
-                    <label className="text-[11px] bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 cursor-pointer hover:bg-blue-100 transition-colors shadow-xs">
-                      <Plus className="h-3.5 w-3.5" /> واردات پرسنل از اکسل
+                    <label className="text-[11px] bg-slate-950 hover:bg-slate-800 text-cyan-300 border border-slate-800 hover:border-cyan-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer transition-colors">
+                      <Plus className="h-3.5 w-3.5 text-cyan-400" /> واردات از اکسل
                       <input
                         id="personnel-raw-import-file"
                         type="file"
@@ -13217,186 +13263,238 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </label>
 
                     <button
+                      type="button"
                       onClick={exportPersonnelToExcel}
-                      className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-emerald-100 shadow-xs cursor-pointer"
+                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-emerald-300 border border-slate-800 hover:border-emerald-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       title="دانلود فایل رسمی اکسل (.xlsx) کلیه پرسنل کارگاه"
                     >
-                      <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel پرسنل (.xlsx)
+                      <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" /> خروجی Excel
                     </button>
 
                     <button
+                      type="button"
                       onClick={handleCopyPersonnelFromPreviousPeriod}
-                      className="text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-indigo-100 shadow-xs"
+                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-amber-300 border border-slate-800 hover:border-amber-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       title="کپی پرونده‌های پرسنلی و تخصیص‌ها از دوره قبل"
                     >
-                      <Copy className="h-3.5 w-3.5" /> کپی پرسنل از دوره قبل
+                      <Copy className="h-3.5 w-3.5 text-amber-400" /> کپی از دوره قبل
                     </button>
                   </div>
                 </div>
 
                 {/* Bulk operations bar */}
                 {selectedEmpCodes.length > 0 && (
-                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-center justify-between animate-slide-in" dir="rtl">
-                    <span className="text-xs text-rose-900 font-bold">
-                      تعداد <strong>{selectedEmpCodes.length}</strong> پرسنل جهت عملیات دسته‌جمعی انتخاب گردیده‌اند.
+                  <div className="bg-rose-950/40 border border-rose-500/40 rounded-2xl p-3.5 flex items-center justify-between animate-slide-in" dir="rtl">
+                    <span className="text-xs text-rose-200 font-bold">
+                      تعداد <strong className="text-rose-400 font-mono">{toPersianDigits(selectedEmpCodes.length)}</strong> پرسنل جهت عملیات دسته‌جمعی انتخاب گردیده‌اند.
                     </span>
                     <button
                       type="button"
                       onClick={handleBulkDeletePersonnel}
-                      className="bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold py-1.5 px-4 rounded-lg flex items-center gap-1 cursor-pointer"
+                      className="bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold py-1.5 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20"
                     >
-                      <Trash2 className="h-3.5 w-3.5" /> حذف دائم کارگران برگزیده
+                      <Trash2 className="h-3.5 w-3.5" /> حذف دائم پرسنل برگزیده
                     </button>
                   </div>
                 )}
 
-                <div className="border border-slate-100 rounded-2xl overflow-hidden bg-white shadow-sm overflow-x-auto" dir="rtl">
-                  <table className="min-w-full text-right text-xs">
-                    <thead className="bg-slate-50/75 border-b border-slate-150">
-                      <tr>
-                        <th className="px-3 py-2 text-center w-10">
-                          <button
-                            type="button"
-                            onClick={handleToggleSelectAll}
-                            className="text-slate-500 hover:text-slate-800 focus:outline-none"
-                          >
-                            {searchedPersonnel.every(p => selectedEmpCodes.includes(p.employeeCode)) ? (
-                              <CheckSquare className="h-4.5 w-4.5 text-rose-600" />
-                            ) : (
-                              <Square className="h-4.5 w-4.5" />
-                            )}
-                          </button>
-                        </th>
-                        <th className="px-3 py-2.5 font-bold text-slate-500">کد پرسنلی / حسابداری</th>
-                        <th className="px-3 py-2.5 font-bold text-slate-500 text-center">کد تردد</th>
-                        <th className="px-3 py-2.5 font-bold text-slate-500">نام و فامیل پرسنل</th>
-                        <th className="px-3 py-2.5 font-bold text-slate-500">وضعیت / عائله</th>
-                        <th className="px-3 py-2.5 font-bold text-slate-500">تخصیص دپارتمان</th>
-                        <th className="px-3 py-2.5 text-center text-slate-500 w-24">عملیات</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {searchedPersonnel.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                            هیچ پرسنلی منطبق با کلمات جستجو شده یافت نشد.
-                          </td>
+                {/* TABLE OF PERSONNEL (Matching CustomerManagement Palette) */}
+                <div className="bg-slate-900/90 rounded-3xl border border-slate-800 shadow-xl overflow-hidden" dir="rtl">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-right border-collapse">
+                      <thead>
+                        <tr className="bg-slate-950/90 text-slate-400 text-[11px] font-bold border-b border-slate-800">
+                          <th className="px-3.5 py-3.5 text-center w-10">
+                            <button
+                              type="button"
+                              onClick={handleToggleSelectAll}
+                              className="text-slate-400 hover:text-slate-200 focus:outline-none cursor-pointer"
+                            >
+                              {searchedPersonnel.length > 0 && searchedPersonnel.every(p => selectedEmpCodes.includes(p.employeeCode)) ? (
+                                <CheckSquare className="h-4 w-4 text-rose-400" />
+                              ) : (
+                                <Square className="h-4 w-4" />
+                              )}
+                            </button>
+                          </th>
+                          <th className="px-4 py-3.5">کد پرسنلی / حسابداری</th>
+                          <th className="px-4 py-3.5 text-center">کد تردد</th>
+                          <th className="px-4 py-3.5">نام و فامیل پرسنل</th>
+                          <th className="px-4 py-3.5">وضعیت / عائله</th>
+                          <th className="px-4 py-3.5">تخصیص دپارتمان</th>
+                          <th className="px-4 py-3.5 text-center w-32">عملیات</th>
                         </tr>
-                      ) : (
-                        searchedPersonnel.map(emp => {
-                          const alloc = allocMap[emp.employeeCode];
-                          const isSelected = selectedEmpCodes.includes(emp.employeeCode);
-                          return (
-                            <tr key={emp.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-rose-50/40 hover:bg-rose-50/60' : ''}`}>
-                              <td className="px-3 py-3 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleSelectOne(emp.employeeCode)}
-                                  className="text-slate-500 focus:outline-none"
-                                >
-                                  {isSelected ? (
-                                    <CheckSquare className="h-4 w-4 text-rose-600" />
-                                  ) : (
-                                    <Square className="h-4 w-4" />
-                                  )}
-                                </button>
-                              </td>
-                              <td className="px-3 py-3">
-                                <div className="font-bold font-mono text-rose-600">{emp.employeeCode}</div>
-                                <span className="text-[10px] text-slate-400 font-mono">حسابداری: {emp.accountCode || 'نامشخص'}</span>
-                              </td>
-                              <td className="px-3 py-3 text-center">
-                                {emp.attendanceCode ? (
-                                  <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-mono font-bold text-xs bg-amber-50 text-amber-900 border border-amber-200/80 shadow-2xs">
-                                    {emp.attendanceCode}
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-350 font-mono text-[11px]">-</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-3">
-                                <div className="font-extrabold text-slate-900">{emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}</div>
-                                <span className="text-[10px] text-slate-500 font-medium">سمت: {emp.role || 'کارگر خط تولید'}</span>
-                              </td>
-                              <td className="px-3 py-3">
-                                <div className="text-[10px] space-y-1">
-                                  {emp.departureDate ? (
-                                    <div className="inline-flex flex-col items-start gap-0.5">
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-extrabold border border-rose-200">
-                                        <UserMinus className="h-3 w-3" />
-                                        ترک کار: {toPersianDigits(emp.departureDate)}
-                                      </span>
-                                      {emp.departureReason && (
-                                        <span className="text-[9px] text-slate-500 font-semibold px-1">
-                                          علت: {emp.departureReason}
-                                        </span>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <span className={`inline-block px-1.5 py-0.5 rounded font-bold ${emp.isActive ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}>
-                                      {emp.isActive ? 'فعال خط' : 'غیرفعال'}
-                                    </span>
-                                  )}
-                                  <div className="text-slate-500">
-                                    {emp.isMarried ? `متأهل | ${emp.childrenCount || 0} فرزند` : 'مجرد'}
-                                  </div>
-                                </div>
-                              </td>
-                              <td className="px-3 py-3">
-                                <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                  (!alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4')) ? 'bg-slate-100 text-slate-700' : 'bg-rose-50 text-rose-700 border border-rose-100'
-                                }`}>
-                                  {alloc ? (departmentNameMap[alloc.departmentCategoryId] || 'بخش مشترک / سربار کارگاه') : 'بخش مشترک / سربار کارگاه'}
-                                </span>
-                              </td>
-                              <td className="px-3 py-3 text-center">
-                                <div className="flex justify-center gap-1">
-                                  <button onClick={() => startEditEmployee(emp)} className="text-[10px] bg-slate-105 border px-1.5 py-0.5 rounded-lg text-slate-700 hover:bg-slate-200 font-bold cursor-pointer">اصلاح</button>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-xs">
+                        {searchedPersonnel.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
+                              <Users className="h-10 w-10 mx-auto text-slate-700 mb-2 opacity-50" />
+                              هیچ پرسنلی منطبق با کلمات جستجو شده یافت نشد.
+                            </td>
+                          </tr>
+                        ) : (
+                          searchedPersonnel.map(emp => {
+                            const alloc = allocMap[emp.employeeCode];
+                            const isSelected = selectedEmpCodes.includes(emp.employeeCode);
+                            const isSharedDept = !alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4');
+                            return (
+                              <tr
+                                key={emp.id}
+                                className={`hover:bg-slate-800/50 transition-colors group ${isSelected ? 'bg-rose-950/20' : ''}`}
+                              >
+                                <td className="px-3.5 py-3.5 text-center">
                                   <button
                                     type="button"
-                                    onClick={() => setContractModalEmployee(emp)}
-                                    className="text-[10px] text-teal-700 bg-teal-50 border border-teal-100 px-1.5 py-0.5 rounded-lg hover:bg-teal-100 font-bold transition-all cursor-pointer"
-                                    title="چاپ قرارداد پرسنلی"
+                                    onClick={() => handleToggleSelectOne(emp.employeeCode)}
+                                    className="text-slate-400 hover:text-slate-200 focus:outline-none cursor-pointer"
                                   >
-                                    قرارداد
+                                    {isSelected ? (
+                                      <CheckSquare className="h-4 w-4 text-rose-400" />
+                                    ) : (
+                                      <Square className="h-4 w-4" />
+                                    )}
                                   </button>
-                                  <button onClick={() => deleteEmployee(emp.employeeCode)} className="text-[10px] text-rose-600 border border-rose-100 px-1.5 py-0.5 rounded-lg hover:bg-rose-50 font-bold cursor-pointer">حذف</button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="font-bold font-mono text-rose-400">{emp.employeeCode}</div>
+                                  <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                                    حسابداری: {emp.accountCode || 'نامشخص'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3.5 text-center">
+                                  {emp.attendanceCode ? (
+                                    <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-mono font-bold text-[11px] bg-amber-950/40 text-amber-400 border border-amber-900/50">
+                                      {emp.attendanceCode}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-600 font-mono text-[11px]">-</span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="font-bold text-slate-100">
+                                    {emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}
+                                  </div>
+                                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                                    سمت: {emp.role || 'کارگر خط تولید'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <div className="space-y-1">
+                                    {emp.departureDate ? (
+                                      <div className="inline-flex flex-col items-start gap-0.5">
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-400 bg-rose-950/40 border border-rose-900/50 px-2 py-0.5 rounded-full">
+                                          <UserMinus className="h-3 w-3" />
+                                          ترک کار: {toPersianDigits(emp.departureDate)}
+                                        </span>
+                                        {emp.departureReason && (
+                                          <span className="text-[9.5px] text-slate-400 px-1">
+                                            علت: {emp.departureReason}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                        emp.isActive
+                                          ? 'text-emerald-400 bg-emerald-950/40 border-emerald-900/50'
+                                          : 'text-slate-400 bg-slate-800 border-slate-700'
+                                      }`}>
+                                        <CheckCircle className="h-3 w-3" />
+                                        {emp.isActive ? 'فعال خط' : 'غیرفعال'}
+                                      </span>
+                                    )}
+                                    <div className="text-[10px] text-slate-400">
+                                      {emp.isMarried ? `متأهل | ${toPersianDigits(emp.childrenCount || 0)} فرزند` : 'مجرد'}
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3.5">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                                    isSharedDept
+                                      ? 'bg-slate-950 border-slate-800 text-slate-300'
+                                      : 'bg-cyan-950/30 border-cyan-900/50 text-cyan-300'
+                                  }`}>
+                                    {alloc ? (departmentNameMap[alloc.departmentCategoryId] || 'بخش مشترک / سربار کارگاه') : 'بخش مشترک / سربار کارگاه'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3.5 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditEmployee(emp)}
+                                      className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-all cursor-pointer"
+                                      title="ویرایش پرونده پرسنلی"
+                                    >
+                                      <Edit3 className="h-3.5 w-3.5 text-amber-400" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setContractModalEmployee(emp)}
+                                      className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-all cursor-pointer"
+                                      title="چاپ قرارداد پرسنلی"
+                                    >
+                                      <FileText className="h-3.5 w-3.5 text-cyan-400" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteEmployee(emp.employeeCode)}
+                                      className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-slate-400 hover:text-rose-400 rounded-lg transition-all cursor-pointer"
+                                      title="حذف پرسنل"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             ) : (
-              <div className="w-full space-y-6">
-                <div className="flex items-center justify-between bg-slate-900 p-4 rounded-xl border border-slate-800 text-white shadow-md" dir="rtl">
-                  <div className="font-extrabold text-xs flex items-center gap-2">
-                    <Users className="h-4.5 w-4.5 text-rose-500" />
-                    {editingEmp ? `اصلاح پرونده پرسنلی: ${editingEmp.fullName}` : 'ثبت نام و تشکیل پرونده پرسنل جدید'}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => resetForm()}
-                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-md shadow-rose-600/10 font-sans"
-                  >
-                    <RotateCcw className="h-4 w-4" /> انصراف / بازگشت به لیست پرسنل
-                  </button>
-                </div>
+              <form onSubmit={handleSaveEmployee} className="w-full text-right font-sans" dir="rtl">
+                <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 shadow-xl space-y-6">
+                  {/* هدر فرم مطابق بخش مشتریان */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl shrink-0">
+                        {editingEmp ? <Edit3 className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
+                      </div>
+                      <div>
+                        <h2 className="text-base font-black text-slate-100">
+                          {editingEmp ? `ویرایش پرونده پرسنلی: ${editingEmp.fullName}` : 'تعریف و ثبت پرونده پرسنل جدید'}
+                        </h2>
+                        <span className="text-[11px] text-slate-400">
+                          لطفاً اطلاعات هویتی، شغلی، بیمه، عائله‌مندی و مشخصات بانکی پرسنل را با دقت وارد فرمایید.
+                        </span>
+                      </div>
+                    </div>
 
-                <form onSubmit={handleSaveEmployee} className="space-y-5 text-right font-sans" dir="rtl">
-                  {/* نوار بالای فرم: وضعیت همکاری و خلاصه پرونده */}
-                  <div className="bg-slate-900/90 px-4 py-3.5 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetForm();
+                        setIsPersonnelFormOpen(false);
+                      }}
+                      className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                    >
+                      <X className="h-4 w-4" />
+                      انصراف و بازگشت
+                    </button>
+                  </div>
+
+                  {/* نوار وضعیت همکاری پرسنل */}
+                  <div className="bg-slate-950/60 px-4 py-3.5 rounded-2xl border border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2.5">
-                      <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                      <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`}></span>
                       <span className="text-xs font-black text-slate-100">
                         وضعیت فعالیت پرسنل در مجموعه:
                       </span>
                       {departureDate && (
-                        <span className="text-[10px] font-extrabold bg-rose-950/90 text-rose-300 border border-rose-800/80 px-2.5 py-0.5 rounded-lg flex items-center gap-1">
+                        <span className="text-[10px] font-bold bg-rose-950/40 text-rose-400 border border-rose-900/50 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                           <UserMinus className="h-3 w-3" />
                           ترک کار: {toPersianDigits(departureDate)} ({departureReason || 'استعفا'})
                         </span>
@@ -13409,10 +13507,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           setIsActive(true);
                           setDepartureDate('');
                         }}
-                        className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                        className={`flex-1 sm:flex-none px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
                           isActive
-                            ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm shadow-emerald-600/20'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                            ? 'bg-emerald-950/50 text-emerald-400 border-emerald-500/40'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                         }`}
                       >
                         شاغل فعال
@@ -13420,10 +13518,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       <button
                         type="button"
                         onClick={() => setIsActive(false)}
-                        className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                        className={`flex-1 sm:flex-none px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
                           !isActive
-                            ? 'bg-rose-600 text-white border-rose-500 shadow-sm shadow-rose-600/20'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                            ? 'bg-rose-950/50 text-rose-400 border-rose-500/40'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                         }`}
                       >
                         {departureDate ? 'غیرفعال (ترک کار)' : 'غیرفعال / پایان همکاری'}
@@ -13432,519 +13530,512 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {/* چیدمان متوازن ۲ ستونه (دسکتاپ) و ۱ ستونه (موبایل) */}
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
 
                     {/* ==================== ستون راست: هویت و تماس، شغلی و تاریخ‌های مبنا، بیمه‌ها ==================== */}
-                    <div className="space-y-5">
+                    <div className="space-y-6">
 
-                      {/* === ۱. اطلاعات هویتی، تماس و نشانی === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۱</span>
-                            <Users className="h-4 w-4 text-rose-400" />
-                            اطلاعات هویتی، تماس و نشانی
-                          </h4>
-                          <span className="text-[10px] text-slate-400 font-bold">فیلدهای ستاره‌دار (*) الزامی</span>
+                      {/* === ۱. اطلاعات عمومی، هویتی و تماس === */}
+                      <section className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black text-rose-400 flex items-center gap-1.5">
+                            <Users className="h-4 w-4" />
+                            ۱. اطلاعات هویتی، تماس و نشانی پرسنل
+                          </h3>
+                          <span className="text-[10px] text-slate-400 font-bold">فیلدهای ستاره‌دار (<span className="text-rose-500">*</span>) الزامی</span>
                         </div>
 
-                        {/* نام و نام خانوادگی */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                          <div>
-                            <label htmlFor="first-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              نام *
-                            </label>
-                            <input
-                              id="first-name-inp"
-                              type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مثلاً: احمد"
-                              value={firstName}
-                              onChange={(e) => setFirstName(e.target.value)}
-                              required
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="last-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              نام خانوادگی *
-                            </label>
-                            <input
-                              id="last-name-inp"
-                              type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مثلاً: رضایی"
-                              value={lastName}
-                              onChange={(e) => setLastName(e.target.value)}
-                              required
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                        </div>
-
-                        {/* کد پرسنلی و کد حضور و غیاب */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                          <div>
-                            <div className="flex items-center justify-between mb-1.5">
-                              <label htmlFor="emp-code" className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
-                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                                کد پرسنلی *
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-4">
+                          {/* نام و نام خانوادگی */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label htmlFor="first-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                نام <span className="text-rose-500">*</span>
                               </label>
-                              {editingEmp ? (
-                                <span className="text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/25">
-                                  قابل اصلاح و همگام‌سازی
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={handleSuggestNextCode}
-                                  className="text-[10px] text-rose-400 hover:text-rose-300 font-bold underline cursor-pointer"
-                                >
-                                  پیشنهاد کد خودکار
-                                </button>
+                              <input
+                                id="first-name-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-100 focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مثلاً: احمد"
+                                value={firstName}
+                                onChange={(e) => setFirstName(e.target.value)}
+                                required
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="last-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                نام خانوادگی <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                id="last-name-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-100 focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مثلاً: رضایی"
+                                value={lastName}
+                                onChange={(e) => setLastName(e.target.value)}
+                                required
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                          </div>
+
+                          {/* کد پرسنلی و کد حضور و غیاب */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label htmlFor="emp-code" className="text-[11px] font-bold text-slate-300">
+                                  کد پرسنلی <span className="text-rose-500">*</span>
+                                </label>
+                                {editingEmp ? (
+                                  <span className="text-[9.5px] text-amber-400 font-bold bg-amber-950/40 px-2 py-0.5 rounded-md border border-amber-900/50">
+                                    قابل اصلاح و همگام‌سازی
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={handleSuggestNextCode}
+                                    className="text-[10px] text-rose-400 hover:text-rose-300 font-bold underline cursor-pointer"
+                                  >
+                                    پیشنهاد کد خودکار
+                                  </button>
+                                )}
+                              </div>
+                              <input
+                                id="emp-code"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-rose-400 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مثلاً: 1001"
+                                value={newCode}
+                                onChange={(e) => setNewCode(e.target.value)}
+                                required
+                                onFocus={handleFocus}
+                              />
+                              {editingEmp && (
+                                <p className="text-[9.5px] text-slate-400 mt-1 leading-relaxed">
+                                  در صورت تغییر کد پرسنلی، تمام قراردادها، ترددها و فیش‌ها خودکار همگام‌سازی می‌شوند.
+                                </p>
                               )}
                             </div>
-                            <input
-                              id="emp-code"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مثلاً: 1001"
-                              value={newCode}
-                              onChange={(e) => setNewCode(e.target.value)}
-                              required
-                              onFocus={handleFocus}
-                            />
-                            {editingEmp && (
-                              <p className="text-[9.5px] text-slate-400 mt-1 leading-relaxed">
-                                در صورت تغییر کد پرسنلی، تمام قراردادها، ترددها و فیش‌ها خودکار همگام‌سازی می‌شوند.
-                              </p>
-                            )}
+                            <div>
+                              <label htmlFor="attendance-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                کد دستگاه حضور و غیاب
+                              </label>
+                              <input
+                                id="attendance-code-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-amber-400 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مثلاً: 254"
+                                value={attendanceCode}
+                                onChange={(e) => setAttendanceCode(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
                           </div>
-                          <div>
-                            <label htmlFor="attendance-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              کد دستگاه حضور و غیاب
-                            </label>
-                            <input
-                              id="attendance-code-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مثلاً: 254"
-                              value={attendanceCode}
-                              onChange={(e) => setAttendanceCode(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                        </div>
 
-                        {/* کد ملی، شناسنامه، نام پدر و کد حسابداری */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                          <div>
-                            <label htmlFor="national-id-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              کد ملی *
-                            </label>
-                            <input
-                              id="national-id-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="۱۰ رقم مانند 0012345678"
-                              value={nationalId}
-                              onChange={(e) => setNationalId(e.target.value)}
-                              onFocus={handleFocus}
-                            />
+                          {/* کد ملی، شناسنامه، نام پدر و کد حسابداری */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label htmlFor="national-id-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                کد ملی <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                id="national-id-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="۱۰ رقم مانند 0012345678"
+                                value={nationalId}
+                                onChange={(e) => setNationalId(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="birth-certificate-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                شماره شناسنامه
+                              </label>
+                              <input
+                                id="birth-certificate-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="شماره شناسنامه"
+                                value={birthCertificateNumber}
+                                onChange={(e) => setBirthCertificateNumber(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="father-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                نام پدر
+                              </label>
+                              <input
+                                id="father-name-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="نام پدر"
+                                value={fatherName}
+                                onChange={(e) => setFatherName(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="account-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                کد حسابداری معین
+                              </label>
+                              <input
+                                id="account-code-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مثلاً: ACC-1001"
+                                value={accountCode}
+                                onChange={(e) => setAccountCode(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
                           </div>
-                          <div>
-                            <label htmlFor="birth-certificate-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              شماره شناسنامه
-                            </label>
-                            <input
-                              id="birth-certificate-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="شماره شناسنامه"
-                              value={birthCertificateNumber}
-                              onChange={(e) => setBirthCertificateNumber(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="father-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              نام پدر
-                            </label>
-                            <input
-                              id="father-name-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="نام پدر"
-                              value={fatherName}
-                              onChange={(e) => setFatherName(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="account-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              کد حسابداری معین
-                            </label>
-                            <input
-                              id="account-code-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مثلاً: ACC-1001"
-                              value={accountCode}
-                              onChange={(e) => setAccountCode(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                        </div>
 
-                        {/* اطلاعات تماس */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-3 border-t border-slate-800/80">
-                          <div>
-                            <label htmlFor="emp-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              تلفن همراه *
-                            </label>
-                            <input
-                              id="emp-mobile"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-                              value={newMobile}
-                              onChange={(e) => setNewMobile(e.target.value)}
-                              onFocus={handleFocus}
-                            />
+                          {/* اطلاعات تماس */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-3 border-t border-slate-800/80">
+                            <div>
+                              <label htmlFor="emp-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                تلفن همراه <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                id="emp-mobile"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-slate-100 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                                value={newMobile}
+                                onChange={(e) => setNewMobile(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="emergency-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                تلفن همراه اضطراری <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                id="emergency-mobile"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="۰۹#########"
+                                value={emergencyMobile}
+                                onChange={(e) => setEmergencyMobile(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
                           </div>
-                          <div>
-                            <label htmlFor="emergency-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              تلفن همراه اضطراری *
-                            </label>
-                            <input
-                              id="emergency-mobile"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="۰۹#########"
-                              value={emergencyMobile}
-                              onChange={(e) => setEmergencyMobile(e.target.value)}
-                              onFocus={handleFocus}
-                            />
+
+                          {/* تاریخ تولد */}
+                          <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl">
+                            {renderShamsiDatePicker('birth-date', 'تاریخ تولد پرسنل (شمسی)', birthDate, setBirthDate)}
                           </div>
-                        </div>
 
-                        {/* تاریخ تولد */}
-                        <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl">
-                          {renderShamsiDatePicker('birth-date', 'تاریخ تولد پرسنل (شمسی)', birthDate, setBirthDate)}
-                        </div>
+                          {/* جنسیت، وضعیت تاهل و نظام وظیفه */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">جنسیت</label>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
+                                {(['مرد', 'زن'] as const).map((g) => (
+                                  <button
+                                    key={g}
+                                    type="button"
+                                    onClick={() => setGender(g)}
+                                    className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                      gender === g ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                    }`}
+                                  >
+                                    {g}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
 
-                        {/* جنسیت، وضعیت تاهل و نظام وظیفه */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          <div>
-                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1.5">جنسیت</label>
-                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
-                              {(['مرد', 'زن'] as const).map((g) => (
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">وضعیت تاهل</label>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
                                 <button
-                                  key={g}
                                   type="button"
-                                  onClick={() => setGender(g)}
+                                  onClick={() => {
+                                    setMaritalStatus('مجرد');
+                                    setHasChildren(false);
+                                    setChildrenList([]);
+                                  }}
                                   className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                    gender === g ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                    maritalStatus === 'مجرد' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
                                   }`}
                                 >
-                                  {g}
+                                  مجرد
                                 </button>
-                              ))}
+                                <button
+                                  type="button"
+                                  onClick={() => setMaritalStatus('متاهل')}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    maritalStatus === 'متاهل' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  متاهل
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label htmlFor="military-status-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">نظام وظیفه</label>
+                              <select
+                                id="military-status-select"
+                                className="w-full px-2.5 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+                                value={militaryStatus}
+                                onChange={(e) => setMilitaryStatus(e.target.value as any)}
+                              >
+                                <option value="">نامشخص / معاف بانوان</option>
+                                <option value="اتمام">اتمام خدمت</option>
+                                <option value="معافیت">معافیت قانونی</option>
+                                <option value="غیبت">غیبت / مشمول</option>
+                              </select>
                             </div>
                           </div>
 
-                          <div>
-                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1.5">وضعیت تاهل</label>
-                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setMaritalStatus('مجرد');
-                                  setHasChildren(false);
-                                  setChildrenList([]);
-                                }}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  maritalStatus === 'مجرد' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                مجرد
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setMaritalStatus('متاهل')}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  maritalStatus === 'متاهل' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                متاهل
-                              </button>
+                          {/* نشانی و کد پستی */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-3 border-t border-slate-800/80">
+                            <div className="sm:col-span-2">
+                              <label htmlFor="address-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                آدرس محل سکونت
+                              </label>
+                              <input
+                                id="address-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="نشانی کامل محل سکونت..."
+                                value={address}
+                                onChange={(e) => setAddress(e.target.value)}
+                                onFocus={handleFocus}
+                              />
                             </div>
-                          </div>
-
-                          <div>
-                            <label htmlFor="military-status-select" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">نظام وظیفه</label>
-                            <select
-                              id="military-status-select"
-                              className="w-full px-2.5 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
-                              value={militaryStatus}
-                              onChange={(e) => setMilitaryStatus(e.target.value as any)}
-                            >
-                              <option value="">نامشخص / معاف بانوان</option>
-                              <option value="اتمام">اتمام خدمت</option>
-                              <option value="معافیت">معافیت قانونی</option>
-                              <option value="غیبت">غیبت / مشمول</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* نشانی و کد پستی */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-3 border-t border-slate-800/80">
-                          <div className="sm:col-span-2">
-                            <label htmlFor="address-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              آدرس محل سکونت
-                            </label>
-                            <input
-                              id="address-inp"
-                              type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="نشانی کامل محل سکونت..."
-                              value={address}
-                              onChange={(e) => setAddress(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="postal-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              کد پستی
-                            </label>
-                            <input
-                              id="postal-code-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="۱۰ رقم"
-                              value={postalCode}
-                              onChange={(e) => setPostalCode(e.target.value)}
-                              onFocus={handleFocus}
-                            />
+                            <div>
+                              <label htmlFor="postal-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                کد پستی
+                              </label>
+                              <input
+                                id="postal-code-inp"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="۱۰ رقم"
+                                value={postalCode}
+                                onChange={(e) => setPostalCode(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
                           </div>
                         </div>
                       </section>
 
                       {/* === ۲. اطلاعات شغلی، شیفت و تاریخ‌های مبنا === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۲</span>
-                            <Briefcase className="h-4 w-4 text-rose-400" />
-                            اطلاعات شغلی، شیفت و تاریخ‌های مبنا
-                          </h4>
-                        </div>
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-black text-cyan-400 flex items-center gap-1.5">
+                          <Briefcase className="h-4 w-4" />
+                          ۲. اطلاعات شغلی، شیفت و تاریخ‌های مبنا
+                        </h3>
 
-                        {/* سمت و دپارتمان */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-4">
+                          {/* سمت و دپارتمان */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label htmlFor="emp-role" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                سمت / عنوان شغلی
+                              </label>
+                              <input
+                                id="emp-role"
+                                type="text"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 font-bold focus:outline-none focus:border-rose-500 placeholder:text-slate-500"
+                                placeholder="مانند: سرپرست تولید"
+                                value={newRole}
+                                onChange={(e) => setNewRole(e.target.value)}
+                                onFocus={handleFocus}
+                              />
+                            </div>
+                            <div>
+                              <label htmlFor="emp-dept" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                دپارتمان تولیدی / بخش
+                              </label>
+                              <select
+                                id="emp-dept"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+                                value={newDeptId}
+                                onChange={(e) => setNewDeptId(e.target.value)}
+                              >
+                                <option value="cat-4">کادر مشترک / سربار کارگاه (خدماتی-مدیریتی)</option>
+                                {categories.filter(c => !isSharedDeptCat(c.id)).map(c => (
+                                  <option key={c.id} value={c.id}>دپارتمان خط تولید {c.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {/* دسته‌بندی و نوع محاسبات دستمزد */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            <div>
+                              <label htmlFor="pers-cat-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                دسته‌بندی پرسنل
+                              </label>
+                              <select
+                                id="pers-cat-select"
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+                                value={personnelCategoryId}
+                                onChange={(e) => setPersonnelCategoryId(e.target.value)}
+                              >
+                                <option value="">بدون دسته‌بندی خاص</option>
+                                {(db.personnelCategories || []).map(cat => (
+                                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">نوع محاسبات دستمزد</label>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
+                                <button
+                                  type="button"
+                                  onClick={() => setIsDailyWage(false)}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    !isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  ثابت / ماهانه
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setIsDailyWage(true)}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  روزمزد کارگاهی
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* شیفت‌بندی و شیفت اختصاصی */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3 bg-slate-900/90 rounded-xl border border-slate-800">
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                نوع شیفت‌بندی پرسنل <span className="text-rose-500">*</span>
+                              </label>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
+                                <button
+                                  type="button"
+                                  onClick={() => setShiftScheduleType('rotating')}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    shiftScheduleType === 'rotating' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  چرخشی (هفتگی)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setShiftScheduleType('fixed')}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    shiftScheduleType === 'fixed' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  شیفت ثابت
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label htmlFor="fixed-shift-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                شیفت اختصاصی (در حالت شیفت ثابت)
+                              </label>
+                              <select
+                                id="fixed-shift-select"
+                                className={`w-full px-3 py-2 bg-slate-950 border rounded-xl text-xs font-bold text-slate-200 focus:outline-none focus:border-rose-500 cursor-pointer transition-colors ${
+                                  shiftScheduleType === 'fixed' ? 'border-rose-500/40' : 'border-slate-800 opacity-50 cursor-not-allowed'
+                                }`}
+                                value={fixedShiftId}
+                                onChange={(e) => setFixedShiftId(e.target.value)}
+                                disabled={shiftScheduleType !== 'fixed'}
+                              >
+                                <option value="none">بدون شیفت (پیش‌فرض)</option>
+                                <optgroup label="بخش‌های مجاز خط تولید (ماتریس توانمندی)">
+                                  {(db.productionSections || [])
+                                    .filter(sec => (editingEmp?.capabilities || []).includes(sec.id))
+                                    .map(sec => (
+                                      <option key={sec.id} value={sec.id}>
+                                        {sec.name} ({toPersianDigits(sec.startTime)} الی {toPersianDigits(sec.endTime)})
+                                      </option>
+                                    ))}
+                                </optgroup>
+                                <optgroup label="شیفت‌های مجاز سامانه (ماتریس توانمندی)">
+                                  {(shiftsList || [])
+                                    .filter(sh => (editingEmp?.capabilities || []).includes(sh.id))
+                                    .map(sh => (
+                                      <option key={sh.id} value={sh.id}>
+                                        {sh.name} ({toPersianDigits(sh.startTime)} الی {toPersianDigits(sh.endTime)})
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              </select>
+                              <p className="text-[9.5px] text-slate-400 mt-1">
+                                {shiftScheduleType === 'fixed'
+                                  ? 'مبنای محاسبات حقوق و حضور روزانه این پرسنل خواهد بود.'
+                                  : 'شیفت‌ها از جدول هفتگی شیفت‌بندی فراخوانی می‌شوند.'}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* فوق‌العاده شغلی */}
                           <div>
-                            <label htmlFor="emp-role" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              سمت / عنوان شغلی
+                            <label htmlFor="job-allowance-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              فوق‌العاده شغلی ماهانه (ریال)
                             </label>
                             <input
-                              id="emp-role"
+                              id="job-allowance-inp"
                               type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
-                              placeholder="مانند: سرپرست تولید"
-                              value={newRole}
-                              onChange={(e) => setNewRole(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono font-bold text-emerald-400 text-center focus:outline-none focus:border-rose-500"
+                              placeholder="0"
+                              value={jobAllowance}
+                              onChange={(e) => handleRateInputChange(e.target.value, setJobAllowance)}
                               onFocus={handleFocus}
                             />
                           </div>
-                          <div>
-                            <label htmlFor="emp-dept" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              دپارتمان تولیدی / بخش
-                            </label>
-                            <select
-                              id="emp-dept"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
-                              value={newDeptId}
-                              onChange={(e) => setNewDeptId(e.target.value)}
-                            >
-                              <option value="cat-4">کادر مشترک / سربار کارگاه (خدماتی-مدیریتی)</option>
-                              {categories.filter(c => !isSharedDeptCat(c.id)).map(c => (
-                                <option key={c.id} value={c.id}>دپارتمان خط تولید {c.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
 
-                        {/* دسته‌بندی و نوع محاسبات دستمزد */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                          <div>
-                            <label htmlFor="pers-cat-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              دسته‌بندی پرسنل
-                            </label>
-                            <select
-                              id="pers-cat-select"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
-                              value={personnelCategoryId}
-                              onChange={(e) => setPersonnelCategoryId(e.target.value)}
-                            >
-                              <option value="">بدون دسته‌بندی خاص</option>
-                              {(db.personnelCategories || []).map(cat => (
-                                <option key={cat.id} value={cat.id}>{cat.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-[11px] font-bold text-slate-300 mb-1.5">نوع محاسبات دستمزد</label>
-                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
-                              <button
-                                type="button"
-                                onClick={() => setIsDailyWage(false)}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  !isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                ثابت / ماهانه
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setIsDailyWage(true)}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                روزمزد کارگاهی
-                              </button>
+                          {/* تاریخ ورود به کار و تاریخ شروع پایه سنوات */}
+                          <div className="space-y-3 pt-2 border-t border-slate-800/80">
+                            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl">
+                              {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (شمسی)', entryDate, handleEntryDateChange)}
                             </div>
-                          </div>
-                        </div>
 
-                        {/* شیفت‌بندی و فوق‌العاده شغلی */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 bg-slate-950/75 rounded-xl border border-slate-800">
-                          <div>
-                            <label className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              نوع شیفت‌بندی پرسنل *
-                            </label>
-                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
-                              <button
-                                type="button"
-                                onClick={() => setShiftScheduleType('rotating')}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  shiftScheduleType === 'rotating' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                چرخشی (هفتگی)
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setShiftScheduleType('fixed')}
-                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                  shiftScheduleType === 'fixed' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                شیفت ثابت
-                              </button>
+                            <div className="bg-cyan-950/20 border border-cyan-500/30 p-3.5 rounded-xl space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[10.5px] font-bold text-cyan-400">
+                                  مبنای محاسبه زنده پایه سنوات در ثبت قراردادها
+                                </span>
+                                {entryDate && seniorityBaseStartDate !== entryDate && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSeniorityBaseStartDate(entryDate)}
+                                    className="text-[9.5px] font-bold text-cyan-300 hover:text-white bg-cyan-500/15 hover:bg-cyan-500/30 border border-cyan-500/30 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
+                                  >
+                                    همگام‌سازی با تاریخ ورود ({toPersianDigits(entryDate)})
+                                  </button>
+                                )}
+                              </div>
+                              {renderShamsiDatePicker('seniority-base-start-date', 'تاریخ شروع پایه سنوات (پیش‌فرض برابر با تاریخ ورود)', seniorityBaseStartDate, setSeniorityBaseStartDate)}
+                              <p className="text-[9.5px] text-slate-400 leading-relaxed">
+                                محاسبه خودکار پایه سنوات ماهانه در قرارداد صرفاً از روی این تاریخ انجام می‌شود؛ به‌صورت پیش‌فرض برابر با تاریخ ورود پرسنل تنظیم می‌گردد.
+                              </p>
                             </div>
-                          </div>
-
-                          <div>
-                            <label htmlFor="fixed-shift-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
-                              شیفت اختصاصی (در حالت شیفت ثابت)
-                            </label>
-                            <select
-                              id="fixed-shift-select"
-                              className={`w-full px-3 py-2 border rounded-xl text-xs bg-slate-900 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer transition-colors ${
-                                shiftScheduleType === 'fixed' ? 'border-rose-500/40' : 'border-slate-800 opacity-50 cursor-not-allowed'
-                              }`}
-                              value={fixedShiftId}
-                              onChange={(e) => setFixedShiftId(e.target.value)}
-                              disabled={shiftScheduleType !== 'fixed'}
-                            >
-                              <option value="none">بدون شیفت (پیش‌فرض)</option>
-                              <optgroup label="بخش‌های مجاز خط تولید (ماتریس توانمندی)">
-                                {(db.productionSections || [])
-                                  .filter(sec => (editingEmp?.capabilities || []).includes(sec.id))
-                                  .map(sec => (
-                                    <option key={sec.id} value={sec.id}>
-                                      {sec.name} ({toPersianDigits(sec.startTime)} الی {toPersianDigits(sec.endTime)})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                              <optgroup label="شیفت‌های مجاز سامانه (ماتریس توانمندی)">
-                                {(shiftsList || [])
-                                  .filter(sh => (editingEmp?.capabilities || []).includes(sh.id))
-                                  .map(sh => (
-                                    <option key={sh.id} value={sh.id}>
-                                      {sh.name} ({toPersianDigits(sh.startTime)} الی {toPersianDigits(sh.endTime)})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                            </select>
-                            <p className="text-[9.5px] text-slate-400 mt-1">
-                              {shiftScheduleType === 'fixed'
-                                ? 'مبنای محاسبات حقوق و حضور روزانه این پرسنل خواهد بود.'
-                                : 'شیفت‌ها از جدول هفتگی شیفت‌بندی فراخوانی می‌شوند.'}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label htmlFor="job-allowance-inp" className="block text-[11px] font-black text-emerald-400 mb-1.5 flex items-center gap-1.5">
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                            فوق‌العاده شغلی ماهانه (ریال)
-                          </label>
-                          <input
-                            id="job-allowance-inp"
-                            type="text"
-                            className="w-full px-3 py-2.5 border border-emerald-500/30 rounded-xl text-xs bg-emerald-950/20 font-mono text-emerald-300 font-extrabold text-center focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                            placeholder="0"
-                            value={jobAllowance}
-                            onChange={(e) => handleRateInputChange(e.target.value, setJobAllowance)}
-                            onFocus={handleFocus}
-                          />
-                        </div>
-
-                        {/* تاریخ ورود به کار و تاریخ شروع پایه سنوات */}
-                        <div className="space-y-3 pt-2 border-t border-slate-800/80">
-                          <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl">
-                            {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (شمسی)', entryDate, handleEntryDateChange)}
-                          </div>
-
-                          <div className="bg-indigo-950/20 border border-indigo-500/30 p-3.5 rounded-xl space-y-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="text-[10px] font-bold text-indigo-300">
-                                مبنای محاسبه پایه سنوات (در قراردادها و تسویه حساب)
-                              </span>
-                              {entryDate && seniorityBaseStartDate !== entryDate && (
-                                <button
-                                  type="button"
-                                  onClick={() => setSeniorityBaseStartDate(entryDate)}
-                                  className="text-[9.5px] font-bold text-indigo-300 hover:text-white bg-indigo-500/15 hover:bg-indigo-500/30 border border-indigo-500/30 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
-                                >
-                                  همگام‌سازی با تاریخ ورود ({toPersianDigits(entryDate)})
-                                </button>
-                              )}
-                            </div>
-                            {renderShamsiDatePicker('seniority-base-start-date', 'تاریخ شروع پایه سنوات (پیش‌فرض برابر با تاریخ ورود)', seniorityBaseStartDate, setSeniorityBaseStartDate)}
-                            <p className="text-[9.5px] text-slate-400 leading-relaxed">
-                              به صورت پیش‌فرض همگام با تاریخ ورود پرسنل تنظیم می‌شود؛ در صورت نیاز می‌توانید تاریخ متفاوتی برای شروع سابقه پایه سنوات ثبت نمایید.
-                            </p>
                           </div>
                         </div>
                       </section>
 
                       {/* === ۳. بیمه تأمین اجتماعی و بیمه تکمیلی درمان === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۳</span>
-                            <ShieldCheck className="h-4 w-4 text-rose-400" />
-                            بیمه تأمین اجتماعی و بیمه تکمیلی
-                          </h4>
-                          <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
+                      <section className="space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-xs font-black text-amber-400 flex items-center gap-1.5">
+                            <ShieldCheck className="h-4 w-4" />
+                            ۳. بیمه تأمین اجتماعی و بیمه تکمیلی
+                          </h3>
+                          <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-950 px-3 py-1 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
                             <input
                               type="checkbox"
                               checked={hasInsurance}
@@ -13963,140 +14054,141 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </label>
                         </div>
 
-                        {hasInsurance ? (
-                          <div className="space-y-3.5 bg-slate-950/75 p-4 rounded-xl border border-slate-800">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                              <div>
-                                <label htmlFor="insurance-code-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
-                                  کد بیمه تأمین اجتماعی
-                                </label>
-                                <input
-                                  id="insurance-code-inp"
-                                  type="text"
-                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold text-center focus:outline-none focus:border-rose-500"
-                                  placeholder="مثلاً: 12345678"
-                                  value={insuranceCode}
-                                  onChange={(e) => setInsuranceCode(e.target.value)}
-                                  onFocus={handleFocus}
-                                />
-                              </div>
-                              <div>
-                                <label htmlFor="ins-history-days-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
-                                  سابقه بیمه خارج از کارگاه (روز)
-                                </label>
-                                <input
-                                  id="ins-history-days-inp"
-                                  type="number"
-                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold text-center focus:outline-none focus:border-rose-500"
-                                  placeholder="مثلاً: 730"
-                                  value={insuranceHistoryDays || ''}
-                                  onChange={(e) => setInsuranceHistoryDays(Number(e.target.value) || 0)}
-                                />
-                              </div>
-                            </div>
-
-                            <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl">
-                              {renderShamsiDatePicker('insurance-date', 'تاریخ شروع بیمه تأمین اجتماعی (شمسی)', insuranceDate, setInsuranceDate)}
-                            </div>
-
-                            <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 space-y-2">
-                              <span className="block text-[10.5px] font-bold text-slate-300">تعهدات پرداخت بیمه طرفین:</span>
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10.5px]">
-                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-4">
+                          {hasInsurance ? (
+                            <div className="space-y-3.5">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                                <div>
+                                  <label htmlFor="insurance-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                    کد بیمه تأمین اجتماعی
+                                  </label>
                                   <input
-                                    type="checkbox"
-                                    checked={isSubjectToEmployerPremium}
-                                    onChange={(e) => setIsSubjectToEmployerPremium(e.target.checked)}
-                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                    id="insurance-code-inp"
+                                    type="text"
+                                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500"
+                                    placeholder="مثلاً: 12345678"
+                                    value={insuranceCode}
+                                    onChange={(e) => setInsuranceCode(e.target.value)}
+                                    onFocus={handleFocus}
                                   />
-                                  سهم کارفرما (۲۳٪)
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
+                                </div>
+                                <div>
+                                  <label htmlFor="ins-history-days-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                    سابقه بیمه خارج از کارگاه (روز)
+                                  </label>
                                   <input
-                                    type="checkbox"
-                                    checked={isSubjectToUnemploymentPremium}
-                                    onChange={(e) => setIsSubjectToUnemploymentPremium(e.target.checked)}
-                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                    id="ins-history-days-inp"
+                                    type="number"
+                                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500"
+                                    placeholder="مثلاً: 730"
+                                    value={insuranceHistoryDays || ''}
+                                    onChange={(e) => setInsuranceHistoryDays(Number(e.target.value) || 0)}
                                   />
-                                  بیمه بیکاری (۳٪)
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSubjectToWorkerPremium}
-                                    onChange={(e) => setIsSubjectToWorkerPremium(e.target.checked)}
-                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
-                                  />
-                                  سهم کارگر (۷٪)
-                                </label>
+                                </div>
                               </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-slate-950/50 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
-                            پوشش بیمه تأمین اجتماعی برای این پرسنل غیرفعال است.
-                          </div>
-                        )}
 
-                        {/* بخش بیمه تکمیلی درمان در همان کارت بیمه‌ها */}
-                        <div className="pt-3 border-t border-slate-800 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-black text-slate-200">پوشش بیمه تکمیلی درمان</span>
-                            <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasSupplementaryInsurance}
-                                onChange={(e) => setHasSupplementaryInsurance(e.target.checked)}
-                                className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
-                              />
-                              بیمه تکمیلی فعال است
-                            </label>
-                          </div>
-
-                          {hasSupplementaryInsurance ? (
-                            <div className="space-y-3 bg-slate-950/75 p-3.5 rounded-xl border border-slate-800">
-                              <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl">
-                                {renderShamsiDatePicker('supp-ins-date', 'تاریخ شروع یا تمدید بیمه تکمیلی (شمسی)', supplementaryInsuranceDate, setSupplementaryInsuranceDate)}
+                              <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl">
+                                {renderShamsiDatePicker('insurance-date', 'تاریخ شروع بیمه تأمین اجتماعی (شمسی)', insuranceDate, setInsuranceDate)}
                               </div>
-                              <div>
-                                <label htmlFor="supp-premium" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
-                                  مبلغ کسر حق بیمه تکمیلی ماهانه (ریال)
-                                </label>
-                                <input
-                                  id="supp-premium"
-                                  type="text"
-                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-teal-300 font-extrabold text-center focus:outline-none focus:border-rose-500"
-                                  value={supplementaryInsurancePremium}
-                                  onChange={(e) => setSupplementaryInsurancePremium(formatWithCommas(parseNumber(e.target.value)))}
-                                />
+
+                              <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 space-y-2">
+                                <span className="block text-[10.5px] font-bold text-slate-300">تعهدات پرداخت بیمه طرفین:</span>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10.5px]">
+                                  <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSubjectToEmployerPremium}
+                                      onChange={(e) => setIsSubjectToEmployerPremium(e.target.checked)}
+                                      className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                    />
+                                    سهم کارفرما (۲۳٪)
+                                  </label>
+                                  <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSubjectToUnemploymentPremium}
+                                      onChange={(e) => setIsSubjectToUnemploymentPremium(e.target.checked)}
+                                      className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                    />
+                                    بیمه بیکاری (۳٪)
+                                  </label>
+                                  <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSubjectToWorkerPremium}
+                                      onChange={(e) => setIsSubjectToWorkerPremium(e.target.checked)}
+                                      className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                    />
+                                    سهم کارگر (۷٪)
+                                  </label>
+                                </div>
                               </div>
                             </div>
                           ) : (
-                            <div className="bg-slate-950/40 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
-                              بیمه تکمیلی درمان برای این پرسنل فعال نشده است.
+                            <div className="bg-slate-900/50 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
+                              پوشش بیمه تأمین اجتماعی برای این پرسنل غیرفعال است.
                             </div>
                           )}
+
+                          {/* بخش بیمه تکمیلی درمان */}
+                          <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-black text-slate-200">پوشش بیمه تکمیلی درمان</span>
+                              <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-900 px-3 py-1 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
+                                <input
+                                  type="checkbox"
+                                  checked={hasSupplementaryInsurance}
+                                  onChange={(e) => setHasSupplementaryInsurance(e.target.checked)}
+                                  className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                                />
+                                بیمه تکمیلی فعال است
+                              </label>
+                            </div>
+
+                            {hasSupplementaryInsurance ? (
+                              <div className="space-y-3 bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+                                <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl">
+                                  {renderShamsiDatePicker('supp-ins-date', 'تاریخ شروع یا تمدید بیمه تکمیلی (شمسی)', supplementaryInsuranceDate, setSupplementaryInsuranceDate)}
+                                </div>
+                                <div>
+                                  <label htmlFor="supp-premium" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                                    مبلغ کسر حق بیمه تکمیلی ماهانه (ریال)
+                                  </label>
+                                  <input
+                                    id="supp-premium"
+                                    type="text"
+                                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono font-bold text-cyan-400 text-center focus:outline-none focus:border-rose-500"
+                                    value={supplementaryInsurancePremium}
+                                    onChange={(e) => setSupplementaryInsurancePremium(formatWithCommas(parseNumber(e.target.value)))}
+                                  />
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="bg-slate-900/40 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
+                                بیمه تکمیلی درمان برای این پرسنل فعال نشده است.
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </section>
                     </div>
 
                     {/* ==================== ستون چپ: عائله‌مندی، حساب‌های بانکی، مدارک و سفته، ترک کار ==================== */}
-                    <div className="space-y-5">
+                    <div className="space-y-6">
 
                       {/* === ۴. عائله‌مندی و اولاد === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۴</span>
-                            <Users className="h-4 w-4 text-rose-400" />
-                            اطلاعات عائله‌مندی و اولاد
-                          </h4>
-                          <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                      <section className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black text-emerald-400 flex items-center gap-1.5">
+                            <Users className="h-4 w-4" />
+                            ۴. اطلاعات عائله‌مندی و اولاد
+                          </h3>
+                          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
                             <button
                               type="button"
                               onClick={() => setHasChildren(true)}
                               className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                                hasChildren ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                hasChildren ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-slate-200'
                               }`}
                             >
                               فرزند دارد
@@ -14108,7 +14200,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 setChildrenList([]);
                               }}
                               className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                                !hasChildren ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                                !hasChildren ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:text-slate-200'
                               }`}
                             >
                               ندارد
@@ -14116,376 +14208,377 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </div>
                         </div>
 
-                        {hasChildren ? (
-                          <div className="space-y-3">
-                            {childrenList.length > 0 ? (
-                              <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
-                                {childrenList.map((ch, idx) => {
-                                  const insDaysVal = Number(insuranceHistoryDays) || 0;
-                                  const childEligible = ch.gender === 'دختر' || ch.age < 18 || (ch.gender === 'پسر' && ch.age >= 18 && !!ch.isStudent);
-                                  let statusText = '';
-                                  let statusColor = '';
-                                  if (insDaysVal < 730) {
-                                    statusText = 'غیرمشمول (سابقه بیمه کمتر از ۷۳۰ روز)';
-                                    statusColor = 'text-amber-400';
-                                  } else if (!childEligible) {
-                                    statusText = 'غیرمشمول (شرط سنی/تحصیلی)';
-                                    statusColor = 'text-rose-400';
-                                  } else {
-                                    statusText = 'مشمول حق اولاد';
-                                    statusColor = 'text-emerald-400';
-                                  }
-                                  return (
-                                    <div key={idx} className="flex justify-between items-center text-xs bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 font-bold">
-                                      <span className="text-slate-200">
-                                        فرزند {toPersianDigits(idx + 1)}: {ch.gender} | {toPersianDigits(ch.age)} ساله
-                                        {ch.isStudent ? ' | محصل' : ''} — <span className={statusColor}>{statusText}</span>
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => setChildrenList(childrenList.filter((_, i) => i !== idx))}
-                                        className="text-rose-400 hover:text-rose-300 font-extrabold px-1.5 text-[11px] cursor-pointer"
-                                      >
-                                        حذف
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <div className="text-center text-[11px] text-slate-400 bg-slate-950/50 py-3 rounded-xl border border-dashed border-slate-800">
-                                فرزندی ثبت نشده است. از فرم زیر اضافه کنید.
-                              </div>
-                            )}
-
-                            <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                              <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                  <label className="block text-[10.5px] font-bold text-slate-300 mb-1">جنسیت فرزند</label>
-                                  <select
-                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
-                                    value={childGender}
-                                    onChange={(e) => {
-                                      const val = e.target.value as 'پسر' | 'دختر';
-                                      setChildGender(val);
-                                      if (val !== 'پسر') setChildIsStudent(false);
-                                    }}
-                                  >
-                                    <option value="پسر">پسر</option>
-                                    <option value="دختر">دختر</option>
-                                  </select>
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-3">
+                          {hasChildren ? (
+                            <div className="space-y-3">
+                              {childrenList.length > 0 ? (
+                                <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
+                                  {childrenList.map((ch, idx) => {
+                                    const insDaysVal = Number(insuranceHistoryDays) || 0;
+                                    const childEligible = ch.gender === 'دختر' || ch.age < 18 || (ch.gender === 'پسر' && ch.age >= 18 && !!ch.isStudent);
+                                    let statusText = '';
+                                    let statusColor = '';
+                                    if (insDaysVal < 730) {
+                                      statusText = 'غیرمشمول (سابقه بیمه کمتر از ۷۳۰ روز)';
+                                      statusColor = 'text-amber-400';
+                                    } else if (!childEligible) {
+                                      statusText = 'غیرمشمول (شرط سنی/تحصیلی)';
+                                      statusColor = 'text-rose-400';
+                                    } else {
+                                      statusText = 'مشمول حق اولاد';
+                                      statusColor = 'text-emerald-400';
+                                    }
+                                    return (
+                                      <div key={idx} className="flex justify-between items-center text-xs bg-slate-900 px-3 py-2 rounded-xl border border-slate-800 font-bold">
+                                        <span className="text-slate-200">
+                                          فرزند {toPersianDigits(idx + 1)}: {ch.gender} | {toPersianDigits(ch.age)} ساله
+                                          {ch.isStudent ? ' | محصل' : ''} — <span className={statusColor}>{statusText}</span>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setChildrenList(childrenList.filter((_, i) => i !== idx))}
+                                          className="text-rose-400 hover:text-rose-300 font-bold px-1.5 text-[11px] cursor-pointer"
+                                        >
+                                          حذف
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                                <div>
-                                  <label className="block text-[10.5px] font-bold text-slate-300 mb-1">سن فرزند (سال)</label>
-                                  <input
-                                    type="number"
-                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl font-mono bg-slate-900 text-white text-center font-bold focus:outline-none focus:border-rose-500"
-                                    placeholder="مثلاً: ۵"
-                                    value={childAge}
-                                    onChange={(e) => setChildAge(e.target.value)}
-                                  />
+                              ) : (
+                                <div className="text-center text-[11px] text-slate-400 bg-slate-900/50 py-3 rounded-xl border border-dashed border-slate-800">
+                                  فرزندی ثبت نشده است. از فرم زیر اضافه کنید.
                                 </div>
-                              </div>
-
-                              {childGender === 'پسر' && (
-                                <label className="flex items-center gap-2 cursor-pointer text-[11px] select-none text-slate-300 font-bold">
-                                  <input
-                                    type="checkbox"
-                                    checked={childIsStudent}
-                                    onChange={(e) => setChildIsStudent(e.target.checked)}
-                                    className="rounded accent-rose-600 h-3.5 w-3.5"
-                                  />
-                                  فرزند پسر محصل است (مشمول حق اولاد بالای ۱۸ سال)
-                                </label>
                               )}
 
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const ageNum = parseInt(childAge, 10);
-                                  if (isNaN(ageNum) || ageNum < 0) {
-                                    alert('لطفاً سن معتبری وارد نمایید.');
-                                    return;
-                                  }
-                                  const isEligForAllow = childGender === 'دختر' || ageNum < 18 || (childGender === 'پسر' && ageNum >= 18 && childIsStudent);
-                                  const newChild: PersonnelChild = {
-                                    gender: childGender,
-                                    age: ageNum,
-                                    subjectToAllowance: isEligForAllow,
-                                    isStudent: childGender === 'پسر' ? childIsStudent : false
-                                  };
-                                  setChildrenList([...childrenList, newChild]);
-                                  setChildAge('');
-                                  setChildIsStudent(false);
-                                }}
-                                className="w-full bg-slate-800 hover:bg-slate-700 text-white text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
-                              >
-                                + افزودن فرزند به لیست
-                              </button>
+                              <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                    <label className="block text-[10.5px] font-bold text-slate-300 mb-1">جنسیت فرزند</label>
+                                    <select
+                                      className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                                      value={childGender}
+                                      onChange={(e) => {
+                                        const val = e.target.value as 'پسر' | 'دختر';
+                                        setChildGender(val);
+                                        if (val !== 'پسر') setChildIsStudent(false);
+                                      }}
+                                    >
+                                      <option value="پسر">پسر</option>
+                                      <option value="دختر">دختر</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10.5px] font-bold text-slate-300 mb-1">سن فرزند (سال)</label>
+                                    <input
+                                      type="number"
+                                      className="w-full text-xs p-2 border border-slate-800 rounded-xl font-mono bg-slate-950 text-slate-200 text-center font-bold focus:outline-none focus:border-rose-500"
+                                      placeholder="مثلاً: ۵"
+                                      value={childAge}
+                                      onChange={(e) => setChildAge(e.target.value)}
+                                    />
+                                  </div>
+                                </div>
+
+                                {childGender === 'پسر' && (
+                                  <label className="flex items-center gap-2 cursor-pointer text-[11px] select-none text-slate-300 font-bold">
+                                    <input
+                                      type="checkbox"
+                                      checked={childIsStudent}
+                                      onChange={(e) => setChildIsStudent(e.target.checked)}
+                                      className="rounded accent-rose-600 h-3.5 w-3.5"
+                                    />
+                                    فرزند پسر محصل است (مشمول حق اولاد بالای ۱۸ سال)
+                                  </label>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const ageNum = parseInt(childAge, 10);
+                                    if (isNaN(ageNum) || ageNum < 0) {
+                                      alert('لطفاً سن معتبری وارد نمایید.');
+                                      return;
+                                    }
+                                    const isEligForAllow = childGender === 'دختر' || ageNum < 18 || (childGender === 'پسر' && ageNum >= 18 && childIsStudent);
+                                    const newChild: PersonnelChild = {
+                                      gender: childGender,
+                                      age: ageNum,
+                                      subjectToAllowance: isEligForAllow,
+                                      isStudent: childGender === 'پسر' ? childIsStudent : false
+                                    };
+                                    setChildrenList([...childrenList, newChild]);
+                                    setChildAge('');
+                                    setChildIsStudent(false);
+                                  }}
+                                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
+                                >
+                                  + افزودن فرزند به لیست
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <div className="text-center text-[11px] text-slate-400 bg-slate-950/40 py-3 rounded-xl border border-dashed border-slate-800">
-                            در صورت داشتن فرزند، گزینه «فرزند دارد» را انتخاب کنید تا حق اولاد محاسبه شود.
-                          </div>
-                        )}
+                          ) : (
+                            <div className="text-center text-[11px] text-slate-400 bg-slate-900/40 py-3 rounded-xl border border-dashed border-slate-800">
+                              در صورت داشتن فرزند، گزینه «فرزند دارد» را انتخاب کنید تا حق اولاد محاسبه شود.
+                            </div>
+                          )}
+                        </div>
                       </section>
 
                       {/* === ۵. حساب‌های بانکی تسویه === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۵</span>
-                            <CreditCard className="h-4 w-4 text-rose-400" />
-                            حساب‌های بانکی تسویه
-                          </h4>
+                      <section className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black text-rose-400 flex items-center gap-1.5">
+                            <CreditCard className="h-4 w-4" />
+                            ۵. مشخصات و حساب‌های بانکی تسویه
+                          </h3>
                           <span className="text-[10px] font-bold text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-800">
                             {toPersianDigits(draftBankAccounts.length)} حساب ثبت‌شده
                           </span>
                         </div>
 
-                        {draftBankAccounts.length > 0 && (
-                          <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
-                            {draftBankAccounts.map((b, idx) => (
-                              <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs flex items-start justify-between gap-2">
-                                <div>
-                                  <span className="block font-black text-slate-100">بانک {b.bankName}</span>
-                                  <div className="font-mono text-slate-400 text-[10.5px] mt-1 space-y-0.5" dir="ltr">
-                                    {b.accountNo && <div>Acc: {b.accountNo}</div>}
-                                    {b.shaba && <div>IR{b.shaba.replace(/^IR/i, '')}</div>}
-                                    {b.cardNo && <div>Card: {b.cardNo}</div>}
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-3.5">
+                          {draftBankAccounts.length > 0 && (
+                            <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
+                              {draftBankAccounts.map((b, idx) => (
+                                <div key={idx} className="bg-slate-900 p-3 rounded-xl border border-slate-800 text-xs flex items-start justify-between gap-2">
+                                  <div>
+                                    <span className="block font-bold text-slate-100">بانک {b.bankName}</span>
+                                    <div className="font-mono text-slate-400 text-[10.5px] mt-1 space-y-0.5" dir="ltr">
+                                      {b.accountNo && <div>Acc: {b.accountNo}</div>}
+                                      {b.shaba && <div>IR{b.shaba.replace(/^IR/i, '')}</div>}
+                                      {b.cardNo && <div>Card: {b.cardNo}</div>}
+                                    </div>
                                   </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setDraftBankAccounts(draftBankAccounts.filter((_, i) => i !== idx))}
+                                    className="text-rose-400 hover:text-rose-300 font-bold text-[11px] px-2 py-1 rounded-lg hover:bg-rose-950/40 transition-colors cursor-pointer"
+                                  >
+                                    حذف
+                                  </button>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setDraftBankAccounts(draftBankAccounts.filter((_, i) => i !== idx))}
-                                  className="text-rose-400 hover:text-rose-300 font-bold text-[11px] px-2 py-1 rounded-lg hover:bg-rose-950/40 transition-colors cursor-pointer"
-                                >
-                                  حذف
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">انتخاب بانک</label>
-                              <select
-                                className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
-                                value={bankName}
-                                onChange={(e) => setBankName(e.target.value)}
-                              >
-                                <option value="">-- انتخاب بانک --</option>
-                                {activeBanks.map((bName) => (
-                                  <option key={bName} value={bName}>{bName}</option>
-                                ))}
-                              </select>
+                              ))}
                             </div>
-                            <div>
-                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">افزودن بانک جدید</label>
-                              <div className="flex gap-1.5">
+                          )}
+
+                          <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-slate-400 mb-1">انتخاب بانک</label>
+                                <select
+                                  className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                                  value={bankName}
+                                  onChange={(e) => setBankName(e.target.value)}
+                                >
+                                  <option value="">-- انتخاب بانک --</option>
+                                  {activeBanks.map((bName) => (
+                                    <option key={bName} value={bName}>{bName}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-slate-400 mb-1">افزودن بانک جدید</label>
+                                <div className="flex gap-1.5">
+                                  <input
+                                    type="text"
+                                    className="flex-1 min-w-0 text-xs px-2.5 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
+                                    placeholder="نام بانک..."
+                                    value={newBankNameInput}
+                                    onChange={(e) => setNewBankNameInput(e.target.value)}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (!newBankNameInput.trim()) return;
+                                      const b = newBankNameInput.trim();
+                                      if (activeBanks.includes(b)) {
+                                        alert('این بانک در لیست موجود است.');
+                                        return;
+                                      }
+                                      onUpdateDb({
+                                        ...db,
+                                        customBanks: [...(db.customBanks || []), b]
+                                      });
+                                      setBankName(b);
+                                      setNewBankNameInput('');
+                                    }}
+                                    className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[11px] px-3 rounded-xl font-bold cursor-pointer transition-colors shrink-0"
+                                  >
+                                    ثبت
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-slate-400 mb-1">شماره حساب</label>
                                 <input
                                   type="text"
-                                  className="flex-1 min-w-0 text-xs px-2.5 py-2 border border-slate-800 rounded-xl bg-slate-900 text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
-                                  placeholder="نام بانک..."
-                                  value={newBankNameInput}
-                                  onChange={(e) => setNewBankNameInput(e.target.value)}
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500"
+                                  placeholder="شماره حساب"
+                                  value={accountNo}
+                                  onChange={(e) => setAccountNo(e.target.value)}
                                 />
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (!newBankNameInput.trim()) return;
-                                    const b = newBankNameInput.trim();
-                                    if (activeBanks.includes(b)) {
-                                      alert('این بانک در لیست موجود است.');
-                                      return;
-                                    }
-                                    onUpdateDb({
-                                      ...db,
-                                      customBanks: [...(db.customBanks || []), b]
-                                    });
-                                    setBankName(b);
-                                    setNewBankNameInput('');
+                              </div>
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-slate-400 mb-1">شماره کارت (۱۶ رقمی)</label>
+                                <input
+                                  type="text"
+                                  maxLength={19}
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-slate-200 text-center focus:outline-none focus:border-rose-500"
+                                  placeholder="xxxx-xxxx-xxxx-xxxx"
+                                  value={cardNo}
+                                  onChange={(e) => {
+                                    let val = e.target.value.replace(/\D/g, '');
+                                    if (val.length > 16) val = val.substring(0, 16);
+                                    const blocks = val.match(/.{1,4}/g);
+                                    setCardNo(blocks ? blocks.join('-') : val);
                                   }}
-                                  className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] px-3 rounded-xl font-bold cursor-pointer transition-colors shrink-0"
-                                >
-                                  ثبت
-                                </button>
+                                />
                               </div>
                             </div>
-                          </div>
 
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره حساب</label>
-                              <input
-                                type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:border-rose-500"
-                                placeholder="شماره حساب"
-                                value={accountNo}
-                                onChange={(e) => setAccountNo(e.target.value)}
-                              />
+                              <label className="block text-[10.5px] font-bold text-slate-400 mb-1">شماره شبا (IBAN)</label>
+                              <div className="flex rounded-xl overflow-hidden border border-slate-800 bg-slate-950 focus-within:border-rose-500" dir="ltr">
+                                <span className="inline-flex items-center px-3 bg-slate-900 text-slate-400 border-r border-slate-800 font-extrabold font-mono text-xs select-none">
+                                  IR
+                                </span>
+                                <input
+                                  type="text"
+                                  className="w-full text-xs px-3 py-2 font-mono text-left bg-slate-950 text-slate-200 tracking-wider focus:outline-none font-bold"
+                                  placeholder="24 رقم شبا بدون IR"
+                                  value={shaba.replace(/^IR/i, '')}
+                                  maxLength={24}
+                                  onChange={(e) => {
+                                    const val = e.target.value.replace(/\D/g, '');
+                                    setShaba(val);
+                                  }}
+                                />
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره کارت (۱۶ رقمی)</label>
-                              <input
-                                type="text"
-                                maxLength={19}
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:border-rose-500"
-                                placeholder="xxxx-xxxx-xxxx-xxxx"
-                                value={cardNo}
-                                onChange={(e) => {
-                                  let val = e.target.value.replace(/\D/g, '');
-                                  if (val.length > 16) val = val.substring(0, 16);
-                                  const blocks = val.match(/.{1,4}/g);
-                                  setCardNo(blocks ? blocks.join('-') : val);
-                                }}
-                              />
-                            </div>
-                          </div>
 
-                          <div>
-                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره شبا (IBAN)</label>
-                            <div className="flex rounded-xl overflow-hidden border border-slate-800 bg-slate-900 focus-within:border-rose-500" dir="ltr">
-                              <span className="inline-flex items-center px-3 bg-slate-950 text-slate-400 border-r border-slate-800 font-extrabold font-mono text-xs select-none">
-                                IR
-                              </span>
-                              <input
-                                type="text"
-                                className="w-full text-xs px-3 py-2 font-mono text-left bg-slate-900 text-white tracking-wider focus:outline-none font-bold"
-                                placeholder="24 رقم شبا بدون IR"
-                                value={shaba.replace(/^IR/i, '')}
-                                maxLength={24}
-                                onChange={(e) => {
-                                  const val = e.target.value.replace(/\D/g, '');
-                                  setShaba(val);
-                                }}
-                              />
-                            </div>
+                            <button
+                              type="button"
+                              onClick={handleAddDraftBankAccount}
+                              className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
+                            >
+                              + افزودن حساب بانکی به پرونده
+                            </button>
                           </div>
-
-                          <button
-                            type="button"
-                            onClick={handleAddDraftBankAccount}
-                            className="w-full bg-slate-800 hover:bg-slate-700 text-white text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
-                          >
-                            + افزودن حساب بانکی به پرونده
-                          </button>
                         </div>
                       </section>
 
                       {/* === ۶. وضعیت مدارک پرونده و ضمانت (سفته) === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۶</span>
-                            <CheckSquare className="h-4 w-4 text-rose-400" />
-                            مدارک پرونده و ضمانت (سفته)
-                          </h4>
-                        </div>
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-black text-cyan-400 flex items-center gap-1.5">
+                          <CheckSquare className="h-4 w-4" />
+                          ۶. مدارک پرونده و ضمانت (سفته)
+                        </h3>
 
-                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
-                          <span className="block font-bold text-slate-300 text-[10.5px]">چک‌لیست مدارک تحویلی:</span>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-                            {[
-                              { checked: hasNationalCardCopy, setter: setHasNationalCardCopy, label: 'کپی کارت ملی' },
-                              { checked: hasBirthCertificatePagesCopy, setter: setHasBirthCertificatePagesCopy, label: 'کپی شناسنامه (صفحه ۱ و ۲)' },
-                              { checked: hasPhoto, setter: setHasPhoto, label: 'یک قطعه عکس جدید' },
-                              { checked: hasSocialSecurityRegistrationForm, setter: setHasSocialSecurityRegistrationForm, label: 'فرم ثبت‌نام تأمین اجتماعی' },
-                              { checked: hasPromissoryNote, setter: setHasPromissoryNote, label: 'سفته ضمانت' },
-                              { checked: hasHealthCard, setter: setHasHealthCard, label: 'کارت بهداشت معتبر' },
-                              { checked: hasPreEmploymentExam, setter: setHasPreEmploymentExam, label: 'معاینات پزشکی طب کار', full: true }
-                            ].map((doc, idx) => (
-                              <label
-                                key={idx}
-                                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg border cursor-pointer select-none font-bold transition-colors ${
-                                  doc.full ? 'sm:col-span-2' : ''
-                                } ${
-                                  doc.checked
-                                    ? 'bg-emerald-950/25 border-emerald-500/30 text-emerald-200'
-                                    : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:border-slate-700'
-                                }`}
-                              >
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-4">
+                          <div className="space-y-2.5">
+                            <span className="block font-bold text-slate-300 text-[11px]">چک‌لیست مدارک تحویلی:</span>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                              {[
+                                { checked: hasNationalCardCopy, setter: setHasNationalCardCopy, label: 'کپی کارت ملی' },
+                                { checked: hasBirthCertificatePagesCopy, setter: setHasBirthCertificatePagesCopy, label: 'کپی شناسنامه (صفحه ۱ و ۲)' },
+                                { checked: hasPhoto, setter: setHasPhoto, label: 'یک قطعه عکس جدید' },
+                                { checked: hasSocialSecurityRegistrationForm, setter: setHasSocialSecurityRegistrationForm, label: 'فرم ثبت‌نام تأمین اجتماعی' },
+                                { checked: hasPromissoryNote, setter: setHasPromissoryNote, label: 'سفته ضمانت' },
+                                { checked: hasHealthCard, setter: setHasHealthCard, label: 'کارت بهداشت معتبر' },
+                                { checked: hasPreEmploymentExam, setter: setHasPreEmploymentExam, label: 'معاینات پزشکی طب کار', full: true }
+                              ].map((doc, idx) => (
+                                <label
+                                  key={idx}
+                                  className={`flex items-center gap-2.5 px-2.5 py-2 rounded-xl border cursor-pointer select-none font-bold transition-colors ${
+                                    doc.full ? 'sm:col-span-2' : ''
+                                  } ${
+                                    doc.checked
+                                      ? 'bg-emerald-950/40 border-emerald-900/50 text-emerald-300'
+                                      : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={doc.checked}
+                                    onChange={(e) => doc.setter(e.target.checked)}
+                                    className="rounded accent-emerald-500 h-3.5 w-3.5 cursor-pointer"
+                                  />
+                                  {doc.label}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* مشخصات سفته */}
+                          <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-slate-300 text-[11px]">مشخصات سفته ضمانت:</span>
+                              {!hasPromissoryNote && (
+                                <span className="text-[10px] text-amber-400 font-bold">سفته تحویل نشده</span>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label htmlFor="promissory-no" className="block text-[10.5px] font-bold text-slate-400 mb-1">شماره سریال سفته</label>
                                 <input
-                                  type="checkbox"
-                                  checked={doc.checked}
-                                  onChange={(e) => doc.setter(e.target.checked)}
-                                  className="rounded accent-emerald-500 h-3.5 w-3.5 cursor-pointer"
+                                  id="promissory-no"
+                                  type="text"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-slate-200 focus:outline-none focus:border-rose-500"
+                                  placeholder="کد سریال سفته"
+                                  value={promissoryNoteNumber}
+                                  onChange={(e) => setPromissoryNoteNumber(e.target.value)}
                                 />
-                                {doc.label}
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* مشخصات سفته */}
-                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-300 text-[10.5px]">مشخصات سفته ضمانت:</span>
-                            {!hasPromissoryNote && (
-                              <span className="text-[10px] text-amber-400 font-bold">سفته تحویل نشده</span>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label htmlFor="promissory-no" className="block text-[10px] font-bold text-slate-400 mb-1">شماره سریال سفته</label>
-                              <input
-                                id="promissory-no"
-                                type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold focus:outline-none focus:border-rose-500"
-                                placeholder="کد سریال سفته"
-                                value={promissoryNoteNumber}
-                                onChange={(e) => setPromissoryNoteNumber(e.target.value)}
-                              />
-                            </div>
-                            <div>
-                              <label htmlFor="promissory-issuer" className="block text-[10px] font-bold text-slate-400 mb-1">صادرکننده سفته</label>
-                              <input
-                                id="promissory-issuer"
-                                type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500"
-                                placeholder="نام و نام خانوادگی"
-                                value={promissoryNoteIssuerName}
-                                onChange={(e) => setPromissoryNoteIssuerName(e.target.value)}
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label htmlFor="promissory-amt" className="block text-[10px] font-bold text-slate-400 mb-1">مبلغ وجه ضمانت سفته (ریال)</label>
-                              <input
-                                id="promissory-amt"
-                                type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-emerald-300 font-extrabold text-center focus:outline-none focus:border-rose-500"
-                                value={promissoryNoteAmount}
-                                onChange={(e) => setPromissoryNoteAmount(formatWithCommas(parseNumber(e.target.value)))}
-                              />
+                              </div>
+                              <div>
+                                <label htmlFor="promissory-issuer" className="block text-[10.5px] font-bold text-slate-400 mb-1">صادرکننده سفته</label>
+                                <input
+                                  id="promissory-issuer"
+                                  type="text"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-slate-200 focus:outline-none focus:border-rose-500"
+                                  placeholder="نام و نام خانوادگی"
+                                  value={promissoryNoteIssuerName}
+                                  onChange={(e) => setPromissoryNoteIssuerName(e.target.value)}
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label htmlFor="promissory-amt" className="block text-[10.5px] font-bold text-slate-400 mb-1">مبلغ وجه ضمانت سفته (ریال)</label>
+                                <input
+                                  id="promissory-amt"
+                                  type="text"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-cyan-400 font-bold text-center focus:outline-none focus:border-rose-500"
+                                  value={promissoryNoteAmount}
+                                  onChange={(e) => setPromissoryNoteAmount(formatWithCommas(parseNumber(e.target.value)))}
+                                />
+                              </div>
                             </div>
                           </div>
                         </div>
                       </section>
 
                       {/* === ۷. مدیریت و ثبت ترک کار پرسنل === */}
-                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۷</span>
-                            <UserMinus className="h-4 w-4 text-rose-400" />
-                            ثبت و مدیریت ترک کار
-                          </h4>
+                      <section className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black text-amber-400 flex items-center gap-1.5">
+                            <UserMinus className="h-4 w-4" />
+                            ۷. ثبت و مدیریت ترک کار
+                          </h3>
                           {departureDate ? (
-                            <span className="text-[10px] font-bold bg-rose-950/90 text-rose-300 border border-rose-800/80 px-2.5 py-0.5 rounded-lg">
+                            <span className="text-[10px] font-bold bg-rose-950/40 text-rose-400 border border-rose-900/50 px-2.5 py-0.5 rounded-full">
                               ترک کار ثبت‌شده
                             </span>
                           ) : (
-                            <span className="text-[10px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800/70 px-2.5 py-0.5 rounded-lg">
+                            <span className="text-[10px] font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 px-2.5 py-0.5 rounded-full">
                               شاغل فعال
                             </span>
                           )}
                         </div>
 
-                        <div className="space-y-3.5">
-                          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
+                        <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 space-y-3.5">
+                          <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl">
                             {renderShamsiDatePicker(
                               'departure-date',
                               'تاریخ ترک کار پرسنل (شمسی)',
@@ -14501,14 +14594,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                              <label htmlFor="departure-date-manual" className="block text-[10px] font-bold text-slate-400 mb-1">
+                              <label htmlFor="departure-date-manual" className="block text-[10.5px] font-bold text-slate-300 mb-1">
                                 درج دستی تاریخ (YYYY/MM/DD)
                               </label>
                               <input
                                 id="departure-date-manual"
                                 type="text"
                                 dir="ltr"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-rose-400 font-bold text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-600"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-rose-400 font-bold text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-600"
                                 placeholder="1405/04/15"
                                 value={departureDate}
                                 onChange={(e) => {
@@ -14521,12 +14614,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               />
                             </div>
                             <div>
-                              <label htmlFor="departure-reason-sel" className="block text-[10px] font-bold text-slate-400 mb-1">
+                              <label htmlFor="departure-reason-sel" className="block text-[10.5px] font-bold text-slate-300 mb-1">
                                 علت ترک کار
                               </label>
                               <select
                                 id="departure-reason-sel"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-slate-200 font-bold focus:outline-none focus:border-rose-500"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-slate-200 font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
                                 value={departureReason}
                                 onChange={(e) => setDepartureReason(e.target.value)}
                               >
@@ -14545,9 +14638,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </div>
 
                           {departureDate ? (
-                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3 bg-rose-950/40 border border-rose-900/50 rounded-xl">
-                              <span className="text-[10.5px] text-rose-200 leading-relaxed">
-                                پرسنل در تاریخ <strong className="font-mono text-rose-300">{toPersianDigits(departureDate)}</strong> ترک کار کرده و از ماه بعد در لیست حقوق و تردد نمایش داده نمی‌شود.
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3 bg-rose-950/30 border border-rose-500/40 rounded-xl">
+                              <span className="text-[10.5px] text-rose-300 leading-relaxed">
+                                پرسنل در تاریخ <strong className="font-mono text-rose-400">{toPersianDigits(departureDate)}</strong> ترک کار کرده و از ماه بعد در لیست حقوق و تردد نمایش داده نمی‌شود.
                               </span>
                               <button
                                 type="button"
@@ -14556,13 +14649,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   setDepartureReason('استعفا');
                                   setIsActive(true);
                                 }}
-                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-lg text-[10px] font-bold shrink-0 transition-colors cursor-pointer"
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[10px] font-bold shrink-0 transition-colors cursor-pointer"
                               >
                                 لغو ترک کار و فعال‌سازی
                               </button>
                             </div>
                           ) : (
-                            <div className="p-3 bg-slate-950/50 border border-dashed border-slate-800 rounded-xl text-[10.5px] text-slate-400 leading-relaxed">
+                            <div className="p-3 bg-slate-900/50 border border-dashed border-slate-800 rounded-xl text-[10.5px] text-slate-400 leading-relaxed">
                               در صورت ثبت تاریخ ترک کار، پرسنل از ماه بعد در گردش حقوق و تردد لحاظ نمی‌شود و سوابق ماه‌های قبل حفظ می‌گردد.
                             </div>
                           )}
@@ -14579,7 +14672,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         resetForm();
                         setIsPersonnelFormOpen(false);
                       }}
-                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
                     >
                       انصراف و بازگشت
                     </button>
@@ -14590,8 +14683,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       {editingEmp ? 'ذخیره اصلاحات پرونده پرسنلی' : 'ثبت قطعی پرونده پرسنل'}
                     </button>
                   </div>
-                </form>
-              </div>
+                </div>
+              </form>
             )}
           </div>
           )}
@@ -19581,7 +19674,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     if (!conStartDate || !matchedEmp) return null;
                     const startYear = getJalaliYear(conStartDate);
                     if (!startYear) return null;
-                    const senStartDate = resolvePersonnelSeniorityStartDate(matchedEmp, conStartDate);
+                    const senStartDate = resolvePersonnelSeniorityStartDate(matchedEmp);
+
+                    if (!senStartDate) {
+                      return (
+                        <div className="col-span-2 bg-amber-950/20 border border-amber-500/30 p-3.5 rounded-xl space-y-1.5 mt-1 text-xs text-right font-sans">
+                          <div className="flex justify-between items-center text-[10.5px] font-black text-amber-400 border-b border-amber-500/20 pb-1.5 mb-1">
+                            <span>محاسبه سابقه و پایه سنوات قرارداد (زنده):</span>
+                            <span className="font-mono text-[9px] text-amber-300/80">تاریخ شروع پایه سنوات ثبت نشده</span>
+                          </div>
+                          <div className="text-slate-300 text-[10.5px] leading-relaxed">
+                            تاریخ شروع پایه سنوات در پرونده پرسنل وارد نشده است؛ بنابراین پایه سنوات خودکار <strong className="text-white font-mono">۰ ریال</strong> محاسبه می‌شود. می‌توانید مبلغ پایه سنوات ماهانه را به‌صورت ثابت در فیلد زیر ثبت کنید یا تاریخ شروع پایه سنوات را در پرونده پرسنل تکمیل نمایید.
+                          </div>
+                        </div>
+                      );
+                    }
+
                     const diffDate = getJalaliDateDifference(senStartDate, conStartDate);
                     if (!diffDate) return null;
 
@@ -19591,13 +19699,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       seniorityYearsCount = diffDate.years;
                     }
                     
-                    const foundSeniorityRule = findSeniorityRateRule(
-                      db.seniorityRateRules || [],
-                      seniorityYearsCount,
-                      conStartDate,
-                      startYear,
-                      activePeriodId
-                    );
+                    const foundSeniorityRule = seniorityYearsCount > 0
+                      ? findSeniorityRateRule(
+                          db.seniorityRateRules || [],
+                          seniorityYearsCount,
+                          conStartDate,
+                          startYear,
+                          activePeriodId
+                        )
+                      : null;
                     const matchedDailyRate = foundSeniorityRule ? foundSeniorityRule.dailyRate : 0;
                     
                     return (
@@ -19716,8 +19826,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             return { years: Math.max(0, dy), months: Math.max(0, dm), days: Math.max(0, dd) };
                           };
 
-                          const seniorityStartStr = resolvePersonnelSeniorityStartDate(selectedEmployee, conStartDate);
-                          const diff = getJalaliDateDifferenceHelperLocal(seniorityStartStr, conStartDate);
+                          const seniorityStartStr = resolvePersonnelSeniorityStartDate(selectedEmployee);
+                          const diff = seniorityStartStr ? getJalaliDateDifferenceHelperLocal(seniorityStartStr, conStartDate) : null;
                           let seniorityYears = 0;
                           if (diff) {
                             const isMoreThanOneYear = diff.years > 1 || (diff.years === 1 && (diff.months > 0 || diff.days > 0));
@@ -19726,14 +19836,19 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             }
                           }
                           const startYearForPrint = getJalaliYear(conStartDate) || activeFiscalYearStr || '';
-                          const foundSeniorityRule = findSeniorityRateRule(
-                            db.seniorityRateRules || [],
-                            seniorityYears,
-                            conStartDate,
-                            startYearForPrint,
-                            activePeriodId
-                          );
-                          const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
+                          const foundSeniorityRule = (seniorityStartStr && seniorityYears > 0)
+                            ? findSeniorityRateRule(
+                                db.seniorityRateRules || [],
+                                seniorityYears,
+                                conStartDate,
+                                startYearForPrint,
+                                activePeriodId
+                              )
+                            : null;
+                          const parsedManualSen30 = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
+                          const calSeniorityBase = parsedManualSen30 > 0
+                            ? parsedManualSen30
+                            : (foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0);
 
                           const { items: empInsuredItems } = getInsuredSalaryItemsForContract({ contractStartDate: conStartDate, contractEndDate: conEndDate }, selectedEmployee, db, activePeriodId);
                           const isInsuringConfigured = empInsuredItems.length > 0;
@@ -20200,10 +20315,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   const calMonthlyYears = Math.round(dispBaseSalary / 12);
                   const calMonthlyEidi = Math.round((dispBaseSalary * 2) / 12);
 
-                  // Dynamically calculate the seniority base from seniorityRateRules using conStartDate and child's seniority
+                  // Dynamically calculate the seniority base from seniorityRateRules strictly using seniorityBaseStartDate
                   const tStartDate = conStartDate || selectedEmployee.contractStartDate || selectedEmployee.entryDate || '';
-                  const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(selectedEmployee, tStartDate);
-                  const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
+                  const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(selectedEmployee);
+                  const tDiff = seniorityStartDateRef ? getJalaliDateDifference(seniorityStartDateRef, tStartDate) : null;
                   let tempSeniorityYears = 0;
                   if (tDiff) {
                     const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -20212,13 +20327,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     }
                   }
                   const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
-                  const foundSeniorityRule = findSeniorityRateRule(
-                    db.seniorityRateRules || [],
-                    tempSeniorityYears,
-                    tStartDate,
-                    startYear,
-                    activePeriodId
-                  );
+                  const foundSeniorityRule = (seniorityStartDateRef && tempSeniorityYears > 0)
+                    ? findSeniorityRateRule(
+                        db.seniorityRateRules || [],
+                        tempSeniorityYears,
+                        tStartDate,
+                        startYear,
+                        activePeriodId
+                      )
+                    : null;
                   // Seniority base for viewing respects manual conSeniorityBase (30-day) if entered, otherwise seniorityRateRules dailyRate * viewBasisDays
                   const parsedConSeniority30 = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
                   const calSeniorityBase = parsedConSeniority30 > 0
@@ -21031,9 +21148,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           ? contractModalContractData.calculatedMonthlyEidi
           : Math.round((calBaseSalary * 2) / 12);
 
-        // Dynamic seniority calculation based on work history from seniority base start date to contract start date
-        const seniorityStartStr = resolvePersonnelSeniorityStartDate(contractModalEmployee, displayStartDate);
-        const diff = getJalaliDateDifference(seniorityStartStr, displayStartDate);
+        // Dynamic seniority calculation strictly based on seniorityBaseStartDate
+        const seniorityStartStr = resolvePersonnelSeniorityStartDate(contractModalEmployee);
+        const diff = seniorityStartStr ? getJalaliDateDifference(seniorityStartStr, displayStartDate) : null;
         
         let seniorityYears = 0;
         if (diff) {
@@ -21046,13 +21163,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         }
         
         const startYearForPrint = getJalaliYear(displayStartDate) || activeFiscalYearStr || '';
-        const foundSeniorityRule = findSeniorityRateRule(
-          db.seniorityRateRules || [],
-          seniorityYears,
-          displayStartDate,
-          startYearForPrint,
-          activePeriodId
-        );
+        const foundSeniorityRule = (seniorityStartStr && seniorityYears > 0)
+          ? findSeniorityRateRule(
+              db.seniorityRateRules || [],
+              seniorityYears,
+              displayStartDate,
+              startYearForPrint,
+              activePeriodId
+            )
+          : null;
         const calSeniorityBase = contractModalContractData?.calculatedSeniorityBase !== undefined
           ? contractModalContractData.calculatedSeniorityBase
           : (foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0);
@@ -21498,7 +21617,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             const mainBank = contractModalEmployee.bankAccounts && contractModalEmployee.bankAccounts.length > 0 ? contractModalEmployee.bankAccounts[0] : null;
                             return mainBank ? ` و شماره حساب بانکی تسویه حساب: بانک ${mainBank.bankName} به شماره حساب ${toPersianDigits(mainBank.accountNo)}${mainBank.shaba ? ` و شبا IR${toPersianDigits(mainBank.shaba)}` : ''}` : '';
                           })(),
-                          insuranceHistory: seniorityStartStr ? ` (سابقه کار مبنای پایه سنوات از تاریخ ${toPersianDigits(seniorityStartStr)} لغایت شروع قرارداد: ${toPersianDigits(formatJalaliDifference(diff))})` : '',
+                          insuranceHistory: (seniorityStartStr && diff) ? ` (سابقه کار مبنای پایه سنوات از تاریخ ${toPersianDigits(seniorityStartStr)} لغایت شروع قرارداد: ${toPersianDigits(formatJalaliDifference(diff))})` : '',
                           maritalStatus: maritalStatusLabel,
                           eligibleChildrenCount: hasChildrenCount,
                           nonEligibleChildrenCount,
