@@ -14579,38 +14579,38 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               <div className="w-full space-y-4">
                 {/* 4 SUMMARY STATS CARDS (Matching CustomerManagement Palette) */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
-                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-                    <span className="text-[11px] text-slate-400 block mb-1">کل پرونده‌های پرسنل</span>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(personnel.length)}</span>
-                      <span className="text-[10px] text-slate-500">نفر</span>
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+                    <span className="text-[11px] text-slate-400 block mb-1 truncate">کل پرونده‌های پرسنل</span>
+                    <div className="flex items-baseline justify-between gap-1.5">
+                      <span className="text-sm sm:text-[15px] font-black text-slate-100 font-mono tabular-nums tracking-tight">{toPersianDigits(personnel.length)}</span>
+                      <span className="text-[10px] text-slate-500 shrink-0">نفر</span>
                     </div>
                   </div>
-                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-                    <span className="text-[11px] text-emerald-400 block mb-1">پرسنل شاغل فعال</span>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-xl font-black text-emerald-400 font-mono">
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+                    <span className="text-[11px] text-emerald-400 block mb-1 truncate">پرسنل شاغل فعال</span>
+                    <div className="flex items-baseline justify-between gap-1.5">
+                      <span className="text-sm sm:text-[15px] font-black text-emerald-400 font-mono tabular-nums tracking-tight">
                         {toPersianDigits(personnel.filter(p => p.isActive && !p.departureDate).length)}
                       </span>
-                      <span className="text-[10px] text-emerald-500/80">در حال همکاری</span>
+                      <span className="text-[10px] text-emerald-500/80 shrink-0">در حال همکاری</span>
                     </div>
                   </div>
-                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-                    <span className="text-[11px] text-cyan-400 block mb-1">دارای بیمه تأمین اجتماعی</span>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-xl font-black text-cyan-400 font-mono">
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+                    <span className="text-[11px] text-cyan-400 block mb-1 truncate">دارای بیمه تأمین اجتماعی</span>
+                    <div className="flex items-baseline justify-between gap-1.5">
+                      <span className="text-sm sm:text-[15px] font-black text-cyan-400 font-mono tabular-nums tracking-tight">
                         {toPersianDigits(personnel.filter(p => p.hasInsurance !== false).length)}
                       </span>
-                      <span className="text-[10px] text-slate-500">بیمه‌شده</span>
+                      <span className="text-[10px] text-slate-500 shrink-0">بیمه‌شده</span>
                     </div>
                   </div>
-                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-                    <span className="text-[11px] text-amber-400 block mb-1">ترک کار / غیرفعال</span>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-xl font-black text-amber-400 font-mono">
+                  <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+                    <span className="text-[11px] text-amber-400 block mb-1 truncate">ترک کار / غیرفعال</span>
+                    <div className="flex items-baseline justify-between gap-1.5">
+                      <span className="text-sm sm:text-[15px] font-black text-amber-400 font-mono tabular-nums tracking-tight">
                         {toPersianDigits(personnel.filter(p => !p.isActive || Boolean(p.departureDate)).length)}
                       </span>
-                      <span className="text-[10px] text-slate-500">پرونده</span>
+                      <span className="text-[10px] text-slate-500 shrink-0">پرونده</span>
                     </div>
                   </div>
                 </div>
@@ -16381,37 +16381,37 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
               {/* HEADER / STATISTICS INFO CARDS (Live indicators) */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right">
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right min-w-0">
                   <span className="text-[10px] text-slate-400 font-extrabold block">پرسنل مجاز ماه {curMonthName}</span>
                   <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-xl font-bold font-mono text-white">{personnel.filter(p => isEmployeeEligibleForMonth(p, Number(calcYear), Number(calcMonth))).length}</span>
+                    <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-white">{personnel.filter(p => isEmployeeEligibleForMonth(p, Number(calcYear), Number(calcMonth))).length}</span>
                     <span className="text-[9px] text-slate-500 font-bold">نفر</span>
                   </div>
                   <p className="text-[9px] text-slate-500 mt-0.5">نیروی کار واجد شرایط در این ماه</p>
                 </div>
 
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right">
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right min-w-0">
                   <span className="text-[10px] text-slate-400 font-extrabold block">بخش‌های مستقل تولید</span>
                   <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-xl font-bold font-mono text-rose-500">{productionSectionsList.length}</span>
+                    <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-rose-500">{productionSectionsList.length}</span>
                     <span className="text-[9px] text-slate-500 font-bold">بخش</span>
                   </div>
                   <p className="text-[9px] text-slate-500 mt-0.5">بخش‌های مستقل مشترک دوره</p>
                 </div>
 
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right">
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right min-w-0">
                   <span className="text-[10px] text-slate-400 font-extrabold block">تخصیص‌های ماه {curMonthName}</span>
                   <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-xl font-bold font-mono text-emerald-400">{shiftAssignmentsList.length}</span>
+                    <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-emerald-400">{shiftAssignmentsList.length}</span>
                     <span className="text-[9px] text-slate-500 font-bold">انتساب</span>
                   </div>
                   <p className="text-[9px] text-slate-500 mt-0.5">مجموع حضورهای هفتگی این ماه</p>
                 </div>
 
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right">
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 text-right min-w-0">
                   <span className="text-[10px] text-slate-400 font-extrabold block">تعطیلی هفته و جانشینی معین</span>
                   <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-xl font-bold font-mono text-blue-400">
+                    <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-blue-400">
                       {shiftAssignmentsList.filter(a => a.substitutedEmployeeCode).length}
                     </span>
                     <span className="text-[9px] text-slate-500 font-bold">مورد</span>
@@ -17484,9 +17484,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   
                   {/* Reports Grid Header */}
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm">
+                    <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm min-w-0">
                       <span className="block text-[11px] font-bold text-slate-400">مجموع تعداد کارگران حقوق بگیر</span>
-                      <strong className="block text-base font-extrabold text-white mt-1.5 font-mono">{toPersianDigits(reportGrandTotals.empCount)} نفر</strong>
+                      <strong className="block text-xs sm:text-sm font-extrabold text-white mt-1.5 font-mono tabular-nums tracking-tight">{toPersianDigits(reportGrandTotals.empCount)} <span className="text-[10px] font-sans font-bold text-slate-400">نفر</span></strong>
                     </div>
                     <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl text-right shadow-sm min-w-0">
                       <span className="block text-[11px] font-bold text-slate-400">حقوق ناخالص متمم پرداختنی</span>
@@ -20777,7 +20777,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 items={[
                   { label: 'کل قراردادهای دوره', value: toPersianDigits(periodContractsAll.length), sublabel: 'قرارداد ثبت‌شده', tone: 'default' },
                   { label: 'قراردادهای فعال جاری', value: toPersianDigits(activeContractsCount), sublabel: 'در حال اجرا', tone: 'success' },
-                  { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning', valueClassName: 'text-sm sm:text-base tracking-tight' },
+                  { label: 'قراردادهای توافقی', value: toPersianDigits(agreedContractsCount), sublabel: 'خالص توافقی', tone: 'warning' },
                   { label: 'مجموع خالص ماهانه فعال', value: formatWithCommas(activeContractsTotalNet), sublabel: 'ریال', tone: 'info' }
                 ]}
               />

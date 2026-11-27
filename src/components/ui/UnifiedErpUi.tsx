@@ -933,7 +933,7 @@ export const KpiStrip: React.FC<{ items: KpiItem[]; className?: string }> = ({
 
         const defaultValueClass = isAmountValue
           ? 'text-xs sm:text-[13px] md:text-sm leading-snug tracking-tight break-words'
-          : 'text-lg sm:text-xl truncate';
+          : 'text-sm sm:text-[15px] leading-snug tracking-tight truncate';
 
         return (
           <div

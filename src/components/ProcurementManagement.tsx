@@ -2409,32 +2409,32 @@ export default function ProcurementManagement({
         <div className="space-y-5">
           {/* 5-Metric Executive KPI Strip */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block">کل اقلام فعال</span>
-              <strong className="text-lg font-mono font-black text-slate-900 dark:text-white block mt-1">
-                {toPersianDigits(reportStats.totalLines)} <span className="text-[11px] font-sans font-bold text-slate-500">ردیف</span>
+            <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block truncate">کل اقلام فعال</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-slate-900 dark:text-white block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(reportStats.totalLines)} <span className="text-[10px] font-sans font-bold text-slate-500">ردیف</span>
               </strong>
             </div>
 
-            <div className="bg-amber-50/70 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-amber-800 dark:text-amber-300 block">در انتظار خرید</span>
-              <strong className="text-lg font-mono font-black text-amber-800 dark:text-amber-300 block mt-1">
-                {toPersianDigits(reportStats.pendingLines)} <span className="text-[11px] font-sans font-bold">ردیف</span>
+            <div className="bg-amber-50/70 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-amber-800 dark:text-amber-300 block truncate">در انتظار خرید</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-amber-800 dark:text-amber-300 block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(reportStats.pendingLines)} <span className="text-[10px] font-sans font-bold">ردیف</span>
               </strong>
             </div>
 
-            <div className="bg-sky-50/70 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-sky-800 dark:text-sky-300 block">خریداری شده (در انتظار تحویل)</span>
-              <strong className="text-lg font-mono font-black text-sky-800 dark:text-sky-300 block mt-1">
-                {toPersianDigits(reportStats.purchasedLines)} <span className="text-[11px] font-sans font-bold">ردیف</span>
+            <div className="bg-sky-50/70 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-sky-800 dark:text-sky-300 block truncate">خریداری شده (در انتظار تحویل)</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-sky-800 dark:text-sky-300 block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(reportStats.purchasedLines)} <span className="text-[10px] font-sans font-bold">ردیف</span>
               </strong>
             </div>
 
-            <div className="bg-emerald-50/70 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-emerald-800 dark:text-emerald-300 block">تایید دریافت پرسنل</span>
-              <strong className="text-lg font-mono font-black text-emerald-800 dark:text-emerald-300 block mt-1">
+            <div className="bg-emerald-50/70 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-emerald-800 dark:text-emerald-300 block truncate">تایید دریافت پرسنل</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-emerald-800 dark:text-emerald-300 block mt-1.5 tabular-nums tracking-tight">
                 {toPersianDigits(reportStats.receivedLines)}{' '}
-                <span className="text-[11px] font-sans font-bold">
+                <span className="text-[10px] font-sans font-bold">
                   ({toPersianDigits(reportStats.totalLines > 0 ? Math.round((reportStats.receivedLines / reportStats.totalLines) * 100) : 0)}٪)
                 </span>
               </strong>

@@ -4552,10 +4552,10 @@ app.listen(8080, () => {
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-xs font-bold text-slate-400">حجم فروش (وزن و تعداد)</p>
-                  <h4 className="text-lg font-black text-rose-400 mt-2 font-mono flex items-center gap-2">
+                  <h4 className="text-sm sm:text-base font-black text-rose-400 mt-2 font-mono tabular-nums tracking-tight flex items-center gap-1.5 flex-wrap">
                     <span>{toPersianDigits('۱۴۲.۸۵')} kg</span>
-                    <span className="text-slate-600 text-sm">+</span>
-                    <span className="text-purple-300 text-base">{toPersianDigits(57)} عدد</span>
+                    <span className="text-slate-600 text-xs">+</span>
+                    <span className="text-purple-300 text-xs sm:text-sm">{toPersianDigits(57)} عدد</span>
                   </h4>
                   <p className="text-[10px] text-slate-400 mt-2">ترکیب لودسل وزنی و شمارش عددی دیبال M-525</p>
                 </div>
@@ -4570,8 +4570,8 @@ app.listen(8080, () => {
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-xs font-bold text-slate-400">تعداد کل فاکتورها و اقلام</p>
-                  <h4 className="text-xl font-black text-sky-400 mt-2 font-mono">
-                    {toPersianDigits(64)} <span className="text-xs font-sans text-slate-400">فاکتور</span>
+                  <h4 className="text-sm sm:text-base font-black text-sky-400 mt-2 font-mono tabular-nums tracking-tight">
+                    {toPersianDigits(64)} <span className="text-[10px] font-sans text-slate-400">فاکتور</span>
                   </h4>
                   <p className="text-[10px] text-slate-300 mt-1">
                     جمعاً {toPersianDigits(132)} قلم کالا ({toPersianDigits(75)} وزنی + {toPersianDigits(57)} تعدادی)

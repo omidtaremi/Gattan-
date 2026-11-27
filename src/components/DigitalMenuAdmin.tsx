@@ -1098,7 +1098,7 @@ export default function DigitalMenuAdmin({
               <div className="text-[11px] font-bold text-slate-500 dark:text-zinc-400">
                 محصولات انتخاب‌شده در منو
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">
+              <div className="text-sm sm:text-[15px] font-black text-slate-900 dark:text-white font-mono tabular-nums tracking-tight">
                 {toPersianDigits(overviewStats.selectedMenuProducts)}
                 <span className="text-xs font-normal text-slate-400 mr-1">
                   از {toPersianDigits(overviewStats.totalErpProducts)} ERP
@@ -1117,7 +1117,7 @@ export default function DigitalMenuAdmin({
               <div className="text-[11px] font-bold text-slate-500 dark:text-zinc-400">
                 دسته‌بندی‌های اختصاصی منو
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">
+              <div className="text-sm sm:text-[15px] font-black text-slate-900 dark:text-white font-mono tabular-nums tracking-tight">
                 {toPersianDigits(overviewStats.activeCategories)}
                 <span className="text-xs font-normal text-slate-400 mr-1">
                   از {toPersianDigits(overviewStats.totalCategories)}
@@ -1139,7 +1139,7 @@ export default function DigitalMenuAdmin({
               <div className="text-[11px] font-bold text-slate-500 dark:text-zinc-400">
                 محصولات منو بدون تصویر
               </div>
-              <div className="text-2xl font-black text-amber-600 dark:text-amber-400 tabular-nums">
+              <div className="text-sm sm:text-[15px] font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums tracking-tight">
                 {toPersianDigits(overviewStats.missingImages)}
               </div>
               <div className="text-[11px] text-slate-500 dark:text-zinc-400">
@@ -1158,7 +1158,7 @@ export default function DigitalMenuAdmin({
               <div className="text-[11px] font-bold text-slate-500 dark:text-zinc-400">
                 محصولات منو بدون ترجمه EN
               </div>
-              <div className="text-2xl font-black text-sky-600 dark:text-sky-400 tabular-nums">
+              <div className="text-sm sm:text-[15px] font-black text-sky-600 dark:text-sky-400 font-mono tabular-nums tracking-tight">
                 {toPersianDigits(overviewStats.missingEnglish)}
               </div>
               <div className="text-[11px] text-slate-500 dark:text-zinc-400">

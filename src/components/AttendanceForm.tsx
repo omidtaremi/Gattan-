@@ -6681,54 +6681,54 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               {/* 1. روزهای کارکرد */}
-              <div className="bg-slate-950/70 border border-sky-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-sky-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-sky-300 font-bold block">روزهای کارکرد</span>
-                <span className="text-base font-black text-white font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-white font-mono tabular-nums tracking-tight block">
                   {toPersianDigits(inspectionDetails.finalDaysWorked)} <span className="text-[10px] font-normal text-slate-400">روز</span>
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate" title="تقسیم بر ۸ ساعت با رندینگ اعشاری">رندینگ کارکرد نهایی / ۸</span>
               </div>
 
               {/* 2. ساعت کارکرد نهایی */}
-              <div className="bg-slate-950/70 border border-rose-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-rose-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-rose-300 font-bold block">ساعت کارکرد نهایی</span>
-                <span className="text-base font-black text-rose-400 font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-rose-400 font-mono tabular-nums tracking-tight block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.finalWorkedMinutes)}
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate" title="تکمیل تا سقف موظفی">سقف موظفی مصوب</span>
               </div>
 
               {/* 3. اضافه کار نهایی */}
-              <div className="bg-slate-950/70 border border-emerald-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-emerald-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-emerald-300 font-bold block">اضافه کار نهایی</span>
-                <span className="text-base font-black text-emerald-400 font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-emerald-400 font-mono tabular-nums tracking-tight block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.finalOtMinutes)}
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate" title="پس از تهاتر کسری موظفی">مازاد تهاتر شده</span>
               </div>
 
               {/* 4. جمعه کاری نهایی */}
-              <div className="bg-slate-950/70 border border-indigo-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-indigo-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-indigo-300 font-bold block">جمعه کاری نهایی</span>
-                <span className="text-base font-black text-indigo-400 font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-indigo-400 font-mono tabular-nums tracking-tight block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.finalFridayMinutes)}
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate">کارکرد خالص جمعه</span>
               </div>
 
               {/* 5. تعطیل کاری نهایی */}
-              <div className="bg-slate-950/70 border border-purple-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-purple-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-purple-300 font-bold block">تعطیل کاری نهایی</span>
-                <span className="text-base font-black text-purple-400 font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-purple-400 font-mono tabular-nums tracking-tight block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.finalHolidayMinutes)}
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate" title="پس از تهاتر کسری موظفی">باقیمانده تعطیل‌کاری</span>
               </div>
 
               {/* 6. مانده مرخصی دوره */}
-              <div className="bg-slate-950/70 border border-teal-500/30 rounded-xl p-3 text-right space-y-1">
+              <div className="bg-slate-950/70 border border-teal-500/30 rounded-xl p-3 text-right space-y-1 min-w-0">
                 <span className="text-[10px] text-teal-300 font-bold block">مانده مرخصی دوره</span>
-                <span className="text-base font-black text-teal-400 font-mono block">
+                <span className="text-sm sm:text-[15px] font-black text-teal-400 font-mono tabular-nums tracking-tight block">
                   {formatMinutesToHoursAndMinutes(inspectionDetails.remainingLeaveMinutes)}
                 </span>
                 <span className="text-[9px] text-slate-500 block truncate" title="مرخصی مصرف‌نشده دوره">
@@ -7703,31 +7703,31 @@ ${skippedNoShift > 0 ? `- تعداد ${toPersianDigits(skippedNoShift)} تردد
                 <>
                   {/* Summary Cards */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 min-w-0">
                       <span className="text-[10px] text-slate-400 block">ترددهای قبلی ماه پاک‌شده</span>
-                      <strong className="text-base font-black text-slate-200 font-mono mt-1 block">
+                      <strong className="text-sm sm:text-[15px] font-black text-slate-200 font-mono tabular-nums tracking-tight mt-1 block">
                         {toPersianDigits(groupExcelImportReport.clearedCount)}
                       </strong>
                     </div>
-                    <div className="bg-emerald-950/25 border border-emerald-500/30 rounded-xl p-3">
+                    <div className="bg-emerald-950/25 border border-emerald-500/30 rounded-xl p-3 min-w-0">
                       <span className="text-[10px] text-emerald-300 block">روز-تردد معتبر ثبت‌شده</span>
-                      <strong className="text-base font-black text-emerald-400 font-mono mt-1 block">
+                      <strong className="text-sm sm:text-[15px] font-black text-emerald-400 font-mono tabular-nums tracking-tight mt-1 block">
                         {toPersianDigits(groupExcelImportReport.importedCount)}
                       </strong>
                     </div>
-                    <div className="bg-sky-950/25 border border-sky-500/30 rounded-xl p-3">
+                    <div className="bg-sky-950/25 border border-sky-500/30 rounded-xl p-3 min-w-0">
                       <span className="text-[10px] text-sky-300 block">پرسنل دارای تردد معتبر</span>
-                      <strong className="text-base font-black text-sky-400 font-mono mt-1 block">
+                      <strong className="text-sm sm:text-[15px] font-black text-sky-400 font-mono tabular-nums tracking-tight mt-1 block">
                         {toPersianDigits(groupExcelImportReport.validPersonnelCount)} نفر
                       </strong>
                     </div>
-                    <div className={`rounded-xl p-3 border ${
+                    <div className={`rounded-xl p-3 border min-w-0 ${
                       groupExcelImportReport.invalidTimeErrors.length + groupExcelImportReport.missingCodeErrors.length > 0
                         ? 'bg-rose-950/30 border-rose-500/35'
                         : 'bg-slate-950/70 border-slate-800'
                     }`}>
                       <span className="text-[10px] text-rose-300 block">موارد نامعتبر (ثبت‌نشده)</span>
-                      <strong className={`text-base font-black font-mono mt-1 block ${
+                      <strong className={`text-sm sm:text-[15px] font-black font-mono tabular-nums tracking-tight mt-1 block ${
                         groupExcelImportReport.invalidTimeErrors.length + groupExcelImportReport.missingCodeErrors.length > 0
                           ? 'text-rose-400'
                           : 'text-emerald-400'

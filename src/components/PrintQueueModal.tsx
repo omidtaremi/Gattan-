@@ -462,27 +462,27 @@ export default function PrintQueueModal({
             <>
               {/* Quick Stats */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40">
-                  <div className="text-[11px] text-slate-500 font-bold">در صف انتظار</div>
-                  <div className="text-lg font-black text-amber-600 dark:text-amber-400 mt-0.5">
+                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 min-w-0">
+                  <div className="text-[11px] text-slate-500 font-bold truncate">در صف انتظار</div>
+                  <div className="text-sm sm:text-[15px] font-black font-mono tabular-nums tracking-tight text-amber-600 dark:text-amber-400 mt-0.5">
                     {toPersianDigits(station?.pendingCount || 0)}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40">
-                  <div className="text-[11px] text-slate-500 font-bold">در حال چاپ</div>
-                  <div className="text-lg font-black text-sky-600 dark:text-sky-400 mt-0.5">
+                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 min-w-0">
+                  <div className="text-[11px] text-slate-500 font-bold truncate">در حال چاپ</div>
+                  <div className="text-sm sm:text-[15px] font-black font-mono tabular-nums tracking-tight text-sky-600 dark:text-sky-400 mt-0.5">
                     {toPersianDigits(station?.printingCount || 0)}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40">
-                  <div className="text-[11px] text-slate-500 font-bold">چاپ‌شده ۲۴ ساعت اخیر</div>
-                  <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
+                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 min-w-0">
+                  <div className="text-[11px] text-slate-500 font-bold truncate">چاپ‌شده ۲۴ ساعت اخیر</div>
+                  <div className="text-sm sm:text-[15px] font-black font-mono tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 mt-0.5">
                     {toPersianDigits(station?.printedTodayCount || 0)}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40">
-                  <div className="text-[11px] text-slate-500 font-bold">خطادار</div>
-                  <div className="text-lg font-black text-rose-600 dark:text-rose-400 mt-0.5">
+                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 min-w-0">
+                  <div className="text-[11px] text-slate-500 font-bold truncate">خطادار</div>
+                  <div className="text-sm sm:text-[15px] font-black font-mono tabular-nums tracking-tight text-rose-600 dark:text-rose-400 mt-0.5">
                     {toPersianDigits(station?.failedCount || 0)}
                   </div>
                 </div>

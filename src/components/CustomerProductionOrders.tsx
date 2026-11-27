@@ -1841,31 +1841,31 @@ export default function CustomerProductionOrders({
         <div className="space-y-5">
           {/* 5-Metric Executive KPI Strip */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block">سفارش‌های فعال</span>
-              <strong className="text-lg font-mono font-black text-slate-900 dark:text-white block mt-1">
-                {toPersianDigits(boardStats.activeCount)} <span className="text-[11px] font-sans font-bold text-slate-500">سفارش</span>
+            <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-slate-500 dark:text-slate-400 block truncate">سفارش‌های فعال</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-slate-900 dark:text-white block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(boardStats.activeCount)} <span className="text-[10px] font-sans font-bold text-slate-500">سفارش</span>
               </strong>
             </div>
 
-            <div className="bg-rose-50/80 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-rose-700 dark:text-rose-300 block">تحویل امروز</span>
-              <strong className="text-lg font-mono font-black text-rose-700 dark:text-rose-300 block mt-1">
-                {toPersianDigits(boardStats.dueToday)} <span className="text-[11px] font-sans font-bold">سفارش</span>
+            <div className="bg-rose-50/80 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-rose-700 dark:text-rose-300 block truncate">تحویل امروز</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-rose-700 dark:text-rose-300 block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(boardStats.dueToday)} <span className="text-[10px] font-sans font-bold">سفارش</span>
               </strong>
             </div>
 
-            <div className="bg-sky-50/80 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-sky-800 dark:text-sky-300 block">در حال تولید</span>
-              <strong className="text-lg font-mono font-black text-sky-800 dark:text-sky-300 block mt-1">
-                {toPersianDigits(boardStats.inProd)} <span className="text-[11px] font-sans font-bold">سفارش</span>
+            <div className="bg-sky-50/80 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-sky-800 dark:text-sky-300 block truncate">در حال تولید</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-sky-800 dark:text-sky-300 block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(boardStats.inProd)} <span className="text-[10px] font-sans font-bold">سفارش</span>
               </strong>
             </div>
 
-            <div className="bg-emerald-50/80 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/25 rounded-2xl p-3.5">
-              <span className="text-[10.5px] font-bold text-emerald-800 dark:text-emerald-300 block">آماده تحویل</span>
-              <strong className="text-lg font-mono font-black text-emerald-800 dark:text-emerald-300 block mt-1">
-                {toPersianDigits(boardStats.readyCount)} <span className="text-[11px] font-sans font-bold">سفارش</span>
+            <div className="bg-emerald-50/80 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/25 rounded-2xl p-3.5 min-w-0">
+              <span className="text-[10.5px] font-bold text-emerald-800 dark:text-emerald-300 block truncate">آماده تحویل</span>
+              <strong className="text-sm sm:text-[15px] font-mono font-black text-emerald-800 dark:text-emerald-300 block mt-1.5 tabular-nums tracking-tight">
+                {toPersianDigits(boardStats.readyCount)} <span className="text-[10px] font-sans font-bold">سفارش</span>
               </strong>
             </div>
 

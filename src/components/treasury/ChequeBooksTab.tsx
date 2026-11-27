@@ -1607,31 +1607,31 @@ export default function ChequeBooksTab({ db, onUpdateDb, activePeriodId, askConf
                 خلاصه آماری چرخه حیات برگه‌های چک
               </h3>
               <div className="grid grid-cols-2 gap-3">
-                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800">
+                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800 min-w-0">
                   <span className="text-xs text-slate-400 block">کل برگه‌ها:</span>
-                  <span className="text-xl font-bold font-mono text-white mt-1 block">{toPersianDigits(stats.totalLeavesCount)}</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-white mt-1 block">{toPersianDigits(stats.totalLeavesCount)}</span>
                 </div>
-                <div className="p-4 bg-teal-950/20 rounded-2xl border border-teal-500/20">
+                <div className="p-4 bg-teal-950/20 rounded-2xl border border-teal-500/20 min-w-0">
                   <span className="text-xs text-teal-400 block">برگه‌های سفید و آزاد:</span>
-                  <span className="text-xl font-bold font-mono text-teal-300 mt-1 block">{toPersianDigits(stats.blankLeaves)}</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-teal-300 mt-1 block">{toPersianDigits(stats.blankLeaves)}</span>
                 </div>
-                <div className="p-4 bg-indigo-950/20 rounded-2xl border border-indigo-500/20">
+                <div className="p-4 bg-indigo-950/20 rounded-2xl border border-indigo-500/20 min-w-0">
                   <span className="text-xs text-indigo-400 block">صادر شده (در جریان):</span>
-                  <span className="text-xl font-bold font-mono text-indigo-300 mt-1 block">{toPersianDigits(stats.issuedCount)}</span>
-                  <span className="text-[10px] text-slate-400 font-mono block mt-1">{formatWithCommas(stats.issuedTotalAmount)} ریال</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-indigo-300 mt-1 block">{toPersianDigits(stats.issuedCount)}</span>
+                  <span className="text-[10px] text-slate-400 font-mono tabular-nums block mt-1 break-words">{formatWithCommas(stats.issuedTotalAmount)} ریال</span>
                 </div>
-                <div className="p-4 bg-emerald-950/20 rounded-2xl border border-emerald-500/20">
+                <div className="p-4 bg-emerald-950/20 rounded-2xl border border-emerald-500/20 min-w-0">
                   <span className="text-xs text-emerald-400 block">پاس شده (وصول قطعی):</span>
-                  <span className="text-xl font-bold font-mono text-emerald-300 mt-1 block">{toPersianDigits(stats.clearedCount)}</span>
-                  <span className="text-[10px] text-slate-400 font-mono block mt-1">{formatWithCommas(stats.clearedTotalAmount)} ریال</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-emerald-300 mt-1 block">{toPersianDigits(stats.clearedCount)}</span>
+                  <span className="text-[10px] text-slate-400 font-mono tabular-nums block mt-1 break-words">{formatWithCommas(stats.clearedTotalAmount)} ریال</span>
                 </div>
-                <div className="p-4 bg-rose-950/20 rounded-2xl border border-rose-500/20">
+                <div className="p-4 bg-rose-950/20 rounded-2xl border border-rose-500/20 min-w-0">
                   <span className="text-xs text-rose-400 block">برگشت خورده (واخواست):</span>
-                  <span className="text-xl font-bold font-mono text-rose-300 mt-1 block">{toPersianDigits(stats.bouncedCount)}</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-rose-300 mt-1 block">{toPersianDigits(stats.bouncedCount)}</span>
                 </div>
-                <div className="p-4 bg-slate-800/40 rounded-2xl border border-slate-700/40">
+                <div className="p-4 bg-slate-800/40 rounded-2xl border border-slate-700/40 min-w-0">
                   <span className="text-xs text-slate-400 block">باطل شده / عودت:</span>
-                  <span className="text-xl font-bold font-mono text-slate-300 mt-1 block">{toPersianDigits(stats.cancelledCount)}</span>
+                  <span className="text-sm sm:text-[15px] font-bold font-mono tabular-nums tracking-tight text-slate-300 mt-1 block">{toPersianDigits(stats.cancelledCount)}</span>
                 </div>
               </div>
             </div>

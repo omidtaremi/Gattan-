@@ -5780,11 +5780,11 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
                             <span className="text-[10.5px] font-bold text-rose-300/90">
                               مجموع حجم شمارش شده این ردیف
                             </span>
-                            <div className="flex items-baseline gap-1.5 mt-1">
-                              <strong className="text-base font-black text-white font-mono">
+                            <div className="flex flex-wrap items-baseline gap-1.5 mt-1 min-w-0">
+                              <strong className="text-xs sm:text-sm font-black text-white font-mono tabular-nums tracking-tight">
                                 {toPersianDigits(roundTo2Decimals(calculatedLiveCountVal.qty))}
                               </strong>
-                              <span className="text-[11px] font-bold text-rose-300">
+                              <span className="text-[10px] font-bold text-rose-300 shrink-0">
                                 {selectedCountItemData.unit}
                               </span>
                             </div>
@@ -6423,16 +6423,16 @@ export default function ItemManagement({ db, onUpdateDb, activePeriodId }: ItemM
           <strong className="block text-xs sm:text-sm md:text-[15px] font-black text-zinc-100 font-mono tabular-nums tracking-tight mt-1 break-words">{formatWithCommas(totalSystemValue)} <span className="text-[10px] font-sans font-bold text-zinc-400">ریال</span></strong>
         </div>
         
-        <div className="p-4.5 bg-zinc-900/40 rounded-2xl border border-zinc-800 backdrop-blur-md shadow-lg">
+        <div className="p-4.5 bg-zinc-900/40 rounded-2xl border border-zinc-800 backdrop-blur-md shadow-lg min-w-0">
           <span className="block text-[11px] font-bold text-zinc-400">تعداد کل شمارش فیزیکی کالاها</span>
-          <strong className="block text-lg font-black text-zinc-100 font-mono mt-1">{toPersianDigits(totalItemStockQtyCount)} کالا</strong>
+          <strong className="block text-sm sm:text-[15px] font-black text-zinc-100 font-mono tabular-nums tracking-tight mt-1">{toPersianDigits(totalItemStockQtyCount)} <span className="text-[10px] font-sans font-bold text-zinc-400">کالا</span></strong>
         </div>
 
-        <div className="p-4.5 bg-rose-955/15 rounded-2xl border border-rose-500/25 backdrop-blur-md shadow-lg">
+        <div className="p-4.5 bg-rose-955/15 rounded-2xl border border-rose-500/25 backdrop-blur-md shadow-lg min-w-0">
           <span className="block text-[11px] text-rose-450 flex items-center gap-1.5 font-black">
             <AlertTriangle className="h-4 w-4 text-rose-500 animate-bounce" /> موجودی بحرانی (زیر آستانه هشدار)
           </span>
-          <strong className="block text-lg font-black text-rose-400 font-mono mt-1">{toPersianDigits(alertItems.length)} کالا</strong>
+          <strong className="block text-sm sm:text-[15px] font-black text-rose-400 font-mono tabular-nums tracking-tight mt-1">{toPersianDigits(alertItems.length)} <span className="text-[10px] font-sans font-bold text-rose-300/80">کالا</span></strong>
           
           {alertItems.length > 0 && (
             <div className="mt-2.5 text-2xs border-t border-rose-955/20 pt-2 space-y-1">

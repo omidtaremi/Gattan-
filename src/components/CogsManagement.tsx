@@ -7303,10 +7303,10 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                 </span>
               </div>
             </div>
-            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
+            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between min-w-0">
               <span className="text-xs text-slate-400 font-medium">نسبت درصد ارتقای فروش ریالی</span>
               <div className="mt-2 flex items-baseline gap-1">
-                <span className={`text-lg font-black font-mono ${processedComparisonTotals.revGrowthSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <span className={`text-xs sm:text-sm font-black font-mono tabular-nums tracking-tight ${processedComparisonTotals.revGrowthSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {processedComparisonTotals.revGrowthSum >= 0 ? '+' : ''}
                   {processedComparisonTotals.priorRevSum > 0 
                     ? (processedComparisonTotals.revGrowthSum / processedComparisonTotals.priorRevSum * 100).toFixed(1) 
@@ -7314,7 +7314,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                 </span>
               </div>
             </div>
-            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
+            <div className="bg-slate-950 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between min-w-0">
               <span className="text-xs text-slate-400 font-medium">نسبت درصد ارتقای فروش تعدادی</span>
               <div className="mt-2 flex items-baseline gap-1">
                 {(() => {
@@ -7323,7 +7323,7 @@ export default function CogsManagement({ db, onUpdateDb, activePeriodId }: CogsM
                     ? ((totalQtyGrowth / processedComparisonTotals.priorQtySum) * 100).toFixed(1) 
                     : (processedComparisonTotals.currentQtySum > 0 ? '100' : '0');
                   return (
-                    <span className={`text-lg font-black font-mono ${totalQtyGrowth >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    <span className={`text-xs sm:text-sm font-black font-mono tabular-nums tracking-tight ${totalQtyGrowth >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {totalQtyGrowth >= 0 ? '+' : ''}{qtyGrowthPctVal}%
                     </span>
                   );

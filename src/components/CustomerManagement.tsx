@@ -719,19 +719,19 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
         <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl sm:rounded-3xl shadow-xl p-3.5 sm:p-6 space-y-5 font-sans text-right" dir="rtl">
           {/* 4 SUMMARY STATS CARDS (Matching CustomerProductionOrders placement) */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
-            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-              <span className="text-[11px] text-slate-400 block mb-1">کل مشتریان ثبت‌شده</span>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(stats.total)}</span>
-                <span className="text-[10px] text-slate-500">پرونده</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+              <span className="text-[11px] text-slate-400 block mb-1 truncate">کل مشتریان ثبت‌شده</span>
+              <div className="flex items-baseline justify-between gap-1.5">
+                <span className="text-sm sm:text-[15px] font-black text-slate-100 font-mono tabular-nums tracking-tight">{toPersianDigits(stats.total)}</span>
+                <span className="text-[10px] text-slate-500 shrink-0">پرونده</span>
               </div>
             </div>
 
-            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-              <span className="text-[11px] text-emerald-400 block mb-1">مشتریان فعال تجاری</span>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-black text-emerald-400 font-mono">{toPersianDigits(stats.activeCount)}</span>
-                <span className="text-[10px] text-emerald-500/80">در حال همکاری</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+              <span className="text-[11px] text-emerald-400 block mb-1 truncate">مشتریان فعال تجاری</span>
+              <div className="flex items-baseline justify-between gap-1.5">
+                <span className="text-sm sm:text-[15px] font-black text-emerald-400 font-mono tabular-nums tracking-tight">{toPersianDigits(stats.activeCount)}</span>
+                <span className="text-[10px] text-emerald-500/80 shrink-0">در حال همکاری</span>
               </div>
             </div>
 
@@ -743,11 +743,11 @@ export default function CustomerManagement({ db, onUpdateDb, activePeriodId, cur
               </div>
             </div>
 
-            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-              <span className="text-[11px] text-amber-400 block mb-1">فروشگاه‌ها و سازمانی</span>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-black text-amber-400 font-mono">{toPersianDigits(stats.corporateCount)}</span>
-                <span className="text-[10px] text-slate-500">شرکت / فروشگاه</span>
+            <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+              <span className="text-[11px] text-amber-400 block mb-1 truncate">فروشگاه‌ها و سازمانی</span>
+              <div className="flex items-baseline justify-between gap-1.5">
+                <span className="text-sm sm:text-[15px] font-black text-amber-400 font-mono tabular-nums tracking-tight">{toPersianDigits(stats.corporateCount)}</span>
+                <span className="text-[10px] text-slate-500 shrink-0">شرکت / فروشگاه</span>
               </div>
             </div>
           </div>

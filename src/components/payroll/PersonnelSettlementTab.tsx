@@ -2935,11 +2935,11 @@ export default function PersonnelSettlementTab({
 
       {/* Stats Cards matching CustomerManagement */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
-        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
-          <span className="text-[11px] text-slate-400 block font-bold mb-1">تعداد اسناد تسویه</span>
-          <div className="flex items-baseline justify-between">
-            <span className="text-xl font-black text-slate-100 font-mono">{toPersianDigits(stats.totalCount)}</span>
-            <span className="text-[10px] text-slate-500">سند</span>
+        <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80 min-w-0">
+          <span className="text-[11px] text-slate-400 block font-bold mb-1 truncate">تعداد اسناد تسویه</span>
+          <div className="flex items-baseline justify-between gap-1">
+            <span className="text-sm sm:text-[15px] font-black text-slate-100 font-mono tabular-nums tracking-tight">{toPersianDigits(stats.totalCount)}</span>
+            <span className="text-[10px] text-slate-500 shrink-0">سند</span>
           </div>
         </div>
 

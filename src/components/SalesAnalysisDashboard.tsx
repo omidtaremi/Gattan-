@@ -2298,8 +2298,8 @@ export default function SalesAnalysisDashboard({
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 block" />
             تعداد کل فاکتورها
           </span>
-          <div className="mt-4 text-right">
-            <span className="text-base font-black text-indigo-300 font-mono block">
+          <div className="mt-4 text-right min-w-0">
+            <span className="text-xs sm:text-sm font-black text-indigo-300 font-mono tabular-nums tracking-tight block">
               {toPersianDigits(stats.invoiceCount)} <span className="text-[9.5px] text-slate-450 font-sans">عدد فاکتور</span>
             </span>
             <p className="text-[9px] text-slate-500 mt-1">بر مبنای ترکیب منحصر بفرد روز × ساعت</p>
