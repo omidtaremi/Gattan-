@@ -383,7 +383,9 @@ html.light .bg-zinc-900\/25:not(.fixed),
 html.light .bg-slate-850:not(.fixed),
 html.light .bg-slate-850\/60:not(.fixed),
 html.light .bg-zinc-850:not(.fixed),
+html.light .bg-slate-955:not(.fixed),
 html.light .bg-slate-950:not(.fixed),
+html.light .bg-slate-950\/98:not(.fixed),
 html.light .bg-slate-950\/95:not(.fixed),
 html.light .bg-slate-950\/90:not(.fixed),
 html.light .bg-slate-950\/80:not(.fixed),
@@ -514,6 +516,7 @@ html.light .blur-3xl {
 
 /* Semantic Dark-Tinted Alert & KPI Containers -> Crisp Balanced Light Tints */
 html.light .bg-emerald-950,
+html.light .bg-emerald-950\/15,
 html.light .bg-emerald-950\/20,
 html.light .bg-emerald-950\/25,
 html.light .bg-emerald-950\/30,
@@ -523,6 +526,9 @@ html.light .bg-emerald-950\/60,
 html.light .bg-emerald-900,
 html.light .bg-emerald-900\/30,
 html.light .bg-emerald-900\/40,
+html.light .bg-emerald-600\/20,
+html.light .bg-emerald-600\/25,
+html.light .bg-emerald-600\/30,
 html.light .bg-emerald-500\/5,
 html.light .bg-emerald-500\/10,
 html.light .bg-emerald-500\/15,
@@ -542,6 +548,10 @@ html.light .bg-rose-900\/40,
 html.light .bg-red-950,
 html.light .bg-red-950\/30,
 html.light .bg-red-950\/40,
+html.light .bg-rose-600\/15,
+html.light .bg-rose-600\/20,
+html.light .bg-rose-600\/25,
+html.light .bg-rose-600\/30,
 html.light .bg-rose-500\/5,
 html.light .bg-rose-500\/10,
 html.light .bg-rose-500\/15,
@@ -555,10 +565,13 @@ html.light .bg-amber-950\/30,
 html.light .bg-amber-950\/35,
 html.light .bg-amber-950\/40,
 html.light .bg-amber-950\/50,
+html.light .bg-amber-600\/20,
+html.light .bg-amber-600\/30,
 html.light .bg-amber-500\/5,
 html.light .bg-amber-500\/10,
 html.light .bg-amber-500\/15,
-html.light .bg-amber-500\/20 {
+html.light .bg-amber-500\/20,
+html.light .bg-amber-400\/10 {
   background-color: #fef6e4 !important;
 }
 html.light .bg-indigo-950,
@@ -566,6 +579,8 @@ html.light .bg-indigo-950\/20,
 html.light .bg-indigo-950\/30,
 html.light .bg-indigo-950\/40,
 html.light .bg-indigo-950\/50,
+html.light .bg-indigo-600\/20,
+html.light .bg-indigo-600\/30,
 html.light .bg-indigo-500\/10,
 html.light .bg-indigo-500\/15,
 html.light .bg-indigo-500\/20 {
@@ -577,6 +592,8 @@ html.light .bg-sky-950\/30,
 html.light .bg-sky-950\/40,
 html.light .bg-sky-900,
 html.light .bg-sky-900\/30,
+html.light .bg-sky-600\/20,
+html.light .bg-sky-600\/30,
 html.light .bg-sky-500\/10,
 html.light .bg-sky-500\/15,
 html.light .bg-sky-500\/20 {
@@ -587,15 +604,20 @@ html.light .bg-blue-950\/20,
 html.light .bg-blue-950\/30,
 html.light .bg-blue-950\/40,
 html.light .bg-blue-500\/5,
-html.light .bg-blue-500\/10 {
+html.light .bg-blue-500\/10,
+html.light .bg-blue-500\/15,
+html.light .bg-blue-500\/20 {
   background-color: #ecf3ff !important;
 }
 html.light .bg-purple-950,
 html.light .bg-purple-950\/20,
 html.light .bg-purple-950\/30,
 html.light .bg-purple-950\/40,
+html.light .bg-purple-600\/20,
+html.light .bg-purple-600\/30,
 html.light .bg-purple-500\/10,
-html.light .bg-purple-500\/15 {
+html.light .bg-purple-500\/15,
+html.light .bg-purple-500\/20 {
   background-color: #f6efff !important;
 }
 html.light .bg-cyan-950,
@@ -608,6 +630,7 @@ html.light .bg-cyan-500\/20 {
 }
 html.light .bg-teal-950,
 html.light .bg-teal-950\/20,
+html.light .bg-teal-950\/25,
 html.light .bg-teal-950\/30,
 html.light .bg-teal-950\/40,
 html.light .bg-teal-500\/10,
@@ -764,8 +787,14 @@ html.light :where(
 
 /* Deepen Accent Text for Rich WCAG AA+ Readability on Light Surfaces */
 html.light .text-emerald-200,
+html.light .text-emerald-200\/80,
+html.light .text-emerald-200\/90,
 html.light .text-emerald-300,
+html.light .text-emerald-300\/80,
+html.light .text-emerald-300\/85,
+html.light .text-emerald-300\/90,
 html.light .text-emerald-400,
+html.light .text-emerald-400\/80,
 html.light .text-emerald-450,
 html.light .text-emerald-500 {
   color: #046c4e !important;
@@ -776,7 +805,9 @@ html.light .bg-emerald-600 .text-emerald-200 {
 }
 
 html.light .text-rose-200,
+html.light .text-rose-200\/80,
 html.light .text-rose-300,
+html.light .text-rose-300\/80,
 html.light .text-rose-300\/90,
 html.light .text-rose-400,
 html.light .text-rose-450,
@@ -784,24 +815,31 @@ html.light .text-red-400,
 html.light .text-red-450 {
   color: #b41037 !important;
 }
-html.light .text-emerald-300\/90,
-html.light .text-emerald-400\/80 {
-  color: #046c4e !important;
-}
 html.light .text-amber-100,
 html.light .text-amber-200,
+html.light .text-amber-200\/80,
+html.light .text-amber-200\/90,
 html.light .text-amber-300,
+html.light .text-amber-300\/80,
+html.light .text-amber-300\/90,
 html.light .text-amber-400,
 html.light .text-amber-500 {
-  color: #a14d07 !important;
+  color: #9a4706 !important;
 }
 html.light .text-indigo-200,
+html.light .text-indigo-200\/80,
 html.light .text-indigo-300,
+html.light .text-indigo-300\/80,
+html.light .text-indigo-300\/90,
 html.light .text-indigo-400 {
   color: #3730a3 !important;
 }
 html.light .text-sky-200,
+html.light .text-sky-200\/80,
+html.light .text-sky-200\/90,
 html.light .text-sky-300,
+html.light .text-sky-300\/80,
+html.light .text-sky-300\/90,
 html.light .text-sky-400 {
   color: #035f92 !important;
 }
@@ -814,13 +852,17 @@ html.light .text-cyan-300,
 html.light .text-cyan-400 {
   color: #0e6980 !important;
 }
+html.light .text-purple-200,
 html.light .text-purple-300,
 html.light .text-purple-400,
 html.light .text-violet-400 {
   color: #6b21a8 !important;
 }
 html.light .text-teal-200,
+html.light .text-teal-200\/80,
+html.light .text-teal-200\/90,
 html.light .text-teal-300,
+html.light .text-teal-300\/80,
 html.light .text-teal-400 {
   color: #0f6860 !important;
 }

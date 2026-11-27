@@ -60,7 +60,7 @@ import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
 import { 
   Users, Search, Plus, Trash, Trash2, Printer, CheckCircle, FileSpreadsheet, Sparkles, Layers,
   DollarSign, Briefcase, Calendar, ShieldCheck, Download, Award, ChevronLeft, CreditCard, ChevronDown, CheckSquare, Square, RefreshCcw, AlertTriangle, Tag, Copy,
-  FileCheck, FileText, X, Check, Edit3, Clock, Settings, Receipt, Filter, CheckCircle2, UserMinus, RotateCcw, Unlock
+  FileCheck, FileText, X, Check, Edit3, Clock, Settings, Receipt, Filter, CheckCircle2, UserMinus, RotateCcw, Unlock, ArrowRight
 } from 'lucide-react';
 
 function parseJalali(dateStr: string) {
@@ -1869,8 +1869,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     });
   };
 
-  const [activeTab, setActiveTab] = useState<'employees' | 'payroll' | 'payrollConstants' | 'contracts' | 'attendanceSettings' | 'settlement'>('employees');
+  const [activeTab, setActiveTab] = useState<'employees' | 'payroll' | 'payrollConstants' | 'contracts' | 'attendanceSettings' | 'settlement'>('payroll');
   const [employeesSubTab, setEmployeesSubTab] = useState<'roster' | 'departments' | 'personnel_categories'>('roster');
+  const [isSectionFormOpen, setIsSectionFormOpen] = useState<boolean>(false);
+  const [constantsSubTab, setConstantsSubTab] = useState<'baseRates' | 'insured' | 'leaveBuyout' | 'taxable' | 'seniority'>('baseRates');
+  const [isConstantFormOpen, setIsConstantFormOpen] = useState<boolean>(false);
+  const [isContractFormOpen, setIsContractFormOpen] = useState<boolean>(false);
   const personnelFormTopRef = React.useRef<HTMLDivElement | null>(null);
   const [settlementPreselectEmpCode, setSettlementPreselectEmpCode] = useState<string>('');
   const [settlementPreselectContext, setSettlementPreselectContext] = useState<{ year: number; month: number; readOnly?: boolean } | null>(null);
@@ -1887,6 +1891,62 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   // Fiscal year is determined automatically based on Time and Fiscal Periods Management
   const activePeriod = db.periods.find(p => p.id === activePeriodId);
   const activeFiscalYearStr = String(getFiscalYearFromPeriod(activePeriod, activePeriodId));
+  const activePeriodLabel = activePeriod?.name || activePeriodId;
+
+  const activePeriodStartDate = useMemo(() => {
+    const norm = normalizeRateDateYMD(activePeriod?.startDate);
+    return norm || `${activeFiscalYearStr}/01/01`;
+  }, [activePeriod?.startDate, activeFiscalYearStr]);
+
+  const activePeriodEndDate = useMemo(() => {
+    const norm = normalizeRateDateYMD(activePeriod?.endDate);
+    if (norm) return norm;
+    const yrNum = Number(activeFiscalYearStr) || 1405;
+    const r = ((yrNum % 33) + 33) % 33;
+    const isLeap = r === 1 || r === 5 || r === 9 || r === 13 || r === 17 || r === 22 || r === 26 || r === 30;
+    return `${activeFiscalYearStr}/12/${isLeap ? '30' : '29'}`;
+  }, [activePeriod?.endDate, activeFiscalYearStr]);
+
+  const validateValidityRangeInActivePeriod = (
+    rawStart: string,
+    rawEnd: string,
+    sectionLabel: string
+  ): { ok: true; start: string; end: string } | { ok: false; message: string } => {
+    if (!rawStart.trim() || !rawEnd.trim()) {
+      return {
+        ok: false,
+        message: `انتخاب هر دو تاریخ شروع و پایان بازه اعتبار ${sectionLabel} الزامی است (محدوده مجاز دوره کاری «${activePeriodLabel}»: ${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}).`
+      };
+    }
+    const normStart = normalizeRateDateYMD(rawStart);
+    const normEnd = normalizeRateDateYMD(rawEnd);
+    if (!normStart || !normEnd) {
+      return {
+        ok: false,
+        message: `فرمت تاریخ شروع یا پایان بازه اعتبار ${sectionLabel} معتبر نیست. لطفاً از تقویم شمسی استفاده نمایید.`
+      };
+    }
+    if (normStart > normEnd) {
+      return {
+        ok: false,
+        message: 'تاریخ شروع اعتبار نمی‌تواند بزرگ‌تر از تاریخ پایان اعتبار باشد.'
+      };
+    }
+    if (normStart < activePeriodStartDate || normEnd > activePeriodEndDate) {
+      return {
+        ok: false,
+        message: `بازه تاریخ انتخاب‌شده (${toPersianDigits(normStart)} تا ${toPersianDigits(normEnd)}) خارج از بازه دوره کاری فعال سامانه «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) است و امکان ثبت آن وجود ندارد.`
+      };
+    }
+    return { ok: true, start: normStart, end: normEnd };
+  };
+
+  const clampRangeToActivePeriod = (presetStart: string, presetEnd: string): { start: string; end: string } | null => {
+    const s = presetStart < activePeriodStartDate ? activePeriodStartDate : presetStart;
+    const e = presetEnd > activePeriodEndDate ? activePeriodEndDate : presetEnd;
+    if (s > e) return null;
+    return { start: s, end: e };
+  };
   const [calcYear, setCalcYear] = useState<number>(() => {
     return getFiscalYearFromPeriod(activePeriod, activePeriodId);
   });
@@ -2825,62 +2885,47 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateFridayWorkHourlyRate('');
     setRateHolidayWorkHourlyRate('');
     setRateMonthlyLeaveHours(DEFAULT_MONTHLY_LEAVE_HM);
+    setIsConstantFormOpen(false);
   };
 
   const handleSaveSalaryBaseRate = (e: React.FormEvent) => {
     e.preventDefault();
-    const normStart = normalizeRateDateYMD(rateStartDate);
-    const normEnd = normalizeRateDateYMD(rateEndDate);
-    const derivedYear = toEnglishDigits(rateYear.trim()) || (normStart ? normStart.slice(0, 4) : '') || (normEnd ? normEnd.slice(0, 4) : '');
-
-    if (!derivedYear) {
-      alert('لطفا سال مالی مرجع یا تاریخ شروع دوره را وارد کنید.');
+    const rangeCheck = validateValidityRangeInActivePeriod(rateStartDate, rateEndDate, 'ثوابت پایه دستمزد');
+    if (rangeCheck.ok === false) {
+      alert(rangeCheck.message);
       return;
     }
+    const normStart = rangeCheck.start;
+    const normEnd = rangeCheck.end;
 
-    if ((rateStartDate.trim() && !normStart) || (rateEndDate.trim() && !normEnd)) {
-      alert('فرمت تاریخ شروع یا پایان دوره معتبر نیست. لطفاً از انتخابگر شمسی استفاده نمایید.');
-      return;
-    }
-
-    if ((normStart && !normEnd) || (!normStart && normEnd)) {
-      alert('در صورت تعیین بازه دوره، وارد کردن هر دو فیلد «از تاریخ» و «تا تاریخ» الزامی است.');
-      return;
-    }
-
-    if (normStart && normEnd && normStart > normEnd) {
-      alert('تاریخ شروع دوره (از تاریخ) نمی‌تواند بزرگتر از تاریخ پایان دوره (تا تاریخ) باشد.');
+    const derivedYear = toEnglishDigits(rateYear.trim()) || normStart.slice(0, 4);
+    const minActiveYr = activePeriodStartDate.slice(0, 4);
+    const maxActiveYr = activePeriodEndDate.slice(0, 4);
+    if (derivedYear < minActiveYr || derivedYear > maxActiveYr) {
+      alert(`سال مالی واردشده (${toPersianDigits(derivedYear)}) با بازه دوره کاری فعال سامانه «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) هم‌خوانی ندارد.`);
       return;
     }
 
     const currentRates = db.salaryBaseRates || [];
     const samePeriodRates = currentRates.filter(r => r.periodId === activePeriodId && r.id !== editingRateId);
 
-    // Check overlap or duplicate within the same fiscal period
-    if (normStart && normEnd) {
-      const overlappingRate = samePeriodRates.find(r => {
-        const rs = normalizeRateDateYMD(r.startDate);
-        const re = normalizeRateDateYMD(r.endDate);
-        if (!rs || !re) return false;
+    // Check overlap within the same fiscal period
+    const overlappingRate = samePeriodRates.find(r => {
+      const rs = normalizeRateDateYMD(r.startDate);
+      const re = normalizeRateDateYMD(r.endDate);
+      if (rs && re) {
         return normStart <= re && normEnd >= rs;
-      });
-      if (overlappingRate) {
-        alert(
-          `بازه تاریخی انتخاب‌شده (${toPersianDigits(normStart)} تا ${toPersianDigits(normEnd)}) با دوره ثبت‌شده «${overlappingRate.title || `سال ${toPersianDigits(overlappingRate.year)}`}» (${toPersianDigits(overlappingRate.startDate || '')} تا ${toPersianDigits(overlappingRate.endDate || '')}) هم‌پوشانی دارد.`
-        );
-        return;
       }
-    } else {
-      // Legacy undated entry: prevent duplicate undated entry for the same year in this period
-      const duplicateUndated = samePeriodRates.find(r => {
-        const rs = normalizeRateDateYMD(r.startDate);
-        const re = normalizeRateDateYMD(r.endDate);
-        return !rs && !re && toEnglishDigits(String(r.year || '')).trim() === derivedYear;
-      });
-      if (duplicateUndated) {
-        alert(`ثوابت حقوق پایه بدون بازه تاریخ برای سال ${toPersianDigits(derivedYear)} قبلاً تعریف شده است. برای ثبت چند دوره در یک سال، فیلدهای «از تاریخ» و «تا تاریخ» را مشخص کنید.`);
-        return;
-      }
+      return toEnglishDigits(String(r.year || '')).trim() === derivedYear;
+    });
+    if (overlappingRate) {
+      const overlapRange = overlappingRate.startDate && overlappingRate.endDate
+        ? `${toPersianDigits(overlappingRate.startDate)} تا ${toPersianDigits(overlappingRate.endDate)}`
+        : `کل سال ${toPersianDigits(overlappingRate.year)}`;
+      alert(
+        `بازه تاریخی انتخاب‌شده (${toPersianDigits(normStart)} تا ${toPersianDigits(normEnd)}) با دوره ثبت‌شده «${overlappingRate.title || `سال ${toPersianDigits(overlappingRate.year)}`}» (${overlapRange}) هم‌پوشانی دارد.`
+      );
+      return;
     }
 
     const parsedDailyBase = parseNumber(rateDailyBaseSalary) || 0;
@@ -3225,6 +3270,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateFridayWorkHourlyRate(formatWithCommas(currentFriday));
     setRateHolidayWorkHourlyRate(formatWithCommas(currentHoliday));
     setRateMonthlyLeaveHours(rate.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM);
+    setConstantsSubTab('baseRates');
+    setIsConstantFormOpen(true);
   };
 
   const handleCancelEditSeniority = () => {
@@ -3234,6 +3281,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSeniorityFiscalYear('');
     setSeniorityStartDate('');
     setSeniorityEndDate('');
+    setIsConstantFormOpen(false);
   };
 
   const handleSaveSeniorityRateRule = (e: React.FormEvent) => {
@@ -3247,24 +3295,19 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
 
-    const normStart = normalizeRateDateYMD(seniorityStartDate);
-    const normEnd = normalizeRateDateYMD(seniorityEndDate);
-    if ((seniorityStartDate.trim() && !normStart) || (seniorityEndDate.trim() && !normEnd)) {
-      alert('فرمت تاریخ شروع یا پایان بازه اعتبار معتبر نیست. لطفاً تاریخ را از انتخابگر شمسی انتخاب کنید.');
+    const rangeCheck = validateValidityRangeInActivePeriod(seniorityStartDate, seniorityEndDate, 'نرخ حق پایه سنوات');
+    if (rangeCheck.ok === false) {
+      alert(rangeCheck.message);
       return;
     }
-    if ((normStart && !normEnd) || (!normStart && normEnd)) {
-      alert('در صورت تعیین بازه زمانی اعتبار، لطفاً هر دو تاریخ «از تاریخ» و «تا تاریخ» را انتخاب کنید.');
-      return;
-    }
-    if (normStart && normEnd && normStart > normEnd) {
-      alert('تاریخ شروع اعتبار نمی‌تواند بزرگ‌تر از تاریخ پایان اعتبار باشد.');
-      return;
-    }
+    const normStart = rangeCheck.start;
+    const normEnd = rangeCheck.end;
 
-    const derivedFiscalYear = toEnglishDigits(String(seniorityFiscalYear)).trim() || (normStart ? normStart.slice(0, 4) : '');
-    if (!derivedFiscalYear) {
-      alert('لطفا سال مالی مربوطه یا بازه تاریخ اعتبار را وارد کنید.');
+    const derivedFiscalYear = toEnglishDigits(String(seniorityFiscalYear)).trim() || normStart.slice(0, 4);
+    const minActiveYr = activePeriodStartDate.slice(0, 4);
+    const maxActiveYr = activePeriodEndDate.slice(0, 4);
+    if (derivedFiscalYear < minActiveYr || derivedFiscalYear > maxActiveYr) {
+      alert(`سال مالی واردشده (${toPersianDigits(derivedFiscalYear)}) با بازه دوره کاری فعال سامانه «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) هم‌خوانی ندارد.`);
       return;
     }
 
@@ -3282,30 +3325,20 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       r => r.periodId === activePeriodId && r.id !== editingSeniorityId && r.seniorityYears === parsedYears
     );
 
-    if (normStart && normEnd) {
-      const overlapping = sameYearAndSeniorityRules.find(r => {
-        const rs = normalizeRateDateYMD(r.startDate);
-        const re = normalizeRateDateYMD(r.endDate);
-        if (rs && re) {
-          return !(normEnd < rs || normStart > re);
-        }
-        return toEnglishDigits(String(r.fiscalYear || '')).trim() === cleanFiscalYear;
-      });
-      if (overlapping) {
-        const overlapRange = overlapping.startDate && overlapping.endDate
-          ? `${toPersianDigits(overlapping.startDate)} تا ${toPersianDigits(overlapping.endDate)}`
-          : `کل سال ${toPersianDigits(overlapping.fiscalYear)}`;
-        alert(`بازه تاریخ انتخاب‌شده برای سابقه ${toPersianDigits(parsedYears)} سال با نرخ ثبت‌شده (${overlapRange}) همپوشانی دارد. لطفاً بازه غیرمتداخل انتخاب کنید یا رکورد قبلی را اصلاح نمایید.`);
-        return;
+    const overlapping = sameYearAndSeniorityRules.find(r => {
+      const rs = normalizeRateDateYMD(r.startDate);
+      const re = normalizeRateDateYMD(r.endDate);
+      if (rs && re) {
+        return !(normEnd < rs || normStart > re);
       }
-    } else {
-      const duplicate = sameYearAndSeniorityRules.some(
-        r => toEnglishDigits(String(r.fiscalYear || '')).trim() === cleanFiscalYear
-      );
-      if (duplicate) {
-        alert(`قبلا برای سابقه ${toPersianDigits(parsedYears)} سال در سال مالی ${toPersianDigits(cleanFiscalYear)} نرخ پایه سنوات روزانه ثبت شده است. برای ثبت چند نرخ در یک سال، بازه تاریخ اعتبار بدون همپوشانی تعیین کنید یا از ویرایش استفاده نمایید.`);
-        return;
-      }
+      return toEnglishDigits(String(r.fiscalYear || '')).trim() === cleanFiscalYear;
+    });
+    if (overlapping) {
+      const overlapRange = overlapping.startDate && overlapping.endDate
+        ? `${toPersianDigits(overlapping.startDate)} تا ${toPersianDigits(overlapping.endDate)}`
+        : `کل سال ${toPersianDigits(overlapping.fiscalYear)}`;
+      alert(`بازه تاریخ انتخاب‌شده برای سابقه ${toPersianDigits(parsedYears)} سال با نرخ ثبت‌شده (${overlapRange}) همپوشانی دارد. لطفاً بازه غیرمتداخل انتخاب کنید یا رکورد قبلی را اصلاح نمایید.`);
+      return;
     }
 
     const newRule: SeniorityRateRule = {
@@ -3355,6 +3388,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSeniorityFiscalYear(rule.fiscalYear);
     setSeniorityStartDate(rule.startDate || '');
     setSeniorityEndDate(rule.endDate || '');
+    setConstantsSubTab('seniority');
+    setIsConstantFormOpen(true);
   };
 
   const WEEKDAYS = useMemo(() => ['شنبه', 'یک‌شنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه'], []);
@@ -8319,6 +8354,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSectionEndTime('');
     setSectionCanBeEmpty(false);
     setSectionDeptId('');
+    setIsSectionFormOpen(false);
   };
 
   const handleEditSectionClick = (sec: any) => {
@@ -8329,6 +8365,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSectionEndTime(sec.endTime || '۱۴:۰۰');
     setSectionCanBeEmpty(!!sec.canBeEmpty);
     setSectionDeptId(sec.departmentCategoryId || '');
+    setIsSectionFormOpen(true);
   };
 
   const handleDeleteSection = (id: string) => {
@@ -9126,25 +9163,34 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   };
 
   // ====== STATE FOR INSURED SALARY ITEMS RULES ======
-  const [insuredItemStartDate, setInsuredItemStartDate] = useState<string>('1403/01/01');
-  const [insuredItemEndDate, setInsuredItemEndDate] = useState<string>('1403/12/29');
+  const [insuredItemStartDate, setInsuredItemStartDate] = useState<string>(activePeriodStartDate);
+  const [insuredItemEndDate, setInsuredItemEndDate] = useState<string>(activePeriodEndDate);
   const [insuredItemKey, setInsuredItemKey] = useState<string>('dailyBaseSalary');
   const [insuredItemCustomName, setInsuredItemCustomName] = useState<string>('');
   const [editingInsuredItemId, setEditingInsuredItemId] = useState<string | null>(null);
 
   // ====== STATE FOR LEAVE BUYOUT SALARY ITEMS RULES ======
-  const [leaveBuyoutItemStartDate, setLeaveBuyoutItemStartDate] = useState<string>('1403/01/01');
-  const [leaveBuyoutItemEndDate, setLeaveBuyoutItemEndDate] = useState<string>('1403/12/29');
+  const [leaveBuyoutItemStartDate, setLeaveBuyoutItemStartDate] = useState<string>(activePeriodStartDate);
+  const [leaveBuyoutItemEndDate, setLeaveBuyoutItemEndDate] = useState<string>(activePeriodEndDate);
   const [leaveBuyoutItemKey, setLeaveBuyoutItemKey] = useState<string>('dailyBaseSalary');
   const [leaveBuyoutItemCustomName, setLeaveBuyoutItemCustomName] = useState<string>('');
   const [editingLeaveBuyoutItemId, setEditingLeaveBuyoutItemId] = useState<string | null>(null);
 
   // ====== STATE FOR TAXABLE SALARY ITEMS RULES ======
-  const [taxableItemStartDate, setTaxableItemStartDate] = useState<string>('1403/01/01');
-  const [taxableItemEndDate, setTaxableItemEndDate] = useState<string>('1403/12/29');
+  const [taxableItemStartDate, setTaxableItemStartDate] = useState<string>(activePeriodStartDate);
+  const [taxableItemEndDate, setTaxableItemEndDate] = useState<string>(activePeriodEndDate);
   const [taxableItemKey, setTaxableItemKey] = useState<string>('dailyBaseSalary');
   const [taxableItemCustomName, setTaxableItemCustomName] = useState<string>('');
   const [editingTaxableItemId, setEditingTaxableItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setInsuredItemStartDate(activePeriodStartDate);
+    setInsuredItemEndDate(activePeriodEndDate);
+    setLeaveBuyoutItemStartDate(activePeriodStartDate);
+    setLeaveBuyoutItemEndDate(activePeriodEndDate);
+    setTaxableItemStartDate(activePeriodStartDate);
+    setTaxableItemEndDate(activePeriodEndDate);
+  }, [activePeriodId, activePeriodStartDate, activePeriodEndDate]);
 
   const INSURED_ITEM_OPTIONS = [
     { key: 'dailyBaseSalary', defaultLabel: 'حقوق پایه روزانه' },
@@ -9268,17 +9314,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     e.preventDefault();
     if (!insuredItemKey) return;
 
-    if (!insuredItemStartDate.trim() || !insuredItemEndDate.trim()) {
-      alert('لطفاً هر دو تاریخ شروع و پایان بازه اعتبار آیتم مشمول بیمه را وارد کنید.');
+    const rangeCheck = validateValidityRangeInActivePeriod(insuredItemStartDate, insuredItemEndDate, 'آیتم مشمول بیمه');
+    if (rangeCheck.ok === false) {
+      alert(rangeCheck.message);
       return;
     }
 
-    const sDate = normalizeDateStr(insuredItemStartDate);
-    const eDate = normalizeDateStr(insuredItemEndDate);
-    if (sDate > eDate) {
-      alert('تاریخ شروع دوره نمی‌تواند بزرگتر از تاریخ پایان دوره باشد.');
-      return;
-    }
+    const sDate = rangeCheck.start;
+    const eDate = rangeCheck.end;
 
     const matchedOption = INSURED_ITEM_OPTIONS.find(opt => opt.key === insuredItemKey);
     const label = insuredItemCustomName.trim() || matchedOption?.defaultLabel || insuredItemKey;
@@ -9319,6 +9362,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setEditingInsuredItemId(null);
     setInsuredItemKey('dailyBaseSalary');
     setInsuredItemCustomName('');
+    setIsConstantFormOpen(false);
     alert(editingInsuredItemId ? 'آیتم مشمول بیمه با موفقیت ویرایش شد.' : 'آیتم مشمول بیمه جدید با موفقیت ثبت شد.');
   };
 
@@ -9330,6 +9374,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setInsuredItemEndDate(eDate);
     setInsuredItemKey(item.itemKey);
     setInsuredItemCustomName(item.itemName);
+    setConstantsSubTab('insured');
+    setIsConstantFormOpen(true);
   };
 
   const handleDeleteInsuredItem = (id: string) => {
@@ -9351,17 +9397,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     e.preventDefault();
     if (!leaveBuyoutItemKey) return;
 
-    if (!leaveBuyoutItemStartDate.trim() || !leaveBuyoutItemEndDate.trim()) {
-      alert('لطفاً هر دو تاریخ شروع و پایان بازه اعتبار آیتم مشمول بازخرید مرخصی را وارد کنید.');
+    const rangeCheck = validateValidityRangeInActivePeriod(leaveBuyoutItemStartDate, leaveBuyoutItemEndDate, 'آیتم مشمول بازخرید مرخصی');
+    if (rangeCheck.ok === false) {
+      alert(rangeCheck.message);
       return;
     }
 
-    const sDate = normalizeDateStr(leaveBuyoutItemStartDate);
-    const eDate = normalizeDateStr(leaveBuyoutItemEndDate);
-    if (sDate > eDate) {
-      alert('تاریخ شروع دوره نمی‌تواند بزرگتر از تاریخ پایان دوره باشد.');
-      return;
-    }
+    const sDate = rangeCheck.start;
+    const eDate = rangeCheck.end;
 
     const matchedOption = INSURED_ITEM_OPTIONS.find(opt => opt.key === leaveBuyoutItemKey);
     const label = leaveBuyoutItemCustomName.trim() || matchedOption?.defaultLabel || leaveBuyoutItemKey;
@@ -9402,6 +9445,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setEditingLeaveBuyoutItemId(null);
     setLeaveBuyoutItemKey('dailyBaseSalary');
     setLeaveBuyoutItemCustomName('');
+    setIsConstantFormOpen(false);
     alert(editingLeaveBuyoutItemId ? 'آیتم مشمول بازخرید مرخصی با موفقیت ویرایش شد.' : 'آیتم مشمول بازخرید مرخصی جدید با موفقیت ثبت شد.');
   };
 
@@ -9413,6 +9457,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setLeaveBuyoutItemEndDate(eDate);
     setLeaveBuyoutItemKey(item.itemKey);
     setLeaveBuyoutItemCustomName(item.itemName);
+    setConstantsSubTab('leaveBuyout');
+    setIsConstantFormOpen(true);
   };
 
   const handleDeleteLeaveBuyoutItem = (id: string) => {
@@ -9433,17 +9479,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const handleSaveTaxableItem = () => {
     if (!taxableItemKey) return;
 
-    if (!taxableItemStartDate.trim() || !taxableItemEndDate.trim()) {
-      alert('لطفاً هر دو تاریخ شروع و پایان بازه اعتبار آیتم مشمول مالیات را وارد کنید.');
+    const rangeCheck = validateValidityRangeInActivePeriod(taxableItemStartDate, taxableItemEndDate, 'آیتم مشمول مالیات');
+    if (rangeCheck.ok === false) {
+      alert(rangeCheck.message);
       return;
     }
 
-    const sDate = normalizeDateStr(taxableItemStartDate);
-    const eDate = normalizeDateStr(taxableItemEndDate);
-    if (sDate > eDate) {
-      alert('تاریخ شروع دوره نمی‌تواند بزرگتر از تاریخ پایان دوره باشد.');
-      return;
-    }
+    const sDate = rangeCheck.start;
+    const eDate = rangeCheck.end;
 
     const defaultName = TAXABLE_ITEM_OPTIONS.find(o => o.key === taxableItemKey)?.defaultLabel || taxableItemKey;
 
@@ -9484,6 +9527,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setEditingTaxableItemId(null);
     setTaxableItemKey('dailyBaseSalary');
     setTaxableItemCustomName('');
+    setIsConstantFormOpen(false);
     alert(editingTaxableItemId ? 'آیتم مشمول مالیات با موفقیت ویرایش شد.' : 'آیتم مشمول مالیات جدید با موفقیت ثبت شد.');
   };
 
@@ -9495,6 +9539,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setTaxableItemEndDate(eDate);
     setTaxableItemKey(item.itemKey);
     setTaxableItemCustomName(item.itemName);
+    setConstantsSubTab('taxable');
+    setIsConstantFormOpen(true);
   };
 
   const handleDeleteTaxableItem = (id: string) => {
@@ -9808,6 +9854,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConJobAllowance('');
     setConRole('');
     setConNotes('');
+    setIsContractFormOpen(false);
 
     if (hasCodeChanged) {
       alert(`قرارداد با موفقیت ثبت شد و کد پرسنلی با موفقیت از «${toPersianDigits(oldEmpCode)}» به «${toPersianDigits(targetEmpCode)}» تغییر یافت.\n\nکلیه ارجاعات در پرونده پرسنلی، قراردادها، تخصیص بخش‌ها، سوابق تردد حضور و غیاب، و فیش‌های حقوقی به طور خودکار اصلاح و همگام‌سازی شدند.`);
@@ -9865,6 +9912,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConRole(c.role || '');
     setConNotes(c.notes || '');
     setConIsActive(c.isActive !== undefined ? Boolean(c.isActive) : isContractActive(c, db.personnelContracts || []));
+    setIsContractFormOpen(true);
   };
 
   const handleRecalculateContractSalary = () => {
@@ -9889,7 +9937,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }
   };
 
-  const handleNewContract = () => {
+  const resetContractFormFields = () => {
     setEditContractId(null);
     setSelContractEmpCode('');
     setConEmployeeCode('');
@@ -9908,7 +9956,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConRole('');
     setConNotes('');
     setConIsActive(true);
-    alert('فرم قرارداد جهت تعریف قرارداد جدید بازنشانی شد.');
+  };
+
+  const handleNewContract = () => {
+    resetContractFormFields();
+    setIsContractFormOpen(true);
   };
 
   const handleToggleContractActive = (id: string) => {
@@ -11211,6 +11263,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const updatedRates = [...(db.salaryBaseRates || [])];
       const nextImportRateId = createSimpleIdGenerator(updatedRates, getPrefixForCollection('salaryBaseRates'));
       let importCount = 0;
+      let skippedOutOfPeriodCount = 0;
 
       const headerRow = (rows[0] || []).map(h => String(h || '').trim());
       const hasPeriodCols = headerRow.some(h => h.includes('از تاریخ') || h.includes('عنوان دوره'));
@@ -11243,6 +11296,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           sStartDate = normalizeRateDateYMD(String(row[offset + 2] || ''));
           sEndDate = normalizeRateDateYMD(String(row[offset + 3] || ''));
           numShift = 3;
+        }
+
+        const minActiveYr = activePeriodStartDate.slice(0, 4);
+        const maxActiveYr = activePeriodEndDate.slice(0, 4);
+        if (sStartDate && sEndDate) {
+          if (sStartDate > sEndDate || sStartDate < activePeriodStartDate || sEndDate > activePeriodEndDate) {
+            skippedOutOfPeriodCount++;
+            return;
+          }
+        } else {
+          if (sYear < minActiveYr || sYear > maxActiveYr) {
+            skippedOutOfPeriodCount++;
+            return;
+          }
+          sStartDate = activePeriodStartDate;
+          sEndDate = activePeriodEndDate;
         }
 
         const baseIdx = offset + numShift;
@@ -11303,7 +11372,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         ...db,
         salaryBaseRates: updatedRates
       });
-      alert(`${importCount} رکورد قوانین و ثوابت حقوق دستمزد از فایل اکسل/CSV با موفقیت بارگذاری شد.`);
+      if (skippedOutOfPeriodCount > 0) {
+        alert(`${toPersianDigits(importCount)} رکورد بارگذاری شد و ${toPersianDigits(skippedOutOfPeriodCount)} رکورد به دلیل قرار داشتن خارج از بازه دوره کاری فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) نادیده گرفته شد.`);
+      } else {
+        alert(`${toPersianDigits(importCount)} رکورد قوانین و ثوابت حقوق دستمزد از فایل اکسل/CSV با موفقیت بارگذاری شد.`);
+      }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -12486,11 +12559,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       <ModulePrimaryTabs
         tabs={[
-          { id: 'employees', label: 'پرونده پرسنل و دسته‌بندی‌ها', icon: <Users className="h-4 w-4" /> },
           { id: 'payroll', label: 'محاسبه حقوق و تسهیم دستمزد', icon: <FileSpreadsheet className="h-4 w-4" /> },
-          { id: 'payrollConstants', label: 'قوانین و ثوابت دستمزد', icon: <DollarSign className="h-4 w-4" /> },
+          { id: 'employees', label: 'پرونده پرسنل', icon: <Users className="h-4 w-4" /> },
           { id: 'contracts', label: 'قراردادهای پرسنلی', icon: <FileCheck className="h-4 w-4" /> },
-          { id: 'settlement', label: 'تسویه حساب پرسنل', icon: <Receipt className="h-4 w-4" /> },
+          { id: 'settlement', label: 'تسویه حساب', icon: <Receipt className="h-4 w-4" /> },
+          { id: 'payrollConstants', label: 'قوانین و ثوابت دستمزد', icon: <DollarSign className="h-4 w-4" /> },
           { id: 'attendanceSettings', label: 'تنظیمات حقوق و دستمزد', icon: <Settings className="h-4 w-4" /> }
         ]}
         activeId={activeTab}
@@ -14489,179 +14562,235 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 {/* COLUMN 1: SHIFT CRUD & DEPARTMENTS VIEW */}
                 <div className="space-y-6 lg:col-span-1">
                   
-                  {/* LIST OF INDEPENDENT PRODUCTION SECTIONS */}
-                  <div className="bg-slate-955 p-5 rounded-3xl border border-slate-800 space-y-4 shadow-xl">
-                    <div className="border-b border-slate-850 pb-3">
-                      <h3 className="text-xs font-black text-white flex items-center gap-1.5">
-                        <span className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-500">
-                          <Briefcase className="h-4 w-4" />
-                        </span>
-                        {editingSectionId ? 'اصلاح شیفت‌های بخش‌های مستقل تولید' : 'تعریف شیفت‌های بخش‌های مستقل تولید'}
-                      </h3>
-                      <p className="text-[9px] text-slate-500 mt-1 leading-relaxed">بخش‌های تولیدی مشترک بین ماه‌ها که ملاک زمان‌بندی و حداقل کادر می‌باشند.</p>
+                  {/* LIST / FORM OF INDEPENDENT PRODUCTION SECTIONS */}
+                  <div className="bg-slate-900/95 p-5 rounded-3xl border border-slate-800 space-y-4 shadow-xl">
+                    <div className="flex items-start justify-between gap-2 border-b border-slate-800 pb-3.5">
+                      <div>
+                        <h3 className="text-xs font-black text-white flex items-center gap-1.5">
+                          <span className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-400 border border-emerald-500/20">
+                            <Briefcase className="h-4 w-4" />
+                          </span>
+                          {isSectionFormOpen
+                            ? (editingSectionId ? 'اصلاح شیفت بخش مستقل تولید' : 'افزودن بخش مستقل تولید جدید')
+                            : 'تعریف شیفت‌های بخش‌های مستقل تولید'}
+                        </h3>
+                        <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                          بخش‌های تولیدی مشترک بین ماه‌ها که ملاک زمان‌بندی و حداقل کادر می‌باشند.
+                        </p>
+                      </div>
+                      {!isSectionFormOpen ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingSectionId(null);
+                            setSectionName('');
+                            setSectionMinStaff(1);
+                            setSectionStartTime('');
+                            setSectionEndTime('');
+                            setSectionCanBeEmpty(false);
+                            setSectionDeptId('');
+                            setIsSectionFormOpen(true);
+                          }}
+                          className="shrink-0 bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-md shadow-rose-900/30 cursor-pointer"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          افزودن بخش
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingSectionId(null);
+                            setSectionName('');
+                            setSectionMinStaff(1);
+                            setSectionStartTime('');
+                            setSectionEndTime('');
+                            setSectionCanBeEmpty(false);
+                            setSectionDeptId('');
+                            setIsSectionFormOpen(false);
+                          }}
+                          className="shrink-0 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer"
+                        >
+                          <ArrowRight className="h-3.5 w-3.5" />
+                          بازگشت
+                        </button>
+                      )}
                     </div>
 
-                    <form onSubmit={handleSaveSection} className="space-y-3 bg-slate-950/40 p-3 rounded-2xl border border-slate-850">
-                      <div>
-                        <label htmlFor="section-name-inp" className="block text-[10px] font-bold text-slate-450 mb-1">نام بخش مستقل تولید</label>
-                        <input
-                          id="section-name-inp"
-                          type="text"
-                          className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-100 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                          placeholder="مانند: بخش پخت و تنور"
-                          value={sectionName}
-                          onChange={(e) => setSectionName(e.target.value)}
-                          required
-                          onFocus={handleFocus}
-                        />
-                      </div>
-
-                      <div>
-                        <label htmlFor="section-dept-inp" className="block text-[10px] font-bold text-slate-450 mb-1">انتساب به دپارتمان تولید (خط تولید)</label>
-                        <select
-                          id="section-dept-inp"
-                          className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-100 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-                          value={sectionDeptId || ''}
-                          onChange={(e) => setSectionDeptId(e.target.value)}
-                        >
-                          <option value="">-- بدون انتساب دپارتمان --</option>
-                          {categories.map(cat => (
-                            <option key={cat.id} value={cat.id}>دپارتمان خط تولید {cat.name}</option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label htmlFor="section-min-inp" className="block text-[10px] font-bold text-slate-450 mb-1">حداقل نفرات مورد نیاز (پایش خطا)</label>
-                        <input
-                          id="section-min-inp"
-                          type="number"
-                          min="1"
-                          className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-center rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                          value={sectionMinStaff}
-                          onChange={(e) => setSectionMinStaff(Math.max(1, Number(e.target.value) || 1))}
-                          required
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
+                    {isSectionFormOpen ? (
+                      <form onSubmit={handleSaveSection} className="space-y-3 bg-slate-950/50 p-4 rounded-2xl border border-slate-800 animate-fadeIn">
                         <div>
-                          <label htmlFor="sec-start-inp" className="block text-[10px] font-bold text-slate-450 mb-1">ساعت شروع بخش</label>
+                          <label htmlFor="section-name-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1">نام بخش مستقل تولید</label>
                           <input
-                            id="sec-start-inp"
+                            id="section-name-inp"
                             type="text"
-                            className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-left rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            placeholder="۰۶:۰۰"
-                            value={sectionStartTime}
-                            onChange={(e) => setSectionStartTime(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 text-slate-100 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            placeholder="مانند: بخش پخت و تنور"
+                            value={sectionName}
+                            onChange={(e) => setSectionName(e.target.value)}
                             required
                             onFocus={handleFocus}
                           />
                         </div>
+
                         <div>
-                          <label htmlFor="sec-end-inp" className="block text-[10px] font-bold text-slate-450 mb-1">ساعت پایان بخش</label>
+                          <label htmlFor="section-dept-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1">انتساب به دپارتمان تولید (خط تولید)</label>
+                          <select
+                            id="section-dept-inp"
+                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 text-slate-100 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                            value={sectionDeptId || ''}
+                            onChange={(e) => setSectionDeptId(e.target.value)}
+                          >
+                            <option value="">-- بدون انتساب دپارتمان --</option>
+                            {categories.map(cat => (
+                              <option key={cat.id} value={cat.id}>دپارتمان خط تولید {cat.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label htmlFor="section-min-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1">حداقل نفرات مورد نیاز (پایش خطا)</label>
                           <input
-                            id="sec-end-inp"
-                            type="text"
-                            className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-left rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            placeholder="۱۴:۰۰"
-                            value={sectionEndTime}
-                            onChange={(e) => setSectionEndTime(e.target.value)}
+                            id="section-min-inp"
+                            type="number"
+                            min="1"
+                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-center rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            value={sectionMinStaff}
+                            onChange={(e) => setSectionMinStaff(Math.max(1, Number(e.target.value) || 1))}
                             required
-                            onFocus={handleFocus}
                           />
                         </div>
-                      </div>
 
-                      <div className="flex items-center gap-2 py-1 select-none">
-                        <input
-                          id="section-empty-cb"
-                          type="checkbox"
-                          className="rounded border-slate-800 bg-slate-950 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5 cursor-pointer accent-emerald-500"
-                          checked={sectionCanBeEmpty}
-                          onChange={(e) => setSectionCanBeEmpty(e.target.checked)}
-                        />
-                        <label htmlFor="section-empty-cb" className="text-[10px] font-bold text-slate-400 cursor-pointer">
-                          این بخش می‌تواند در روز نفر/کادر نداشته باشد (خالی بماند)
-                        </label>
-                      </div>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div>
+                            <label htmlFor="sec-start-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1">ساعت شروع بخش</label>
+                            <input
+                              id="sec-start-inp"
+                              type="text"
+                              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-left rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              placeholder="۰۶:۰۰"
+                              value={sectionStartTime}
+                              onChange={(e) => setSectionStartTime(e.target.value)}
+                              required
+                              onFocus={handleFocus}
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor="sec-end-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1">ساعت پایان بخش</label>
+                            <input
+                              id="sec-end-inp"
+                              type="text"
+                              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 text-slate-100 font-mono text-left rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              placeholder="۱۴:۰۰"
+                              value={sectionEndTime}
+                              onChange={(e) => setSectionEndTime(e.target.value)}
+                              required
+                              onFocus={handleFocus}
+                            />
+                          </div>
+                        </div>
 
-                      <div className="flex gap-2 pt-1 animate-scaleIn">
-                        {editingSectionId && (
+                        <div className="flex items-center gap-2 py-1 select-none">
+                          <input
+                            id="section-empty-cb"
+                            type="checkbox"
+                            className="rounded border-slate-700 bg-slate-950 text-emerald-600 focus:ring-emerald-500 h-4 w-4 cursor-pointer accent-emerald-500"
+                            checked={sectionCanBeEmpty}
+                            onChange={(e) => setSectionCanBeEmpty(e.target.checked)}
+                          />
+                          <label htmlFor="section-empty-cb" className="text-[10.5px] font-bold text-slate-300 cursor-pointer">
+                            این بخش می‌تواند در روز نفر/کادر نداشته باشد (خالی بماند)
+                          </label>
+                        </div>
+
+                        <div className="flex gap-2 pt-2 border-t border-slate-800">
                           <button
                             type="button"
                             onClick={() => {
                               setEditingSectionId(null);
                               setSectionName('');
                               setSectionMinStaff(1);
+                              setSectionStartTime('');
+                              setSectionEndTime('');
                               setSectionCanBeEmpty(false);
+                              setSectionDeptId('');
+                              setIsSectionFormOpen(false);
                             }}
-                            className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                            className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border border-slate-700"
                           >
-                            انصراف
+                            انصراف و بازگشت
                           </button>
-                        )}
-                        <button
-                          type="submit"
-                          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded-lg text-[10px] font-bold transition-all flex justify-center items-center gap-1 cursor-pointer"
-                        >
-                          {editingSectionId ? 'به‌روزرسانی' : 'افزودن بخش'}
-                        </button>
-                      </div>
-                    </form>
-
-                    <div className="space-y-2 pt-1">
-                      <span className="block text-[10px] text-slate-450 font-bold">بخش‌های مستقل کارگاه و حداقل نیرو:</span>
-                      <div className="max-h-[180px] overflow-y-auto space-y-1.5 pr-1">
-                        {productionSectionsList.map(sec => {
-                          const capableCount = personnel.filter(p => isEmployeeEligibleForMonth(p, Number(calcYear), Number(calcMonth)) && isCapable(p, sec.id)).length;
-                          const dept = categories.find(c => c.id === sec.departmentCategoryId);
-                          return (
-                            <div key={sec.id} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-all hover:border-slate-700">
-                              <div>
-                                <span className="font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
-                                  {sec.name}
-                                  {sec.canBeEmpty && (
-                                    <span className="px-1.5 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[8px] rounded font-extrabold">
-                                      امکان خالی ماندن
+                          <button
+                            type="submit"
+                            className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2 rounded-xl text-xs font-bold transition-all flex justify-center items-center gap-1 cursor-pointer shadow-md"
+                          >
+                            {editingSectionId ? 'ذخیره تغییرات' : 'ثبت بخش تولیدی'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between text-[10.5px] text-slate-400 font-bold">
+                          <span>بخش‌های مستقل کارگاه و حداقل نیرو ({toPersianDigits(productionSectionsList.length)})</span>
+                        </div>
+                        {productionSectionsList.length === 0 ? (
+                          <div className="bg-slate-950/60 p-6 rounded-2xl border border-dashed border-slate-800 text-center space-y-2">
+                            <p className="text-xs text-slate-400 font-bold">هنوز هیچ بخش مستقل تولیدی تعریف نشده است.</p>
+                            <p className="text-[10px] text-slate-500">برای ایجاد اولین بخش، روی دکمه «افزودن بخش» کلیک کنید.</p>
+                          </div>
+                        ) : (
+                          <div className="max-h-[420px] overflow-y-auto space-y-2 pr-0.5">
+                            {productionSectionsList.map(sec => {
+                              const capableCount = personnel.filter(p => isEmployeeEligibleForMonth(p, Number(calcYear), Number(calcMonth)) && isCapable(p, sec.id)).length;
+                              const dept = categories.find(c => c.id === sec.departmentCategoryId);
+                              return (
+                                <div key={sec.id} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between gap-2 text-xs transition-all hover:border-slate-700">
+                                  <div>
+                                    <span className="font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
+                                      {sec.name}
+                                      {sec.canBeEmpty && (
+                                        <span className="px-1.5 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[9px] rounded font-extrabold">
+                                          امکان خالی ماندن
+                                        </span>
+                                      )}
+                                      {dept && (
+                                        <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] rounded font-extrabold">
+                                          دپارتمان: {dept.name}
+                                        </span>
+                                      )}
                                     </span>
-                                  )}
-                                  {dept && (
-                                    <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[8px] rounded font-extrabold">
-                                      دپارتمان: {dept.name}
-                                    </span>
-                                  )}
-                                </span>
-                                <div className="flex flex-col gap-0.5 mt-0.5 text-[9px] text-slate-500">
-                                  <div className="flex items-center gap-2">
-                                    <span>حداقل نیرو: <strong className="text-amber-500 font-bold">{sec.minStaff} نفر</strong></span>
-                                    <span>•</span>
-                                    <span>{capableCount} پرسنل توانا</span>
+                                    <div className="flex flex-col gap-0.5 mt-1 text-[10px] text-slate-400">
+                                      <div className="flex items-center gap-2">
+                                        <span>حداقل نیرو: <strong className="text-amber-400 font-bold">{toPersianDigits(sec.minStaff)} نفر</strong></span>
+                                        <span>•</span>
+                                        <span>{toPersianDigits(capableCount)} پرسنل توانا</span>
+                                      </div>
+                                      <span className="text-[9.5px] text-emerald-400 font-bold">بازه کاری بخش: {toPersianDigits(sec.startTime || '۰۶:۰۰')} تا {toPersianDigits(sec.endTime || '۱۴:۰۰')}</span>
+                                    </div>
                                   </div>
-                                  <span className="text-[8.5px] text-emerald-400 font-bold">بازه کاری بخش: {sec.startTime || '۰۶:۰۰'} تا {sec.endTime || '۱۴:۰۰'}</span>
+                                  <div className="flex gap-1.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditSectionClick(sec)}
+                                      className="text-slate-300 hover:text-white text-[10px] px-2.5 py-1 bg-slate-900 border border-slate-700 rounded-lg hover:bg-slate-800 transition-all font-bold cursor-pointer"
+                                    >
+                                      اصلاح
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSection(sec.id)}
+                                      className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-950/20 rounded-lg border border-rose-900/30 hover:bg-rose-950/45 transition-all cursor-pointer"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="flex gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleEditSectionClick(sec)}
-                                  className="text-slate-400 hover:text-white text-[9.5px] px-1.5 py-0.5 bg-slate-900 border border-slate-800 rounded hover:bg-slate-800 transition-all font-bold cursor-pointer"
-                                >
-                                  اصلاح
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteSection(sec.id)}
-                                  className="text-rose-400 hover:text-rose-300 text-[10px] p-1 bg-rose-950/20 rounded border border-rose-900/30 hover:bg-rose-950/45 transition-all text-xs cursor-pointer"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    )}
                   </div>
 
                 </div>
@@ -16703,74 +16832,201 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         </div>
       )}
 
-      {activeTab === 'payrollConstants' && (
+      {activeTab === 'payrollConstants' && (() => {
+        const scopedInsuredItems = (() => {
+          const scoped = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+          return scoped.length > 0 ? scoped : (db.insuredSalaryItems || []);
+        })();
+        const scopedLeaveBuyoutItems = (db.leaveBuyoutSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+        const scopedTaxableItems = (() => {
+          const scoped = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
+          return scoped.length > 0 ? scoped : (db.taxableSalaryItems || []);
+        })();
+
+        const closeConstantForm = () => {
+          setIsConstantFormOpen(false);
+          if (editingRateId) handleCancelEditRate();
+          if (editingSeniorityId) handleCancelEditSeniority();
+          setEditingInsuredItemId(null);
+          setEditingLeaveBuyoutItemId(null);
+          setEditingTaxableItemId(null);
+        };
+
+        const openNewConstantForm = () => {
+          if (constantsSubTab === 'baseRates') {
+            handleCancelEditRate();
+            setIsConstantFormOpen(true);
+          } else if (constantsSubTab === 'insured') {
+            setEditingInsuredItemId(null);
+            setInsuredItemKey('dailyBaseSalary');
+            setInsuredItemCustomName('');
+            setInsuredItemStartDate(activePeriodStartDate);
+            setInsuredItemEndDate(activePeriodEndDate);
+            setIsConstantFormOpen(true);
+          } else if (constantsSubTab === 'leaveBuyout') {
+            setEditingLeaveBuyoutItemId(null);
+            setLeaveBuyoutItemKey('dailyBaseSalary');
+            setLeaveBuyoutItemCustomName('');
+            setLeaveBuyoutItemStartDate(activePeriodStartDate);
+            setLeaveBuyoutItemEndDate(activePeriodEndDate);
+            setIsConstantFormOpen(true);
+          } else if (constantsSubTab === 'taxable') {
+            setEditingTaxableItemId(null);
+            setTaxableItemKey('dailyBaseSalary');
+            setTaxableItemCustomName('');
+            setTaxableItemStartDate(activePeriodStartDate);
+            setTaxableItemEndDate(activePeriodEndDate);
+            setIsConstantFormOpen(true);
+          } else if (constantsSubTab === 'seniority') {
+            handleCancelEditSeniority();
+            setSeniorityFiscalYear(toPersianDigits(activePeriodStartDate.slice(0, 4)));
+            setSeniorityStartDate(activePeriodStartDate);
+            setSeniorityEndDate(activePeriodEndDate);
+            setIsConstantFormOpen(true);
+          }
+        };
+
+        const addConstantLabelMap: Record<typeof constantsSubTab, string> = {
+          baseRates: 'افزودن ثوابت جدید',
+          insured: 'افزودن آیتم مشمول بیمه',
+          leaveBuyout: 'افزودن آیتم بازخرید مرخصی',
+          taxable: 'افزودن آیتم مشمول مالیات',
+          seniority: 'افزودن نرخ پایه سنوات'
+        };
+
+        return (
         <div className="space-y-6 animate-fade-in text-slate-100 font-sans" dir="rtl">
           
-          {/* Header Description */}
-          <div className="bg-gradient-to-r from-rose-955/30 to-slate-900/60 p-5 rounded-2xl border border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-black text-rose-500 mb-1 flex items-center gap-1.5">
-                <span className="p-1 bg-rose-500/10 rounded-md"><DollarSign className="h-4 w-4" /></span>
-                تعریف ثوابت، قوانین و آیتم‌های پایه حقوق
-              </h3>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                در این بخش می‌توانید مبالغ مرجع، ضرایب قانونی و تعهدات بیمه‌ای دوره را به تفکیک سال ثبت، ویرایش، حذف و جستجو نمایید. این تعاریف به صورت ثوابت محاسباتی مرجع در نظام حقوق استفاده می‌شوند.
-              </p>
+          {/* Header Description & Primary Action */}
+          <div className="bg-slate-900/95 p-5 rounded-3xl border border-slate-800 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-rose-500/10 rounded-xl text-rose-500 border border-rose-500/20">
+                <DollarSign className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white">تعریف ثوابت، قوانین و آیتم‌های پایه حقوق</h3>
+                <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                  مدیریت مبالغ مرجع، اقلام مشمول بیمه، بازخرید مرخصی، مالیات حقوق و نرخ پایه سنوات دوره کاری فعال
+                </p>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => exportSalaryBaseRatesToExcel(db.salaryBaseRates || [])}
-                className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-600 text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1 font-bold shadow-xs"
-                title="دانلود فایل رسمی اکسل (.xlsx) قوانین و ثوابت دستمزد"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel ثوابت (.xlsx)
-              </button>
-              
-              <label 
-                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1 font-bold shadow-xs"
-                title="بارگذاری قوانین و ثوابت از فایل اکسل (.xlsx) یا متنی (.csv)"
-              >
-                <Download className="h-3.5 w-3.5" /> ورودی Excel/CSV ثوابت
-                <input
-                  type="file"
-                  accept=".xlsx, .xls, .csv"
-                  onChange={importSalaryBaseRatesCSV}
-                  className="hidden"
-                />
-              </label>
+            <div className="flex flex-wrap items-center gap-2 self-stretch md:self-auto">
+              {!isConstantFormOpen && constantsSubTab === 'baseRates' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => exportSalaryBaseRatesToExcel(db.salaryBaseRates || [])}
+                    className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-600 text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs"
+                    title="دانلود فایل رسمی اکسل (.xlsx) قوانین و ثوابت دستمزد"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5" /> خروجی Excel
+                  </button>
+                  
+                  <label 
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs"
+                    title="بارگذاری قوانین و ثوابت از فایل اکسل (.xlsx) یا متنی (.csv)"
+                  >
+                    <Download className="h-3.5 w-3.5" /> ورودی Excel/CSV
+                    <input
+                      type="file"
+                      accept=".xlsx, .xls, .csv"
+                      onChange={importSalaryBaseRatesCSV}
+                      className="hidden"
+                    />
+                  </label>
 
-              {!editingRateId && getPreviousPeriodId() && (
-                <button
-                  type="button"
-                  onClick={handleCopySalaryBaseRatesFromPreviousPeriod}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30"
-                >
-                  <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی قوانین از دوره قبل
-                </button>
+                  {getPreviousPeriodId() && (
+                    <button
+                      type="button"
+                      onClick={handleCopySalaryBaseRatesFromPreviousPeriod}
+                      className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30"
+                    >
+                      <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی از دوره قبل
+                    </button>
+                  )}
+                </>
               )}
 
-              {editingRateId && (
-                <button 
-                  onClick={handleCancelEditRate}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl transition-all cursor-pointer flex items-center gap-1 font-bold"
+              {!isConstantFormOpen ? (
+                <button
+                  type="button"
+                  onClick={openNewConstantForm}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md shadow-rose-900/30"
                 >
-                  <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> انصراف از اصلاح سال {toPersianDigits(rateYear)}
+                  <Plus className="h-4 w-4" />
+                  {addConstantLabelMap[constantsSubTab]}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={closeConstantForm}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold border border-slate-700"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                  بازگشت به لیست
                 </button>
               )}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Right: Add/Edit Form Card */}
-            <div className="lg:col-span-1 space-y-6">
-              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
-                <h4 className="text-xs font-black text-slate-800 border-b border-slate-100 pb-3 flex items-center gap-1.5">
-                  <span className="p-1.5 bg-rose-50 rounded-lg text-rose-600">
-                    <Plus className="h-4 w-4" />
-                  </span>
-                  {editingRateId ? `اصلاح ثوابت ${rateTitle ? `«${rateTitle}»` : `سال ${toPersianDigits(rateYear)}`}` : 'ثبت ثوابت و آیتم‌های جدید دستمزد'}
-                </h4>
+          {/* 5 Sub-Tabs Navigation Bar */}
+          <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
+            {[
+              { id: 'baseRates' as const, label: 'ثوابت پایه دستمزد', count: filteredRates.length, icon: <DollarSign className="h-3.5 w-3.5" /> },
+              { id: 'insured' as const, label: 'آیتم‌های مشمول بیمه', count: scopedInsuredItems.length, icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+              { id: 'leaveBuyout' as const, label: 'آیتم‌های بازخرید مرخصی', count: scopedLeaveBuyoutItems.length, icon: <Clock className="h-3.5 w-3.5" /> },
+              { id: 'taxable' as const, label: 'آیتم‌های مشمول مالیات', count: scopedTaxableItems.length, icon: <Receipt className="h-3.5 w-3.5" /> },
+              { id: 'seniority' as const, label: 'نرخ حق پایه سنوات', count: filteredSeniorityRateRules.length, icon: <Award className="h-3.5 w-3.5" /> }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => {
+                  setConstantsSubTab(tab.id);
+                  setIsConstantFormOpen(false);
+                }}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  constantsSubTab === tab.id
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-900/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                }`}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
+                  constantsSubTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-900 text-slate-400 border border-slate-800'
+                }`}>
+                  {toPersianDigits(tab.count)}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* SUB-TAB 1: BASE RATES FORM */}
+          {constantsSubTab === 'baseRates' && isConstantFormOpen && (
+            <div className="max-w-4xl mx-auto">
+              <div className="bg-white p-6 rounded-3xl border border-slate-200/90 shadow-xl text-slate-800 space-y-5 h-fit">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 bg-rose-50 rounded-xl text-rose-600 border border-rose-100">
+                      <DollarSign className="h-4 w-4" />
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">
+                        {editingRateId ? `اصلاح ثوابت ${rateTitle ? `«${rateTitle}»` : `سال ${toPersianDigits(rateYear)}`}` : 'ثبت ثوابت و آیتم‌های جدید دستمزد'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">اطلاعات مبالغ مرجع و بازه دوره اعتبار جهت استفاده در قراردادها</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelEditRate}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200 flex items-center gap-1.5"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
+                </div>
 
                 <form onSubmit={handleSaveSalaryBaseRate} className="space-y-4">
                   {/* Year & Optional Period Title */}
@@ -16800,52 +17056,62 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                   {/* Jalali Date Range Picker for Contracts & Periods */}
                   <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10.5px] font-black text-slate-700">بازه دوره اعتبار (جهت قراردادها)</label>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه دوره اعتبار (جهت قراردادها) <span className="text-rose-500">*</span></label>
                       <div className="flex items-center gap-1">
                         {(() => {
-                          const yr = toEnglishDigits(rateYear.trim()) || activeFiscalYearStr || '1405';
+                          const yr = activePeriodStartDate.slice(0, 4);
+                          const firstHalf = clampRangeToActivePeriod(`${yr}/01/01`, `${yr}/06/31`);
+                          const secondHalf = clampRangeToActivePeriod(`${yr}/07/01`, activePeriodEndDate);
                           return (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
                                   setRateYear(yr);
-                                  setRateStartDate(`${yr}/01/01`);
-                                  setRateEndDate(`${yr}/12/29`);
+                                  setRateStartDate(activePeriodStartDate);
+                                  setRateEndDate(activePeriodEndDate);
                                 }}
                                 className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
                               >
-                                کل سال
+                                کل دوره
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRateYear(yr);
-                                  setRateStartDate(`${yr}/01/01`);
-                                  setRateEndDate(`${yr}/06/31`);
-                                  if (!rateTitle.trim()) setRateTitle(`نیمه اول ${toPersianDigits(yr)}`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه اول
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRateYear(yr);
-                                  setRateStartDate(`${yr}/07/01`);
-                                  setRateEndDate(`${yr}/12/29`);
-                                  if (!rateTitle.trim()) setRateTitle(`نیمه دوم ${toPersianDigits(yr)}`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه دوم
-                              </button>
+                              {firstHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRateYear(yr);
+                                    setRateStartDate(firstHalf.start);
+                                    setRateEndDate(firstHalf.end);
+                                    if (!rateTitle.trim()) setRateTitle(`نیمه اول ${toPersianDigits(yr)}`);
+                                  }}
+                                  className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه اول
+                                </button>
+                              )}
+                              {secondHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRateYear(yr);
+                                    setRateStartDate(secondHalf.start);
+                                    setRateEndDate(secondHalf.end);
+                                    if (!rateTitle.trim()) setRateTitle(`نیمه دوم ${toPersianDigits(yr)}`);
+                                  }}
+                                  className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه دوم
+                                </button>
+                              )}
                             </>
                           );
                         })()}
                       </div>
+                    </div>
+                    <div className="text-[9.5px] font-bold text-slate-500 flex items-center justify-between bg-white/80 px-2.5 py-1 rounded-lg border border-slate-200/70">
+                      <span>محدوده مجاز دوره کاری:</span>
+                      <span className="font-mono text-rose-700">{toPersianDigits(activePeriodStartDate)} تا {toPersianDigits(activePeriodEndDate)}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2.5">
                       <ShamsiDatePicker
@@ -16862,7 +17128,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
                         buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="right"
-                        defaultYear={Number(toEnglishDigits(rateYear.trim()) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodStartDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                       <ShamsiDatePicker
                         label="تا تاریخ (پایان دوره)"
@@ -16872,7 +17140,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
                         buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="left"
-                        defaultYear={Number(toEnglishDigits(rateYear.trim()) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodEndDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                     </div>
                     {(rateStartDate || rateEndDate) && (
@@ -17184,111 +17454,309 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   {/* Submit / Cancel buttons */}
-                  <div className="flex gap-2 pt-2">
-                    {editingRateId && (
-                      <button
-                        type="button"
-                        onClick={handleCancelEditRate}
-                        className="w-1/2 py-2 bg-slate-150 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
-                      >
-                        انصراف
-                      </button>
-                    )}
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={handleCancelEditRate}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
+                    >
+                      انصراف و بازگشت
+                    </button>
                     <button
                       type="submit"
-                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
-                        editingRateId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-rose-600 hover:bg-rose-700'
+                      className={`px-7 py-2.5 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
+                        editingRateId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-rose-600 hover:bg-rose-700'
                       }`}
                     >
-                      {editingRateId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                      {editingRateId ? 'ذخیره تغییرات' : 'ثبت ثوابت جدید'}
                     </button>
                   </div>
                 </form>
               </div>
+            </div>
+          )}
 
-              {/* Card option: Insured salary components config */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
-                <div className="border-b border-slate-100 pb-3">
-                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 font-sans">
-                    <span className="p-1.5 bg-rose-50 rounded-lg text-rose-600">
+          {/* SUB-TAB 1: BASE RATES LIST */}
+          {constantsSubTab === 'baseRates' && !isConstantFormOpen && (
+            <div className="space-y-4">
+              {/* Search Bar */}
+              <div className="bg-slate-900/95 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                <div className="relative w-full">
+                  <Search className="absolute right-3 top-2.5 h-4 w-4 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="جستجو مابین ثوابت بر اساس سال مالی، عنوان دوره یا تاریخ اعتبار..."
+                    value={rateSearchQuery}
+                    onChange={(e) => setRateSearchQuery(e.target.value)}
+                    className="w-full pr-9 pl-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 transition-all font-sans text-right"
+                  />
+                </div>
+              </div>
+
+              {filteredRates.length === 0 ? (
+                <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-12 text-center text-slate-400">
+                  <DollarSign className="h-12 w-12 mx-auto text-slate-700 mb-3" />
+                  <p className="text-xs font-bold">هیچ قانون یا ثوابت حقوقی برای سال مورد نظر یافت نشد.</p>
+                  <p className="text-[11px] text-slate-500 mt-1">برای ثبت اولین رکورد، روی دکمه «افزودن ثوابت جدید» کلیک کنید.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredRates.map((rate) => (
+                    <div 
+                      key={rate.id}
+                      className={`bg-slate-900/95 border rounded-3xl p-5 transition-all relative overflow-hidden shadow-lg ${
+                        editingRateId === rate.id ? 'border-amber-500/50 bg-amber-950/10' : 'border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3 mb-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-black text-white px-3 py-1 bg-slate-950 border border-slate-800 rounded-lg font-mono">
+                            سال مالی {toPersianDigits(rate.year)}
+                          </span>
+                          {rate.title && (
+                            <span className="text-[10.5px] font-black text-amber-300 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/25 rounded-lg">
+                              {rate.title}
+                            </span>
+                          )}
+                          {(rate.startDate || rate.endDate) ? (
+                            <span className="text-[10px] font-bold font-mono text-emerald-300 px-2.5 py-0.5 bg-emerald-500/10 border border-emerald-500/25 rounded-lg">
+                              از {toPersianDigits(rate.startDate || '—')} تا {toPersianDigits(rate.endDate || '—')}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-rose-400 font-bold px-2 py-0.5 bg-rose-950/20 rounded border border-rose-900/20">
+                              ثوابت کل سال مالی
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div className="flex gap-1.5 items-center">
+                          <button
+                            type="button"
+                            onClick={() => handleEditSalaryBaseRate(rate)}
+                            className="text-slate-300 hover:text-white text-[10.5px] px-3 py-1 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-all font-bold cursor-pointer font-sans"
+                            title="اصلاح آیتم‌ها"
+                          >
+                            اصلاح
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSalaryBaseRate(rate.id, rate.title ? `${rate.title} (${toPersianDigits(rate.year)})` : `سال ${toPersianDigits(rate.year)}`)}
+                            className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-950/20 rounded-lg border border-rose-900/30 hover:bg-rose-950/45 transition-all cursor-pointer"
+                            title="حذف کامل"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-y-4 gap-x-6 text-xs text-right">
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حقوق پایه روزانه</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.dailyBaseSalary))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-amber-300 block mb-1">پایه حقوق ساعتی (ملاک تسویه)</span>
+                          <span className="font-bold text-amber-400 font-mono">
+                            {toPersianDigits(formatWithCommas(rate.hourlyBaseSalary || Math.round((rate.dailyBaseSalary || 0) / 7.333333)))}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-sky-400 block mb-1">حقوق پایه روزانه بیمه (سهم کارگر)</span>
+                          <span className="font-bold text-sky-300 font-mono">{toPersianDigits(formatWithCommas(rate.dailyInsuranceSalary))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حق مسکن (ماهانه)</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.housingAllowance))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">کمک هزینه اقلام (حق بن)</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.foodAllowance))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حق اولاد (هر فرزند)</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.childAllowance))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">پایه سنوات</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.baseYearsRate))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حق تاهل (ماهانه)</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.marriageAllowance))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">سقف معافیت مالیاتی حقوق</span>
+                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.taxableAmount || 0))}</span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">اضافه کاری ساعتی</span>
+                          <span className="font-bold text-white font-mono">
+                            {toPersianDigits(formatWithCommas((rate.overtimeHourlyRate && rate.overtimeHourlyRate > ((rate.dailyBaseSalary || 0) * 0.8)) ? Math.round(rate.overtimeHourlyRate / 7.33) : (rate.overtimeHourlyRate || Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33))))}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حق جمعه‌کاری ساعتی</span>
+                          <span className="font-bold text-white font-mono">
+                            {toPersianDigits(formatWithCommas(
+                              (rate.fridayWorkHourlyRate && rate.fridayWorkHourlyRate > 0)
+                                ? (rate.fridayWorkHourlyRate > ((rate.dailyBaseSalary || 0) * 0.15)
+                                    ? Math.round(rate.fridayWorkHourlyRate / 7.33)
+                                    : rate.fridayWorkHourlyRate)
+                                : Math.round(((rate.dailyBaseSalary || 0) * 0.40) / 7.33)
+                            ))}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                          <span className="text-[9.5px] text-slate-400 block font-sans font-normal mt-0.5">
+                            (فرمول: (پایه روزانه × ۴۰٪) / ۷.۳۳)
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-slate-400 block mb-1">حق تعطیل کاری ساعتی</span>
+                          <span className="font-bold text-white font-mono">
+                            {toPersianDigits(formatWithCommas((rate.holidayWorkHourlyRate && rate.holidayWorkHourlyRate > ((rate.dailyBaseSalary || 0) * 0.8)) ? Math.round(rate.holidayWorkHourlyRate / 7.33) : (rate.holidayWorkHourlyRate ?? (rate.overtimeHourlyRate || Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33)))))}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
+                        </div>
+                        <div>
+                          <span className="text-[10.5px] text-indigo-300 block mb-1">مرخصی ساعتی ماهانه</span>
+                          <span className="font-bold text-indigo-300 font-mono">
+                            {toPersianDigits(rate.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM)}
+                          </span>
+                          <span className="text-[9px] text-slate-500 mr-1">ساعت</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SUB-TAB 2: INSURED SALARY ITEMS */}
+          {constantsSubTab === 'insured' && (
+            isConstantFormOpen ? (
+              <div className="max-w-3xl mx-auto bg-white p-6 rounded-3xl border border-slate-200/90 shadow-xl text-slate-800 space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 bg-rose-50 rounded-xl text-rose-600 border border-rose-100">
                       <ShieldCheck className="h-4 w-4" />
                     </span>
-                    {editingInsuredItemId ? 'اصلاح آیتم مشمول بیمه' : 'تعریف آیتم‌های مشمول کسر حق بیمه تأمین اجتماعی'}
-                  </h4>
-                  <p className="text-[10px] text-slate-500 font-medium mt-1">
-                    تعریف بازه تاریخ اعتبار جهت اعمال خودکار در قرارداد و تسویه حساب پرسنل
-                  </p>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">
+                        {editingInsuredItemId ? 'اصلاح آیتم مشمول بیمه' : 'تعریف آیتم مشمول کسر حق بیمه تأمین اجتماعی'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        تعریف بازه تاریخ اعتبار جهت اعمال خودکار در قرارداد و تسویه حساب پرسنل
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingInsuredItemId(null);
+                      setInsuredItemKey('dailyBaseSalary');
+                      setInsuredItemCustomName('');
+                      setIsConstantFormOpen(false);
+                    }}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200 flex items-center gap-1.5"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
                 </div>
 
                 <form onSubmit={handleSaveInsuredItem} className="space-y-4 font-sans text-right">
-                  {/* Jalali Date Range Picker */}
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم <span className="text-rose-500">*</span></label>
                       <div className="flex items-center gap-1">
                         {(() => {
-                          const yr = getJalaliYear(insuredItemStartDate) || activeFiscalYearStr || '1405';
+                          const yr = activePeriodStartDate.slice(0, 4);
+                          const firstHalf = clampRangeToActivePeriod(`${yr}/01/01`, `${yr}/06/31`);
+                          const secondHalf = clampRangeToActivePeriod(`${yr}/07/01`, activePeriodEndDate);
                           return (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setInsuredItemStartDate(`${yr}/01/01`);
-                                  setInsuredItemEndDate(`${yr}/12/29`);
+                                  setInsuredItemStartDate(activePeriodStartDate);
+                                  setInsuredItemEndDate(activePeriodEndDate);
                                 }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                                className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
                               >
-                                کل سال
+                                کل دوره
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInsuredItemStartDate(`${yr}/01/01`);
-                                  setInsuredItemEndDate(`${yr}/06/31`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه اول
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInsuredItemStartDate(`${yr}/07/01`);
-                                  setInsuredItemEndDate(`${yr}/12/29`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه دوم
-                              </button>
+                              {firstHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setInsuredItemStartDate(firstHalf.start);
+                                    setInsuredItemEndDate(firstHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه اول
+                                </button>
+                              )}
+                              {secondHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setInsuredItemStartDate(secondHalf.start);
+                                    setInsuredItemEndDate(secondHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه دوم
+                                </button>
+                              )}
                             </>
                           );
                         })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="text-[10px] font-bold text-slate-500 flex items-center justify-between bg-white/80 px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                      <span>محدوده مجاز دوره کاری:</span>
+                      <span className="font-mono text-rose-700">{toPersianDigits(activePeriodStartDate)} تا {toPersianDigits(activePeriodEndDate)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <ShamsiDatePicker
                         label="از تاریخ (شروع اعتبار)"
                         value={insuredItemStartDate}
                         onChange={(val) => setInsuredItemStartDate(val)}
                         placeholder="انتخاب تاریخ شروع"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="right"
-                        defaultYear={Number(getJalaliYear(insuredItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodStartDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                       <ShamsiDatePicker
                         label="تا تاریخ (پایان اعتبار)"
                         value={insuredItemEndDate}
                         onChange={(val) => setInsuredItemEndDate(val)}
                         placeholder="انتخاب تاریخ پایان"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="left"
-                        defaultYear={Number(getJalaliYear(insuredItemEndDate) || getJalaliYear(insuredItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodEndDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                     </div>
                     {(insuredItemStartDate || insuredItemEndDate) && (
-                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
                         <span>
                           بازه انتخاب‌شده:{' '}
                           <strong className="text-slate-700 font-mono">
@@ -17310,11 +17778,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
                     <select
                       value={insuredItemKey}
                       onChange={(e) => setInsuredItemKey(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 cursor-pointer"
+                      className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 cursor-pointer"
                     >
                       {INSURED_ITEM_OPTIONS.map(opt => (
                         <option key={opt.key} value={opt.key}>{opt.defaultLabel}</option>
@@ -17322,204 +17790,249 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </select>
                   </div>
 
-                  <div className="flex gap-2">
-                    {editingInsuredItemId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingInsuredItemId(null);
-                          setInsuredItemKey('dailyBaseSalary');
-                          setInsuredItemCustomName('');
-                        }}
-                        className="w-1/2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
-                      >
-                        انصراف
-                      </button>
-                    )}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingInsuredItemId(null);
+                        setInsuredItemKey('dailyBaseSalary');
+                        setInsuredItemCustomName('');
+                        setIsConstantFormOpen(false);
+                      }}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200"
+                    >
+                      انصراف و بازگشت
+                    </button>
                     <button
                       type="submit"
-                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
-                        editingInsuredItemId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-rose-600 hover:bg-rose-700'
+                      className={`px-7 py-2.5 text-white text-xs rounded-xl font-bold transition-all cursor-pointer shadow-md ${
+                        editingInsuredItemId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-rose-600 hover:bg-rose-700'
                       }`}
                     >
-                      {editingInsuredItemId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                      {editingInsuredItemId ? 'ذخیره تغییرات' : 'افزودن به لیست'}
                     </button>
                   </div>
                 </form>
-
-                {/* List of registered items */}
-                <div className="border-t border-slate-100 pt-4 space-y-2.5 font-sans">
-                  <div className="text-[10px] font-black text-rose-600 flex justify-between items-center">
-                    <span>آیتم‌های مشمول کسر حق بیمه ثبت‌شده:</span>
-                    <span className="text-[8.5px] text-slate-400 font-bold">مبنای کسر بیمه سهم کارگر ۷٪</span>
+              </div>
+            ) : (
+              <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-rose-500/10 rounded-lg text-rose-500"><ShieldCheck className="h-4 w-4" /></span>
+                    <h4 className="text-xs font-black text-white">آیتم‌های مشمول کسر حق بیمه ثبت‌شده ({toPersianDigits(scopedInsuredItems.length)})</h4>
                   </div>
+                  <span className="text-[10px] text-slate-400 font-bold">مبنای کسر بیمه سهم کارگر ۷٪</span>
+                </div>
 
-                  {(() => {
-                    const scopedInsured = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
-                    const allInsuredItems = scopedInsured.length > 0 ? scopedInsured : (db.insuredSalaryItems || []);
-
-                    const getAmountForInsuredItem = (key: string, itemYear: string, itemStartDate?: string) => {
-                      const yr = itemYear || activeFiscalYearStr;
-                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
-                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
-                        || periodRates[0];
-                      if (!activeRates) return 'تعریف نشده';
-                      switch (key) {
-                        case 'dailyBaseSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'dailyInsuranceSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'housingAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
-                        case 'foodAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
-                        case 'childAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
-                        case 'marriageAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
-                        case 'baseYearsRate':
-                          return 'پایه سنوات قرارداد';
-                        case 'jobAllowance':
-                          return 'فوق‌العاده شغلی پرونده';
-                        default:
-                          return 'ثبت شده';
-                      }
-                    };
-
-                    if (allInsuredItems.length === 0) {
-                      return (
-                        <div className="bg-slate-50 p-3 rounded-xl border border-dashed border-slate-200 text-center text-[9.5px] text-slate-500 font-bold leading-relaxed">
-                          پیکربندی وجود ندارد. لیست پیش‌فرض اعمال می‌شود (حقوق پایه، کمک مسکن، حق بن، پایه سنوات، فوق العاده شغلی).
-                        </div>
-                      );
+                {(() => {
+                  const getAmountForInsuredItem = (key: string, itemYear: string, itemStartDate?: string) => {
+                    const yr = itemYear || activeFiscalYearStr;
+                    const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                    const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                      || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                      || periodRates[0];
+                    if (!activeRates) return 'تعریف نشده';
+                    switch (key) {
+                      case 'dailyBaseSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'dailyInsuranceSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'housingAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
+                      case 'foodAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
+                      case 'childAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
+                      case 'marriageAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
+                      case 'baseYearsRate':
+                        return 'پایه سنوات قرارداد';
+                      case 'jobAllowance':
+                        return 'فوق‌العاده شغلی پرونده';
+                      default:
+                        return 'ثبت شده';
                     }
-                    return (
-                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 font-sans">
-                        {allInsuredItems.map((item: any) => {
-                          const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
-                          const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
-                          const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                  };
 
-                          return (
-                            <div key={item.id} className="flex justify-between items-center bg-slate-100/90 hover:bg-slate-200/60 px-3 py-2 rounded-xl border border-slate-300 text-[10px] text-slate-900 shadow-sm transition-colors">
-                              <div className="font-extrabold text-right flex flex-col items-start gap-0.5">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-black font-black">{item.itemName}</span>
-                                  <span className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
-                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
-                                  </span>
-                                </div>
-                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForInsuredItem(item.itemKey, itemYear, itemStart)}</span>
-                              </div>
-                              <div className="flex gap-1 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => handleEditInsuredItem(item)}
-                                  className="text-amber-800 hover:text-amber-900 p-1 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-300/40 text-[9px] font-black cursor-pointer transition-colors"
-                                >
-                                  اصلاح
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteInsuredItem(item.id)}
-                                  className="text-rose-700 hover:text-rose-800 p-1 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-300/40 cursor-pointer transition-colors"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  if (scopedInsuredItems.length === 0) {
+                    return (
+                      <div className="bg-slate-950/60 p-8 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-400 font-bold leading-relaxed">
+                        پیکربندی وجود ندارد. لیست پیش‌فرض اعمال می‌شود (حقوق پایه، کمک مسکن، حق بن، پایه سنوات، فوق‌العاده شغلی).
                       </div>
                     );
-                  })()}
-                </div>
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 font-bold">
+                            <th className="py-2.5 px-3">عنوان آیتم دستمزد</th>
+                            <th className="py-2.5 px-3">بازه تاریخ اعتبار</th>
+                            <th className="py-2.5 px-3">مبلغ مرجع</th>
+                            <th className="py-2.5 px-3 text-center">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/70">
+                          {scopedInsuredItems.map((item: any) => {
+                            const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
+                            const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+                            const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                            return (
+                              <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-3 px-3 font-bold text-white">{item.itemName}</td>
+                                <td className="py-3 px-3">
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold font-mono bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 font-mono font-bold text-emerald-400">
+                                  {getAmountForInsuredItem(item.itemKey, itemYear, itemStart)}
+                                </td>
+                                <td className="py-3 px-3 text-center">
+                                  <div className="flex justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditInsuredItem(item)}
+                                      className="text-amber-400 hover:text-amber-300 text-[10.5px] px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-500/30 font-bold cursor-pointer transition-colors"
+                                    >
+                                      اصلاح
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteInsuredItem(item.id)}
+                                      className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-500/30 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </div>
+            )
+          )}
 
-              {/* Card option: Leave buyout salary components config */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
-                <div className="border-b border-slate-100 pb-3">
-                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 font-sans">
-                    <span className="p-1.5 bg-indigo-50 rounded-lg text-indigo-600">
+          {/* SUB-TAB 3: LEAVE BUYOUT SALARY ITEMS */}
+          {constantsSubTab === 'leaveBuyout' && (
+            isConstantFormOpen ? (
+              <div className="max-w-3xl mx-auto bg-white p-6 rounded-3xl border border-slate-200/90 shadow-xl text-slate-800 space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 bg-indigo-50 rounded-xl text-indigo-600 border border-indigo-100">
                       <Clock className="h-4 w-4" />
                     </span>
-                    {editingLeaveBuyoutItemId ? 'اصلاح آیتم مشمول بازخرید مرخصی' : 'تعریف آیتم‌های مشمول محاسبه بازخرید مرخصی'}
-                  </h4>
-                  <p className="text-[10px] text-slate-500 font-medium mt-1">
-                    تعیین اقلام مشمول جهت محاسبه نرخ هر ساعت بازخرید مرخصی در فرم تسویه حساب (جمع اقلام مشمول ÷ ۲۲۰ ساعت)
-                  </p>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">
+                        {editingLeaveBuyoutItemId ? 'اصلاح آیتم مشمول بازخرید مرخصی' : 'تعریف آیتم مشمول محاسبه بازخرید مرخصی'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        تعیین اقلام مشمول جهت محاسبه نرخ هر ساعت بازخرید مرخصی در فرم تسویه حساب (جمع اقلام مشمول ÷ ۲۲۰ ساعت)
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingLeaveBuyoutItemId(null);
+                      setLeaveBuyoutItemKey('dailyBaseSalary');
+                      setLeaveBuyoutItemCustomName('');
+                      setIsConstantFormOpen(false);
+                    }}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200 flex items-center gap-1.5"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
                 </div>
 
                 <form onSubmit={handleSaveLeaveBuyoutItem} className="space-y-4 font-sans text-right">
-                  {/* Jalali Date Range Picker */}
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم <span className="text-rose-500">*</span></label>
                       <div className="flex items-center gap-1">
                         {(() => {
-                          const yr = getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr || '1405';
+                          const yr = activePeriodStartDate.slice(0, 4);
+                          const firstHalf = clampRangeToActivePeriod(`${yr}/01/01`, `${yr}/06/31`);
+                          const secondHalf = clampRangeToActivePeriod(`${yr}/07/01`, activePeriodEndDate);
                           return (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setLeaveBuyoutItemStartDate(`${yr}/01/01`);
-                                  setLeaveBuyoutItemEndDate(`${yr}/12/29`);
+                                  setLeaveBuyoutItemStartDate(activePeriodStartDate);
+                                  setLeaveBuyoutItemEndDate(activePeriodEndDate);
                                 }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                                className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
                               >
-                                کل سال
+                                کل دوره
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setLeaveBuyoutItemStartDate(`${yr}/01/01`);
-                                  setLeaveBuyoutItemEndDate(`${yr}/06/31`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه اول
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setLeaveBuyoutItemStartDate(`${yr}/07/01`);
-                                  setLeaveBuyoutItemEndDate(`${yr}/12/29`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه دوم
-                              </button>
+                              {firstHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLeaveBuyoutItemStartDate(firstHalf.start);
+                                    setLeaveBuyoutItemEndDate(firstHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه اول
+                                </button>
+                              )}
+                              {secondHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLeaveBuyoutItemStartDate(secondHalf.start);
+                                    setLeaveBuyoutItemEndDate(secondHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه دوم
+                                </button>
+                              )}
                             </>
                           );
                         })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="text-[10px] font-bold text-slate-500 flex items-center justify-between bg-white/80 px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                      <span>محدوده مجاز دوره کاری:</span>
+                      <span className="font-mono text-indigo-700">{toPersianDigits(activePeriodStartDate)} تا {toPersianDigits(activePeriodEndDate)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <ShamsiDatePicker
                         label="از تاریخ (شروع اعتبار)"
                         value={leaveBuyoutItemStartDate}
                         onChange={(val) => setLeaveBuyoutItemStartDate(val)}
                         placeholder="انتخاب تاریخ شروع"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="right"
-                        defaultYear={Number(getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodStartDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                       <ShamsiDatePicker
                         label="تا تاریخ (پایان اعتبار)"
                         value={leaveBuyoutItemEndDate}
                         onChange={(val) => setLeaveBuyoutItemEndDate(val)}
                         placeholder="انتخاب تاریخ پایان"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="left"
-                        defaultYear={Number(getJalaliYear(leaveBuyoutItemEndDate) || getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodEndDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                     </div>
                     {(leaveBuyoutItemStartDate || leaveBuyoutItemEndDate) && (
-                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
                         <span>
                           بازه انتخاب‌شده:{' '}
                           <strong className="text-slate-700 font-mono">
@@ -17541,11 +18054,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
                     <select
                       value={leaveBuyoutItemKey}
                       onChange={(e) => setLeaveBuyoutItemKey(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                     >
                       {INSURED_ITEM_OPTIONS.map(opt => (
                         <option key={opt.key} value={opt.key}>{opt.defaultLabel}</option>
@@ -17553,203 +18066,249 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </select>
                   </div>
 
-                  <div className="flex gap-2">
-                    {editingLeaveBuyoutItemId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingLeaveBuyoutItemId(null);
-                          setLeaveBuyoutItemKey('dailyBaseSalary');
-                          setLeaveBuyoutItemCustomName('');
-                        }}
-                        className="w-1/2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
-                      >
-                        انصراف
-                      </button>
-                    )}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingLeaveBuyoutItemId(null);
+                        setLeaveBuyoutItemKey('dailyBaseSalary');
+                        setLeaveBuyoutItemCustomName('');
+                        setIsConstantFormOpen(false);
+                      }}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200"
+                    >
+                      انصراف و بازگشت
+                    </button>
                     <button
                       type="submit"
-                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
-                        editingLeaveBuyoutItemId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-indigo-600 hover:bg-indigo-700'
+                      className={`px-7 py-2.5 text-white text-xs rounded-xl font-bold transition-all cursor-pointer shadow-md ${
+                        editingLeaveBuyoutItemId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'
                       }`}
                     >
-                      {editingLeaveBuyoutItemId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                      {editingLeaveBuyoutItemId ? 'ذخیره تغییرات' : 'افزودن به لیست'}
                     </button>
                   </div>
                 </form>
-
-                {/* List of registered leave buyout items */}
-                <div className="border-t border-slate-100 pt-4 space-y-2.5 font-sans">
-                  <div className="text-[10px] font-black text-indigo-600 flex justify-between items-center">
-                    <span>آیتم‌های مشمول بازخرید مرخصی ثبت‌شده:</span>
-                    <span className="text-[8.5px] text-slate-400 font-bold">مبنای نرخ ساعتی (جمع ÷ ۲۲۰)</span>
+              </div>
+            ) : (
+              <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-400"><Clock className="h-4 w-4" /></span>
+                    <h4 className="text-xs font-black text-white">آیتم‌های مشمول بازخرید مرخصی ثبت‌شده ({toPersianDigits(scopedLeaveBuyoutItems.length)})</h4>
                   </div>
+                  <span className="text-[10px] text-slate-400 font-bold">مبنای نرخ ساعتی (جمع ÷ ۲۲۰)</span>
+                </div>
 
-                  {(() => {
-                    const allLeaveBuyoutItems = (db.leaveBuyoutSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
-
-                    const getAmountForLeaveBuyoutItem = (key: string, itemYear: string, itemStartDate?: string) => {
-                      const yr = itemYear || activeFiscalYearStr;
-                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
-                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
-                        || periodRates[0];
-                      if (!activeRates) return 'تعریف نشده';
-                      switch (key) {
-                        case 'dailyBaseSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'dailyInsuranceSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'housingAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
-                        case 'foodAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
-                        case 'childAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
-                        case 'marriageAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
-                        case 'baseYearsRate':
-                          return 'پایه سنوات قرارداد (۳۰ روزه)';
-                        case 'jobAllowance':
-                          return 'فوق‌العاده شغلی پرونده';
-                        default:
-                          return 'ثبت شده';
-                      }
-                    };
-
-                    if (allLeaveBuyoutItems.length === 0) {
-                      return (
-                        <div className="bg-slate-50 p-3 rounded-xl border border-dashed border-slate-200 text-center text-[9.5px] text-slate-500 font-bold leading-relaxed">
-                          پیکربندی وجود ندارد. لیست پیش‌فرض اعمال می‌شود (حقوق پایه ماهانه ۳۰ روز، حق پایه سنوات، حق بن، حق مسکن، حق تاهل).
-                        </div>
-                      );
+                {(() => {
+                  const getAmountForLeaveBuyoutItem = (key: string, itemYear: string, itemStartDate?: string) => {
+                    const yr = itemYear || activeFiscalYearStr;
+                    const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                    const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                      || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                      || periodRates[0];
+                    if (!activeRates) return 'تعریف نشده';
+                    switch (key) {
+                      case 'dailyBaseSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'dailyInsuranceSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'housingAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
+                      case 'foodAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
+                      case 'childAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
+                      case 'marriageAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
+                      case 'baseYearsRate':
+                        return 'پایه سنوات قرارداد (۳۰ روزه)';
+                      case 'jobAllowance':
+                        return 'فوق‌العاده شغلی پرونده';
+                      default:
+                        return 'ثبت شده';
                     }
-                    return (
-                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 font-sans">
-                        {allLeaveBuyoutItems.map((item: any) => {
-                          const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
-                          const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
-                          const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                  };
 
-                          return (
-                            <div key={item.id} className="flex justify-between items-center bg-slate-100/90 hover:bg-slate-200/60 px-3 py-2 rounded-xl border border-slate-300 text-[10px] text-slate-900 shadow-sm transition-colors">
-                              <div className="font-extrabold text-right flex flex-col items-start gap-0.5">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-black font-black">{item.itemName}</span>
-                                  <span className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200">
-                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
-                                  </span>
-                                </div>
-                                <span className="text-[9px] text-indigo-700 font-black">مبلغ مرجع: {getAmountForLeaveBuyoutItem(item.itemKey, itemYear, itemStart)}</span>
-                              </div>
-                              <div className="flex gap-1 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => handleEditLeaveBuyoutItem(item)}
-                                  className="text-amber-800 hover:text-amber-900 p-1 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-300/40 text-[9px] font-black cursor-pointer transition-colors"
-                                >
-                                  اصلاح
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteLeaveBuyoutItem(item.id)}
-                                  className="text-rose-700 hover:text-rose-800 p-1 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-300/40 cursor-pointer transition-colors"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  if (scopedLeaveBuyoutItems.length === 0) {
+                    return (
+                      <div className="bg-slate-950/60 p-8 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-400 font-bold leading-relaxed">
+                        پیکربندی وجود ندارد. لیست پیش‌فرض اعمال می‌شود (حقوق پایه ماهانه ۳۰ روز، حق پایه سنوات، حق بن، حق مسکن، حق تاهل).
                       </div>
                     );
-                  })()}
-                </div>
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 font-bold">
+                            <th className="py-2.5 px-3">عنوان آیتم دستمزد</th>
+                            <th className="py-2.5 px-3">بازه تاریخ اعتبار</th>
+                            <th className="py-2.5 px-3">مبلغ مرجع</th>
+                            <th className="py-2.5 px-3 text-center">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/70">
+                          {scopedLeaveBuyoutItems.map((item: any) => {
+                            const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
+                            const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+                            const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                            return (
+                              <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-3 px-3 font-bold text-white">{item.itemName}</td>
+                                <td className="py-3 px-3">
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 font-mono font-bold text-indigo-300">
+                                  {getAmountForLeaveBuyoutItem(item.itemKey, itemYear, itemStart)}
+                                </td>
+                                <td className="py-3 px-3 text-center">
+                                  <div className="flex justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditLeaveBuyoutItem(item)}
+                                      className="text-amber-400 hover:text-amber-300 text-[10.5px] px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-500/30 font-bold cursor-pointer transition-colors"
+                                    >
+                                      اصلاح
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteLeaveBuyoutItem(item.id)}
+                                      className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-500/30 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </div>
+            )
+          )}
 
-              {/* Card option: Taxable salary components config */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
-                <div className="border-b border-slate-100 pb-3">
-                  <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5 font-sans">
-                    <span className="p-1.5 bg-rose-50 rounded-lg text-rose-600">
-                      <ShieldCheck className="h-4 w-4" />
+          {/* SUB-TAB 4: TAXABLE SALARY ITEMS */}
+          {constantsSubTab === 'taxable' && (
+            isConstantFormOpen ? (
+              <div className="max-w-3xl mx-auto bg-white p-6 rounded-3xl border border-slate-200/90 shadow-xl text-slate-800 space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 bg-rose-50 rounded-xl text-rose-600 border border-rose-100">
+                      <Receipt className="h-4 w-4" />
                     </span>
-                    {editingTaxableItemId ? 'اصلاح آیتم مشمول مالیات' : 'تعریف آیتم‌های مشمول کسر مالیات حقوق'}
-                  </h4>
-                  <p className="text-[10px] text-slate-500 font-medium mt-1">
-                    تعریف بازه تاریخ اعتبار جهت اعمال خودکار در قرارداد و تسویه حساب پرسنل
-                  </p>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">
+                        {editingTaxableItemId ? 'اصلاح آیتم مشمول مالیات' : 'تعریف آیتم مشمول کسر مالیات حقوق'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        تعریف بازه تاریخ اعتبار جهت اعمال خودکار در قرارداد و تسویه حساب پرسنل
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingTaxableItemId(null);
+                      setTaxableItemKey('dailyBaseSalary');
+                      setTaxableItemCustomName('');
+                      setIsConstantFormOpen(false);
+                    }}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200 flex items-center gap-1.5"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
                 </div>
 
                 <form onSubmit={(e) => { e.preventDefault(); handleSaveTaxableItem(); }} className="space-y-4 font-sans text-right">
-                  {/* Jalali Date Range Picker */}
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم <span className="text-rose-500">*</span></label>
                       <div className="flex items-center gap-1">
                         {(() => {
-                          const yr = getJalaliYear(taxableItemStartDate) || activeFiscalYearStr || '1405';
+                          const yr = activePeriodStartDate.slice(0, 4);
+                          const firstHalf = clampRangeToActivePeriod(`${yr}/01/01`, `${yr}/06/31`);
+                          const secondHalf = clampRangeToActivePeriod(`${yr}/07/01`, activePeriodEndDate);
                           return (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setTaxableItemStartDate(`${yr}/01/01`);
-                                  setTaxableItemEndDate(`${yr}/12/29`);
+                                  setTaxableItemStartDate(activePeriodStartDate);
+                                  setTaxableItemEndDate(activePeriodEndDate);
                                 }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                                className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
                               >
-                                کل سال
+                                کل دوره
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setTaxableItemStartDate(`${yr}/01/01`);
-                                  setTaxableItemEndDate(`${yr}/06/31`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه اول
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setTaxableItemStartDate(`${yr}/07/01`);
-                                  setTaxableItemEndDate(`${yr}/12/29`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه دوم
-                              </button>
+                              {firstHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTaxableItemStartDate(firstHalf.start);
+                                    setTaxableItemEndDate(firstHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه اول
+                                </button>
+                              )}
+                              {secondHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTaxableItemStartDate(secondHalf.start);
+                                    setTaxableItemEndDate(secondHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه دوم
+                                </button>
+                              )}
                             </>
                           );
                         })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="text-[10px] font-bold text-slate-500 flex items-center justify-between bg-white/80 px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                      <span>محدوده مجاز دوره کاری:</span>
+                      <span className="font-mono text-rose-700">{toPersianDigits(activePeriodStartDate)} تا {toPersianDigits(activePeriodEndDate)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <ShamsiDatePicker
                         label="از تاریخ (شروع اعتبار)"
                         value={taxableItemStartDate}
                         onChange={(val) => setTaxableItemStartDate(val)}
                         placeholder="انتخاب تاریخ شروع"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="right"
-                        defaultYear={Number(getJalaliYear(taxableItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodStartDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                       <ShamsiDatePicker
                         label="تا تاریخ (پایان اعتبار)"
                         value={taxableItemEndDate}
                         onChange={(val) => setTaxableItemEndDate(val)}
                         placeholder="انتخاب تاریخ پایان"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="left"
-                        defaultYear={Number(getJalaliYear(taxableItemEndDate) || getJalaliYear(taxableItemStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodEndDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                     </div>
                     {(taxableItemStartDate || taxableItemEndDate) && (
-                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
                         <span>
                           بازه انتخاب‌شده:{' '}
                           <strong className="text-slate-700 font-mono">
@@ -17771,11 +18330,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">نام یا فیلد مرجع دستمزد</label>
                     <select
                       value={taxableItemKey}
                       onChange={(e) => setTaxableItemKey(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 cursor-pointer"
+                      className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500 cursor-pointer"
                     >
                       {TAXABLE_ITEM_OPTIONS.map(opt => (
                         <option key={opt.key} value={opt.key}>{opt.defaultLabel}</option>
@@ -17783,230 +18342,272 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </select>
                   </div>
 
-                  <div className="flex gap-2">
-                    {editingTaxableItemId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingTaxableItemId(null);
-                          setTaxableItemKey('dailyBaseSalary');
-                          setTaxableItemCustomName('');
-                        }}
-                        className="w-1/2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
-                      >
-                        انصراف
-                      </button>
-                    )}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingTaxableItemId(null);
+                        setTaxableItemKey('dailyBaseSalary');
+                        setTaxableItemCustomName('');
+                        setIsConstantFormOpen(false);
+                      }}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200"
+                    >
+                      انصراف و بازگشت
+                    </button>
                     <button
                       type="submit"
-                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
-                        editingTaxableItemId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-rose-600 hover:bg-rose-700'
+                      className={`px-7 py-2.5 text-white text-xs rounded-xl font-bold transition-all cursor-pointer shadow-md ${
+                        editingTaxableItemId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-rose-600 hover:bg-rose-700'
                       }`}
                     >
-                      {editingTaxableItemId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                      {editingTaxableItemId ? 'ذخیره تغییرات' : 'افزودن به لیست'}
                     </button>
                   </div>
                 </form>
-
-                {/* List of registered items */}
-                <div className="border-t border-slate-100 pt-4 space-y-2.5 font-sans">
-                  <div className="text-[10px] font-black text-rose-600 flex justify-between items-center">
-                    <span>آیتم‌های مشمول کسر مالیات ثبت‌شده:</span>
-                    <span className="text-[8.5px] text-slate-400 font-bold">مبنای کسر مالیات حقوق طبق طبقات مالیاتی</span>
+              </div>
+            ) : (
+              <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-rose-500/10 rounded-lg text-rose-500"><Receipt className="h-4 w-4" /></span>
+                    <h4 className="text-xs font-black text-white">آیتم‌های مشمول کسر مالیات ثبت‌شده ({toPersianDigits(scopedTaxableItems.length)})</h4>
                   </div>
+                  <span className="text-[10px] text-slate-400 font-bold">مبنای کسر مالیات حقوق طبق طبقات مالیاتی</span>
+                </div>
 
-                  {(() => {
-                    const scopedTaxable = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
-                    const allTaxableItems = scopedTaxable.length > 0 ? scopedTaxable : (db.taxableSalaryItems || []);
-
-                    const getAmountForTaxableItem = (key: string, itemYear: string, itemStartDate?: string) => {
-                      const yr = itemYear || activeFiscalYearStr;
-                      const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
-                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
-                        || periodRates[0];
-                      if (!activeRates) return 'تعریف نشده';
-                      switch (key) {
-                        case 'dailyBaseSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'dailyInsuranceSalary':
-                          return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
-                        case 'housingAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
-                        case 'foodAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
-                        case 'childAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
-                        case 'marriageAllowance':
-                          return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
-                        case 'baseYearsRate':
-                          return 'پایه سنوات قرارداد';
-                        case 'jobAllowance':
-                          return 'فوق‌العاده شغلی پرونده';
-                        case 'overtimePay':
-                          return 'مبلغ اضافه‌کاری کارکرد';
-                        case 'fridayWorkPay':
-                          return 'مبلغ جمعه‌کاری کارکرد';
-                        case 'holidayWorkPay':
-                          return 'مبلغ تعطیل‌کاری کارکرد';
-                        case 'monthlyEidi':
-                          return 'مبلغ عیدی ماهانه';
-                        case 'monthlyYearsBenefit':
-                          return 'مبلغ سنوات ماهانه';
-                        default:
-                          return 'ثبت شده';
-                      }
-                    };
-
-                    if (allTaxableItems.length === 0) {
-                      return (
-                        <div className="bg-slate-50 p-3 rounded-xl border border-dashed border-slate-200 text-center text-[9.5px] text-slate-500 font-bold leading-relaxed">
-                          پیکربندی وجود ندارد. تمامی آیتم‌های دریافتی مشمول کسر مالیات خواهند بود.
-                        </div>
-                      );
+                {(() => {
+                  const getAmountForTaxableItem = (key: string, itemYear: string, itemStartDate?: string) => {
+                    const yr = itemYear || activeFiscalYearStr;
+                    const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
+                    const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                      || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                      || periodRates[0];
+                    if (!activeRates) return 'تعریف نشده';
+                    switch (key) {
+                      case 'dailyBaseSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyBaseSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'dailyInsuranceSalary':
+                        return `${toPersianDigits(formatWithCommas(activeRates.dailyInsuranceSalary * 30))} ریال (۳۰ روزه)`;
+                      case 'housingAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.housingAllowance))} ریال`;
+                      case 'foodAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.foodAllowance))} ریال`;
+                      case 'childAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.childAllowance))} ریال`;
+                      case 'marriageAllowance':
+                        return `${toPersianDigits(formatWithCommas(activeRates.marriageAllowance))} ریال`;
+                      case 'baseYearsRate':
+                        return 'پایه سنوات قرارداد';
+                      case 'jobAllowance':
+                        return 'فوق‌العاده شغلی پرونده';
+                      case 'overtimePay':
+                        return 'مبلغ اضافه‌کاری کارکرد';
+                      case 'fridayWorkPay':
+                        return 'مبلغ جمعه‌کاری کارکرد';
+                      case 'holidayWorkPay':
+                        return 'مبلغ تعطیل‌کاری کارکرد';
+                      case 'monthlyEidi':
+                        return 'مبلغ عیدی ماهانه';
+                      case 'monthlyYearsBenefit':
+                        return 'مبلغ سنوات ماهانه';
+                      default:
+                        return 'ثبت شده';
                     }
-                    return (
-                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 font-sans">
-                        {allTaxableItems.map((item: any) => {
-                          const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
-                          const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
-                          const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                  };
 
-                          return (
-                            <div key={item.id} className="flex justify-between items-center bg-slate-100/90 hover:bg-slate-200/60 px-3 py-2 rounded-xl border border-slate-300 text-[10px] text-slate-900 shadow-sm transition-colors">
-                              <div className="font-extrabold text-right flex flex-col items-start gap-0.5">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-black font-black">{item.itemName}</span>
-                                  <span className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
-                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
-                                  </span>
-                                </div>
-                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForTaxableItem(item.itemKey, itemYear, itemStart)}</span>
-                              </div>
-                              <div className="flex gap-1 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => handleEditTaxableItem(item)}
-                                  className="text-amber-800 hover:text-amber-900 p-1 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-300/40 text-[9px] font-black cursor-pointer transition-colors"
-                                >
-                                  اصلاح
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteTaxableItem(item.id)}
-                                  className="text-rose-700 hover:text-rose-800 p-1 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-300/40 cursor-pointer transition-colors"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
+                  if (scopedTaxableItems.length === 0) {
+                    return (
+                      <div className="bg-slate-950/60 p-8 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-400 font-bold leading-relaxed">
+                        پیکربندی وجود ندارد. تمامی آیتم‌های دریافتی مشمول کسر مالیات خواهند بود.
                       </div>
                     );
-                  })()}
-                </div>
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 font-bold">
+                            <th className="py-2.5 px-3">عنوان آیتم دستمزد</th>
+                            <th className="py-2.5 px-3">بازه تاریخ اعتبار</th>
+                            <th className="py-2.5 px-3">مبلغ مرجع</th>
+                            <th className="py-2.5 px-3 text-center">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/70">
+                          {scopedTaxableItems.map((item: any) => {
+                            const itemStart = item.startDate || (item.periodId ? `${item.periodId.substring(0, 4)}/01/01` : '1403/01/01');
+                            const itemEnd = item.endDate || (item.periodId ? `${item.periodId.substring(0, 4)}/12/29` : '1403/12/29');
+                            const itemYear = getJalaliYear(itemStart) || (item.periodId ? item.periodId.substring(0, 4) : '1403');
+                            return (
+                              <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-3 px-3 font-bold text-white">{item.itemName}</td>
+                                <td className="py-3 px-3">
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold font-mono bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                                    {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 font-mono font-bold text-amber-400">
+                                  {getAmountForTaxableItem(item.itemKey, itemYear, itemStart)}
+                                </td>
+                                <td className="py-3 px-3 text-center">
+                                  <div className="flex justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditTaxableItem(item)}
+                                      className="text-amber-400 hover:text-amber-300 text-[10.5px] px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg border border-amber-500/30 font-bold cursor-pointer transition-colors"
+                                    >
+                                      اصلاح
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTaxableItem(item.id)}
+                                      className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-500/30 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </div>
+            )
+          )}
 
-              {/* Form: Monthly Seniority Base Pay */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-lg text-slate-800 space-y-5 h-fit">
-                <h4 className="text-xs font-black text-slate-800 border-b border-slate-100 pb-3 flex items-center gap-1.5 font-sans">
-                  <span className="p-1.5 bg-rose-50 rounded-lg text-rose-600">
-                    <Award className="h-4 w-4" />
-                  </span>
-                  {editingSeniorityId ? 'اصلاح نرخ حق پایه سنوات ماهانه' : 'ثبت نرخ حق پایه سنوات ماهانه'}
-                </h4>
+          {/* SUB-TAB 5: SENIORITY BASE PAY RULES */}
+          {constantsSubTab === 'seniority' && (
+            isConstantFormOpen ? (
+              <div className="max-w-3xl mx-auto bg-white p-6 rounded-3xl border border-slate-200/90 shadow-xl text-slate-800 space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4 gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="p-2 bg-rose-50 rounded-xl text-rose-600 border border-rose-100">
+                      <Award className="h-4 w-4" />
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-800">
+                        {editingSeniorityId ? 'اصلاح نرخ حق پایه سنوات ماهانه' : 'ثبت نرخ حق پایه سنوات ماهانه'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        تعیین نرخ پایه سنوات روزانه و ماهانه به تفکیک سابقه کار و بازه اعتبار
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelEditSeniority}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200 flex items-center gap-1.5"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
+                </div>
 
                 <form onSubmit={handleSaveSeniorityRateRule} className="space-y-4 font-sans text-right">
-                  <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">سابقه مشمول (سال کامل):</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="مثال: ۱ یا ۲ یا ۳"
-                      value={seniorityYears}
-                      onChange={(e) => setSeniorityYears(toPersianDigits(e.target.value))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">سابقه مشمول (سال کامل):</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="مثال: ۱ یا ۲ یا ۳"
+                        value={seniorityYears}
+                        onChange={(e) => setSeniorityYears(toPersianDigits(e.target.value))}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">سال مالی:</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="مثال: ۱۴۰۵"
+                        value={seniorityFiscalYear}
+                        onChange={(e) => setSeniorityFiscalYear(toPersianDigits(e.target.value))}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
+                      />
+                    </div>
                   </div>
 
                   <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">مبلغ پایه سنوات روزانه (ریال):</label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">مبلغ پایه سنوات روزانه (ریال):</label>
                     <input
                       type="text"
                       required
                       placeholder="مثال: ۲,۱۰۰,۰۰۰"
                       value={seniorityDailyRate}
                       onChange={(e) => handleRateInputChange(e.target.value, setSeniorityDailyRate)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
                     />
                     {seniorityDailyRate && (
-                      <span className="block text-[10px] text-slate-400 mt-1 mr-1 text-right font-medium">
+                      <span className="block text-[10.5px] text-slate-500 mt-1 mr-1 text-right font-medium">
                         {toPersianDigits(formatWithCommas(parseNumber(seniorityDailyRate) || 0))} ریال (معادل ۳۰ روز: {toPersianDigits(formatWithCommas((parseNumber(seniorityDailyRate) || 0) * 30))} ریال)
                       </span>
                     )}
                   </div>
 
-                  <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">سال مالی:</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="مثال: ۱۴۰۵"
-                      value={seniorityFiscalYear}
-                      onChange={(e) => setSeniorityFiscalYear(toPersianDigits(e.target.value))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
-                    />
-                  </div>
-
-                  {/* Jalali Date Range Picker for Seniority Rate Rules */}
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم <span className="text-rose-500">*</span></label>
                       <div className="flex items-center gap-1">
                         {(() => {
-                          const yr = toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr || '1405';
+                          const yr = activePeriodStartDate.slice(0, 4);
+                          const firstHalf = clampRangeToActivePeriod(`${yr}/01/01`, `${yr}/06/31`);
+                          const secondHalf = clampRangeToActivePeriod(`${yr}/07/01`, activePeriodEndDate);
                           return (
                             <>
                               <button
                                 type="button"
                                 onClick={() => {
                                   setSeniorityFiscalYear(toPersianDigits(yr));
-                                  setSeniorityStartDate(`${yr}/01/01`);
-                                  setSeniorityEndDate(`${yr}/12/29`);
+                                  setSeniorityStartDate(activePeriodStartDate);
+                                  setSeniorityEndDate(activePeriodEndDate);
                                 }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                                className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
                               >
-                                کل سال
+                                کل دوره
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSeniorityFiscalYear(toPersianDigits(yr));
-                                  setSeniorityStartDate(`${yr}/01/01`);
-                                  setSeniorityEndDate(`${yr}/06/31`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه اول
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSeniorityFiscalYear(toPersianDigits(yr));
-                                  setSeniorityStartDate(`${yr}/07/01`);
-                                  setSeniorityEndDate(`${yr}/12/29`);
-                                }}
-                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
-                              >
-                                ۶ ماه دوم
-                              </button>
+                              {firstHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSeniorityFiscalYear(toPersianDigits(yr));
+                                    setSeniorityStartDate(firstHalf.start);
+                                    setSeniorityEndDate(firstHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه اول
+                                </button>
+                              )}
+                              {secondHalf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSeniorityFiscalYear(toPersianDigits(yr));
+                                    setSeniorityStartDate(secondHalf.start);
+                                    setSeniorityEndDate(secondHalf.end);
+                                  }}
+                                  className="px-2 py-0.5 text-[9.5px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                                >
+                                  ۶ ماه دوم
+                                </button>
+                              )}
                             </>
                           );
                         })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="text-[10px] font-bold text-slate-500 flex items-center justify-between bg-white/80 px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                      <span>محدوده مجاز دوره کاری:</span>
+                      <span className="font-mono text-rose-700">{toPersianDigits(activePeriodStartDate)} تا {toPersianDigits(activePeriodEndDate)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <ShamsiDatePicker
                         label="از تاریخ (شروع اعتبار)"
                         value={seniorityStartDate}
@@ -18018,24 +18619,28 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           }
                         }}
                         placeholder="انتخاب تاریخ شروع"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="right"
-                        defaultYear={Number(toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodStartDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                       <ShamsiDatePicker
                         label="تا تاریخ (پایان اعتبار)"
                         value={seniorityEndDate}
                         onChange={(val) => setSeniorityEndDate(val)}
                         placeholder="انتخاب تاریخ پایان"
-                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
-                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        labelClassName="block text-[10px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
                         popoverAlign="left"
-                        defaultYear={Number(toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityEndDate) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr) || 1405}
+                        defaultYear={Number(activePeriodEndDate.slice(0, 4)) || 1405}
+                        minDate={activePeriodStartDate}
+                        maxDate={activePeriodEndDate}
                       />
                     </div>
                     {(seniorityStartDate || seniorityEndDate) && (
-                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
                         <span>
                           بازه انتخاب‌شده:{' '}
                           <strong className="text-slate-700 font-mono">
@@ -18056,227 +18661,41 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     )}
                   </div>
 
-                  <div className="flex gap-2 pt-2">
-                    {editingSeniorityId && (
-                      <button
-                        type="button"
-                        onClick={handleCancelEditSeniority}
-                        className="w-1/2 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer text-center border border-slate-200"
-                      >
-                        انصراف
-                      </button>
-                    )}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={handleCancelEditSeniority}
+                      className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-xl font-bold transition-all cursor-pointer border border-slate-200"
+                    >
+                      انصراف و بازگشت
+                    </button>
                     <button
                       type="submit"
-                      className={`py-2 text-white text-xs rounded-xl font-bold transition-all cursor-pointer text-center shadow-md ${
-                        editingSeniorityId ? 'w-1/2 bg-amber-500 hover:bg-amber-600' : 'w-full bg-rose-600 hover:bg-rose-700'
+                      className={`px-7 py-2.5 text-white text-xs rounded-xl font-bold transition-all cursor-pointer shadow-md ${
+                        editingSeniorityId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-rose-600 hover:bg-rose-700'
                       }`}
                     >
-                      {editingSeniorityId ? 'ثبت تغییرات' : 'افزودن به لیست'}
+                      {editingSeniorityId ? 'ذخیره تغییرات' : 'ثبت نرخ پایه سنوات'}
                     </button>
                   </div>
                 </form>
               </div>
-            </div>
-
-            {/* Left: Search & Table List */}
-            <div className="lg:col-span-2 space-y-6">
-              {/* Search Bar */}
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-850 flex items-center justify-between gap-3">
-                <div className="relative w-full">
-                  <Search className="absolute right-3 top-2.5 h-4 w-4 text-slate-500" />
-                  <input
-                    type="text"
-                    placeholder="جستجو مابین ثوابت بر اساس سال مالی، عنوان دوره یا تاریخ اعتبار..."
-                    value={rateSearchQuery}
-                    onChange={(e) => setRateSearchQuery(e.target.value)}
-                    className="w-full pr-9 pl-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 transition-all font-sans text-right"
-                  />
-                </div>
-              </div>
-
-              {/* Data List View */}
-              {filteredRates.length === 0 ? (
-                <div className="bg-slate-950 border border-slate-850 rounded-2xl p-12 text-center text-slate-400">
-                  <DollarSign className="h-12 w-12 mx-auto text-slate-700 mb-3" />
-                  <p className="text-xs font-bold">هیچ قانون یا ثوابت حقوقی برای سال مورد نظر یافت نشد.</p>
-                  <p className="text-[10px] text-slate-500 mt-1">با استفاده از فرم مجاور می‌توانید فرمول و مبالغ دستمزد سال یا دوره مد نظر را تعریف کنید.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {filteredRates.map((rate) => (
-                    <div 
-                      key={rate.id}
-                      className={`bg-slate-950 border rounded-2xl p-5 transition-all relative overflow-hidden ${
-                        editingRateId === rate.id ? 'border-amber-500/50 bg-amber-955/5' : 'border-slate-850 hover:border-slate-800'
-                      }`}
-                    >
-                      {/* Top Ribbon Row */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-850/60 pb-3 mb-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-black text-white px-3 py-1 bg-slate-900 border border-slate-800 rounded-lg font-mono">
-                            سال مالی {toPersianDigits(rate.year)}
-                          </span>
-                          {rate.title && (
-                            <span className="text-[10.5px] font-black text-amber-300 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/25 rounded-lg">
-                              {rate.title}
-                            </span>
-                          )}
-                          {(rate.startDate || rate.endDate) ? (
-                            <span className="text-[10px] font-bold font-mono text-emerald-300 px-2.5 py-0.5 bg-emerald-500/10 border border-emerald-500/25 rounded-lg">
-                              از {toPersianDigits(rate.startDate || '—')} تا {toPersianDigits(rate.endDate || '—')}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-rose-455 font-bold px-2 py-0.5 bg-rose-950/20 rounded border border-rose-900/20">
-                              ثوابت کل سال مالی
-                            </span>
-                          )}
-                        </div>
-                        
-                        {/* Actions */}
-                        <div className="flex gap-1.5 items-center">
-                          <button
-                            type="button"
-                            onClick={() => handleEditSalaryBaseRate(rate)}
-                            className="text-slate-400 hover:text-white text-[10px] px-2 py-1 bg-slate-850 border border-slate-800 rounded hover:bg-slate-750 transition-all font-bold cursor-pointer font-sans"
-                            title="اصلاح آیتم‌ها"
-                          >
-                            اصلاح
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSalaryBaseRate(rate.id, rate.title ? `${rate.title} (${toPersianDigits(rate.year)})` : `سال ${toPersianDigits(rate.year)}`)}
-                            className="text-rose-400 hover:text-rose-300 text-[10px] p-1 bg-rose-950/20 rounded border border-rose-900/30 hover:bg-rose-950/45 transition-all cursor-pointer"
-                            title="حذف کامل"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Detail Metrics Grid */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-4 gap-x-6 text-xs text-right">
-                        
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حقوق پایه روزانه</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.dailyBaseSalary))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-amber-300 block mb-1">پایه حقوق ساعتی (ملاک تسویه)</span>
-                          <span className="font-bold text-amber-400 font-mono">
-                            {toPersianDigits(formatWithCommas(rate.hourlyBaseSalary || Math.round((rate.dailyBaseSalary || 0) / 7.333333)))}
-                          </span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-sky-400 block mb-1">حقوق پایه روزانه بیمه (سهم کارگر)</span>
-                          <span className="font-bold text-sky-300 font-mono">{toPersianDigits(formatWithCommas(rate.dailyInsuranceSalary))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حق مسکن (ماهانه)</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.housingAllowance))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">کمک هزینه اقلام (حق بن)</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.foodAllowance))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حق اولاد (هر فرزند)</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.childAllowance))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">پایه سنوات</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.baseYearsRate))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حق تاهل (ماهانه)</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.marriageAllowance))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">سقف معافیت مالیاتی حقوق</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.taxableAmount || 0))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">اضافه کاری ساعتی</span>
-                          <span className="font-bold text-white font-mono">
-                            {toPersianDigits(formatWithCommas((rate.overtimeHourlyRate && rate.overtimeHourlyRate > ((rate.dailyBaseSalary || 0) * 0.8)) ? Math.round(rate.overtimeHourlyRate / 7.33) : (rate.overtimeHourlyRate || Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33))))}
-                          </span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حق جمعه‌کاری ساعتی</span>
-                          <span className="font-bold text-white font-mono">
-                            {toPersianDigits(formatWithCommas(
-                              (rate.fridayWorkHourlyRate && rate.fridayWorkHourlyRate > 0)
-                                ? (rate.fridayWorkHourlyRate > ((rate.dailyBaseSalary || 0) * 0.15)
-                                    ? Math.round(rate.fridayWorkHourlyRate / 7.33)
-                                    : rate.fridayWorkHourlyRate)
-                                : Math.round(((rate.dailyBaseSalary || 0) * 0.40) / 7.33)
-                            ))}
-                          </span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                          <span className="text-[9.5px] text-slate-400 block font-sans font-normal mt-0.5">
-                            (فرمول: (پایه روزانه × ۴۰٪) / ۷.۳۳)
-                          </span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">حق تعطیل کاری ساعتی</span>
-                          <span className="font-bold text-white font-mono">
-                            {toPersianDigits(formatWithCommas((rate.holidayWorkHourlyRate && rate.holidayWorkHourlyRate > ((rate.dailyBaseSalary || 0) * 0.8)) ? Math.round(rate.holidayWorkHourlyRate / 7.33) : (rate.holidayWorkHourlyRate ?? (rate.overtimeHourlyRate || Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33)))))}
-                          </span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-
-                        <div>
-                          <span className="text-[10.5px] text-indigo-300 block mb-1">مرخصی ساعتی ماهانه</span>
-                          <span className="font-bold text-indigo-300 font-mono">
-                            {toPersianDigits(rate.monthlyLeaveHours || DEFAULT_MONTHLY_LEAVE_HM)}
-                          </span>
-                          <span className="text-[9px] text-slate-500 mr-1">ساعت</span>
-                        </div>
-
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Seniority Rates Rules Table */}
-              <div className="bg-slate-950 border border-slate-850 rounded-2xl p-5 space-y-4">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-850/60 pb-3 gap-3">
+            ) : (
+              <div className="bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-800 pb-3 gap-3">
                   <div className="flex items-center gap-2">
                     <span className="p-1.5 bg-rose-500/10 rounded-lg text-rose-500">
                       <Award className="h-4 w-4" />
                     </span>
-                    <h4 className="text-xs font-black text-white">جدول پایگاه داده حق پایه سنوات ماهانه کارگاه</h4>
+                    <h4 className="text-xs font-black text-white">جدول پایگاه داده حق پایه سنوات ماهانه کارگاه ({toPersianDigits(filteredSeniorityRateRules.length)})</h4>
                   </div>
 
-                  {/* Year select filter for seniority rates */}
                   <div className="flex items-center gap-2 w-full sm:w-auto">
-                    <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">فیلتر سال مالی:</span>
+                    <span className="text-[10.5px] text-slate-400 font-bold whitespace-nowrap">فیلتر سال مالی:</span>
                     <select
                       value={seniorityYearFilter}
                       onChange={(e) => setSeniorityYearFilter(e.target.value)}
-                      className="bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-white px-2.5 py-1 focus:outline-none cursor-pointer font-bold font-sans"
+                      className="bg-slate-950 border border-slate-800 rounded-xl text-xs text-white px-3 py-1.5 focus:outline-none cursor-pointer font-bold font-sans"
                     >
                       <option value="">همه سال‌ها</option>
                       {seniorityFiscalYears.map(year => (
@@ -18287,7 +18706,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 {filteredSeniorityRateRules.length === 0 ? (
-                  <div className="py-8 text-center text-slate-500 text-[11px] font-bold border border-dashed border-slate-850 rounded-xl bg-slate-900/[15%]">
+                  <div className="py-10 text-center text-slate-400 text-xs font-bold border border-dashed border-slate-800 rounded-2xl bg-slate-950/60">
                     هیچ رکورد پایه سنوات ماهانه‌ای ثبت نشده یا در فیلتر انتخابی شما قرار ندارد.
                   </div>
                 ) : (
@@ -18298,45 +18717,45 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <th className="py-2.5 px-3">سال مالی</th>
                           <th className="py-2.5 px-3">بازه تاریخ اعتبار</th>
                           <th className="py-2.5 px-3">سابقه مشمول (سال کامل)</th>
-                          <th className="py-1.5 px-3 text-left">مبلغ سنوات روزانه</th>
+                          <th className="py-2.5 px-3 text-left">مبلغ سنوات روزانه</th>
                           <th className="py-2.5 px-3 text-left">مبلغ سنوات ماهانه (۳۰ روز)</th>
                           <th className="py-2.5 px-3 text-center">عملیات</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-900/60 font-sans">
+                      <tbody className="divide-y divide-slate-800/70 font-sans">
                         {filteredSeniorityRateRules.map((rule) => (
                           <tr 
                             key={rule.id} 
-                            className={`hover:bg-slate-900/25 transition-colors ${
-                              editingSeniorityId === rule.id ? 'bg-amber-950/10' : ''
+                            className={`hover:bg-slate-800/40 transition-colors ${
+                              editingSeniorityId === rule.id ? 'bg-amber-950/15' : ''
                             }`}
                           >
-                            <td className="py-2.5 px-3 text-slate-300 font-bold font-mono">{toPersianDigits(rule.fiscalYear)}</td>
-                            <td className="py-2.5 px-3">
+                            <td className="py-3 px-3 text-slate-300 font-bold font-mono">{toPersianDigits(rule.fiscalYear)}</td>
+                            <td className="py-3 px-3">
                               {rule.startDate && rule.endDate ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-rose-500/15 text-rose-300 border border-rose-500/30 whitespace-nowrap">
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold font-mono bg-rose-500/15 text-rose-300 border border-rose-500/30 whitespace-nowrap">
                                   {toPersianDigits(rule.startDate)} تا {toPersianDigits(rule.endDate)}
                                 </span>
                               ) : (
-                                <span className="text-[10px] text-slate-500 font-bold">کل سال مالی</span>
+                                <span className="text-[10.5px] text-slate-500 font-bold">کل سال مالی</span>
                               )}
                             </td>
-                            <td className="py-2.5 px-3 text-white font-extrabold">{toPersianDigits(rule.seniorityYears)} سال کامل</td>
-                            <td className="py-2.5 px-3 text-left font-bold text-emerald-400 font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate))} ریال</td>
-                            <td className="py-2.5 px-3 text-left font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate * 30))} ریال</td>
-                            <td className="py-2.5 px-3 text-center">
+                            <td className="py-3 px-3 text-white font-extrabold">{toPersianDigits(rule.seniorityYears)} سال کامل</td>
+                            <td className="py-3 px-3 text-left font-bold text-emerald-400 font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate))} ریال</td>
+                            <td className="py-3 px-3 text-left font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate * 30))} ریال</td>
+                            <td className="py-3 px-3 text-center">
                               <div className="flex justify-center gap-1.5">
                                 <button
                                   type="button"
                                   onClick={() => handleEditSeniorityRateRule(rule)}
-                                  className="text-amber-400 hover:text-amber-300 text-[9px] px-2 py-0.5 bg-amber-950/20 border border-amber-900/30 rounded font-bold cursor-pointer transition-all"
+                                  className="text-amber-400 hover:text-amber-300 text-[10.5px] px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg font-bold cursor-pointer transition-all"
                                 >
                                   اصلاح
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteSeniorityRateRule(rule.id, rule.seniorityYears, rule.fiscalYear)}
-                                  className="text-rose-450 hover:text-rose-400 p-0.5 bg-rose-950/20 rounded border border-rose-900/30 cursor-pointer transition-all"
+                                  className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg border border-rose-500/30 cursor-pointer transition-all"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -18349,10 +18768,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
                 )}
               </div>
-            </div>
-          </div>
+            )
+          )}
         </div>
-      )}
+        );
+      })()}
 
 
       {/* ================= TAB 5: PERSONNEL CONTRACTS (MULTIPLE CONTRACTS PER EMPLOYEE) ================= */}
@@ -18419,47 +18839,73 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-100 font-sans" dir="rtl">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between bg-slate-950 p-6 rounded-2xl border border-slate-850 gap-4">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between bg-slate-900/95 p-5 rounded-3xl border border-slate-800 shadow-xl gap-4">
               <div className="flex items-center gap-3">
                 <div className="bg-rose-500/10 p-3 rounded-xl border border-rose-500/20">
-                  <FileCheck className="h-6 w-6 text-rose-500" />
+                  <FileCheck className="h-5 w-5 text-rose-500" />
                 </div>
                 <div>
-                  <h3 className="text-base font-extrabold text-white">سامانه ثبت و صدور قراردادهای پرسنلی</h3>
-                  <p className="text-xs text-slate-400 mt-1">مدیریت مکتوب قراردادهای کاری کارگاه، ارتباط خودکار با پرونده پرسنلی و چاپ حرفه‌ای نسخه آ۴ فیزیکی</p>
+                  <h3 className="text-sm font-black text-white">سامانه ثبت و صدور قراردادهای پرسنلی</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">مدیریت مکتوب قراردادهای کاری کارگاه، ارتباط خودکار با پرونده پرسنلی و چاپ حرفه‌ای نسخه آ۴ فیزیکی</p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5 self-stretch md:self-auto w-full md:w-auto">
-                <button
-                  type="button"
-                  onClick={() => setShowContractSettings(true)}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md border border-amber-500/30 whitespace-nowrap justify-center flex-1 md:flex-initial"
-                >
-                  <Settings className="h-3.5 w-3.5 text-amber-200" /> تنظیمات متن پیش‌فرض قراردادها
-                </button>
+              <div className="flex flex-wrap items-center gap-2 self-stretch md:self-auto w-full md:w-auto">
+                {!isContractFormOpen ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowContractSettings(true)}
+                      className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-amber-500/30 whitespace-nowrap justify-center"
+                    >
+                      <Settings className="h-3.5 w-3.5 text-amber-200" /> تنظیمات متن قراردادها
+                    </button>
 
-                {getPreviousPeriodId() && (
+                    {getPreviousPeriodId() && (
+                      <button
+                        type="button"
+                        onClick={handleCopyPersonnelContractsFromPreviousPeriod}
+                        className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30 whitespace-nowrap justify-center"
+                      >
+                        <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی از دوره قبل
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setShowBatchContractForm(!showBatchContractForm)}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-emerald-500/30 whitespace-nowrap justify-center"
+                    >
+                      <Layers className="h-3.5 w-3.5 text-emerald-200" /> صدور دسته‌جمعی
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowBatchContractForm(false);
+                        handleNewContract();
+                      }}
+                      className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md shadow-rose-900/30 whitespace-nowrap justify-center"
+                    >
+                      <Plus className="h-4 w-4" /> افزودن قرارداد جدید
+                    </button>
+                  </>
+                ) : (
                   <button
                     type="button"
-                    onClick={handleCopyPersonnelContractsFromPreviousPeriod}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-xs border border-indigo-500/30 whitespace-nowrap justify-center flex-1 md:flex-initial"
+                    onClick={() => {
+                      resetContractFormFields();
+                      setIsContractFormOpen(false);
+                    }}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold border border-slate-700 whitespace-nowrap justify-center"
                   >
-                    <Copy className="h-3.5 w-3.5 text-indigo-200" /> کپی قراردادها از دوره قبل
+                    <ArrowRight className="h-4 w-4" /> بازگشت به لیست قراردادها
                   </button>
                 )}
-
-                <button
-                  type="button"
-                  onClick={() => setShowBatchContractForm(!showBatchContractForm)}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-xs text-white rounded-xl transition-all cursor-pointer flex items-center gap-1.5 font-bold shadow-md border border-emerald-500/30 whitespace-nowrap justify-center flex-1 md:flex-initial"
-                >
-                  <Plus className="h-3.5 w-3.5 text-emerald-200" /> صدور دسته‌جمعی قراردادها
-                </button>
               </div>
             </div>
 
-            {showBatchContractForm && (
+            {!isContractFormOpen && showBatchContractForm && (
               <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-scaleIn shadow-xl">
                 <div className="flex items-center justify-between border-b border-slate-850 pb-3">
                   <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest border-r-4 border-emerald-500 pr-2">
@@ -18468,7 +18914,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   <button
                     type="button"
                     onClick={() => setShowBatchContractForm(false)}
-                    className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1 rounded-lg"
+                    className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1 rounded-lg cursor-pointer"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -18537,11 +18983,33 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
             <div className="flex flex-col gap-6">
               
-              {/* Right Panel: Contract details Register / Update Form */}
-              <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <h4 className="text-xs font-black text-rose-500 uppercase tracking-widest border-r-4 border-rose-500 pr-2">
-                  {editContractId ? 'ویرایش مشخصات قرارداد کار موقت' : 'ثبت قرارداد کار موقت جدید'}
-                </h4>
+              {isContractFormOpen ? (
+              /* Contract details Register / Update Form */
+              <div className="w-full bg-slate-900/95 border border-slate-800 rounded-3xl p-6 space-y-5 shadow-xl animate-fadeIn">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-4 gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="p-2 bg-rose-500/10 rounded-xl text-rose-500 border border-rose-500/20">
+                      <FileCheck className="h-5 w-5" />
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-black text-white">
+                        {editContractId ? 'ویرایش مشخصات قرارداد کار موقت' : 'ثبت قرارداد کار موقت جدید'}
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">تکمیل مشخصات قرارداد، مبالغ پایه و محاسبه خودکار مزایا و خالص پرداختی</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetContractFormFields();
+                      setIsContractFormOpen(false);
+                    }}
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all border border-slate-700 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    انصراف و بازگشت
+                  </button>
+                </div>
 
                 {/* وضعیت فعال بودن قرارداد در بالای صفحه */}
                 <div className={`p-3.5 rounded-2xl border transition-all ${
@@ -19589,46 +20057,38 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   );
                 })()}
 
-                <div className="flex gap-2.5 pt-2">
-                  {editContractId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditContractId(null);
-                        setConStartDate('');
-                        setConEndDate('');
-                        setConDurationMonths('');
-                        setConDailySalary('');
-                        setConBaseSalary('');
-                        setConRole('');
-                        setConNotes('');
-                      }}
-                      className="flex-1 bg-slate-800 hover:bg-slate-755 text-slate-300 py-2.5 rounded-xl text-xs font-bold transition-all border border-slate-700 cursor-pointer"
-                    >
-                      انصراف از ویرایش
-                    </button>
-                  )}
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-4 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetContractFormFields();
+                      setIsContractFormOpen(false);
+                    }}
+                    className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all border border-slate-700 cursor-pointer"
+                  >
+                    انصراف و بازگشت
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetContractFormFields}
+                    className="px-4 py-2.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all border border-slate-800 cursor-pointer"
+                  >
+                    پاک کردن فرم
+                  </button>
                   <button
                     type="button"
                     onClick={handleSaveContract}
-                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl text-xs font-black transition-all shadow-lg shadow-rose-600/20 cursor-pointer animate-pulse-subtle"
+                    className="px-7 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black transition-all shadow-lg shadow-rose-600/20 cursor-pointer"
                   >
                     {editContractId ? 'اعمال اصلاحات قرارداد' : 'ذخیره قرارداد'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleNewContract}
-                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-xs font-bold transition-all border border-slate-700 cursor-pointer"
-                  >
-                    قرارداد جدید
-                  </button>
                 </div>
               </div>
-
-              {/* Left Panel: Saved Contracts List Grid */}
-              <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              ) : (
+              /* Saved Contracts List Grid */
+              <div className="w-full bg-slate-900/95 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
                 <div className="flex flex-col xl:flex-row items-start xl:items-center justify-between border-b border-slate-800/80 pb-3 mb-1 gap-3">
-                  <h4 className="text-xs font-black text-white uppercase tracking-widest border-r-4 border-slate-400 pr-2">
+                  <h4 className="text-xs font-black text-white uppercase tracking-widest border-r-4 border-rose-500 pr-2">
                     کارتابل کلیه قراردادهای ثبت شده در این دوره ({toPersianDigits(filteredContracts.length)})
                   </h4>
                   
@@ -19866,8 +20326,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
                 )}
               </div>
-
-              {/* Inline general contract settings form removed (now shown as modal on button click) */}
+              )}
 
             </div>
           </div>

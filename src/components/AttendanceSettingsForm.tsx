@@ -23,9 +23,14 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
   const [workdayYearFilter, setWorkdayYearFilter] = useState<string>(defaultFiscalYearStr);
   const [holidayYearFilter, setHolidayYearFilter] = useState<string>(defaultFiscalYearStr);
 
+  // View toggle states (table-first, Customer-style Add/Edit -> Back)
+  const [isWorkdayFormOpen, setIsWorkdayFormOpen] = useState<boolean>(false);
+  const [isHolidayFormOpen, setIsHolidayFormOpen] = useState<boolean>(false);
+  const [isBracketFormOpen, setIsBracketFormOpen] = useState<boolean>(false);
+
   // Workday form states
   const [editingWorkdayId, setEditingWorkdayId] = useState<string | null>(null);
-  const [workdayYear, setWorkdayYear] = useState<string>('1405');
+  const [workdayYear, setWorkdayYear] = useState<string>(defaultFiscalYearStr);
   const [workdayMonth, setWorkdayMonth] = useState<string>('1');
   const [workdayDaysInMonth, setWorkdayDaysInMonth] = useState<string>('31');
   const [workdayFridaysCount, setWorkdayFridaysCount] = useState<string>('4');
@@ -35,18 +40,18 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
 
   // Holiday form states
   const [editingHolidayId, setEditingHolidayId] = useState<string | null>(null);
-  const [holidayYear, setHolidayYear] = useState<string>('1405');
+  const [holidayYear, setHolidayYear] = useState<string>(defaultFiscalYearStr);
   const [holidayDate, setHolidayDate] = useState<string>('');
 
   // Tax Exemption form states
   const [editingExId, setEditingExId] = useState<string | null>(null);
-  const [exYear, setExYear] = useState<string>('1403');
+  const [exYear, setExYear] = useState<string>(defaultFiscalYearStr);
   const [exLimit, setExLimit] = useState<string>('');
   const [exSearchQuery, setExSearchQuery] = useState<string>('');
 
   // Tax Brackets form states
   const [editingBracketId, setEditingBracketId] = useState<string | null>(null);
-  const [bracketYear, setBracketYear] = useState<string>('1403');
+  const [bracketYear, setBracketYear] = useState<string>(defaultFiscalYearStr);
   const [bracketFrom, setBracketFrom] = useState<string>('');
   const [bracketTo, setBracketTo] = useState<string>('');
   const [bracketRate, setBracketRate] = useState<string>('');
@@ -138,11 +143,24 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
       monthlyWorkdaySettings: updatedList
     });
 
-    // Reset Form
+    // Reset Form and return to table
     setWorkdayMonth((prev => {
       const parsed = parseInt(prev) || 1;
       return parsed < 12 ? (parsed + 1).toString() : '1';
     })());
+    setIsWorkdayFormOpen(false);
+  };
+
+  const handleCloseWorkdayForm = () => {
+    setEditingWorkdayId(null);
+    setWorkdayYear(defaultFiscalYearStr);
+    setWorkdayMonth('1');
+    setWorkdayDaysInMonth('31');
+    setWorkdayFridaysCount('4');
+    setWorkdayNonFridayHolidays('0');
+    setWorkdayWorkingDaysCount('27');
+    setWorkdayRequiredWorkHours('192');
+    setIsWorkdayFormOpen(false);
   };
 
   const handleEditWorkday = (item: MonthlyWorkdaySetting) => {
@@ -154,6 +172,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
     setWorkdayNonFridayHolidays(item.nonFridayHolidays.toString());
     setWorkdayWorkingDaysCount(item.workingDaysCount.toString());
     setWorkdayRequiredWorkHours(item.requiredWorkHours.toString());
+    setIsWorkdayFormOpen(true);
   };
 
   const handleDeleteWorkday = (id: string) => {
@@ -210,12 +229,21 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
     });
 
     setHolidayDate('');
+    setIsHolidayFormOpen(false);
+  };
+
+  const handleCloseHolidayForm = () => {
+    setEditingHolidayId(null);
+    setHolidayYear(defaultFiscalYearStr);
+    setHolidayDate('');
+    setIsHolidayFormOpen(false);
   };
 
   const handleEditHoliday = (item: OfficialHoliday) => {
     setEditingHolidayId(item.id);
     setHolidayYear(item.year.toString());
     setHolidayDate(item.date);
+    setIsHolidayFormOpen(true);
   };
 
   const handleDeleteHoliday = (id: string) => {
@@ -323,7 +351,17 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
     setBracketFrom('');
     setBracketTo('');
     setBracketRate('');
+    setIsBracketFormOpen(false);
     alert(editingBracketId ? 'طبقه مالیاتی با موفقیت ویرایش شد.' : 'طبقه مالیاتی جدید با موفقیت ثبت شد.');
+  };
+
+  const handleCloseBracketForm = () => {
+    setEditingBracketId(null);
+    setBracketYear(defaultFiscalYearStr);
+    setBracketFrom('');
+    setBracketTo('');
+    setBracketRate('');
+    setIsBracketFormOpen(false);
   };
 
   const handleEditBracket = (item: any) => {
@@ -332,6 +370,7 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
     setBracketFrom(formatWithCommas(item.fromAmount));
     setBracketTo(item.toAmount !== null ? formatWithCommas(item.toAmount) : '');
     setBracketRate(String(item.taxRate));
+    setIsBracketFormOpen(true);
   };
 
   const handleDeleteBracket = (id: string) => {
@@ -860,454 +899,530 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
         </div>
       </div>
 
-      {/* 1. Monthly Workday Settings Table (جدول کارکرد موظفی ماهانه) */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        
-        {/* Workday Form Side */}
-        <div className="xl:col-span-1 bg-slate-950 p-6 rounded-2xl border border-slate-800 h-fit space-y-6 shadow-xl">
-          <h3 className="text-sm font-black text-white border-b border-slate-850 pb-3 flex items-center gap-2">
-            <Calendar className="h-5 w-5 text-emerald-500" />
-            {editingWorkdayId ? 'ویرایش کارکرد موظفی ماهانه' : 'تعریف کارکرد موظفی ماهانه'}
-          </h3>
+      {/* 1. Monthly Workday Settings (جدول کارکرد موظفی ماهانه — Table-first + Add/Back) */}
+      <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-800 pb-4 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl shrink-0">
+              <Calendar className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-black text-white">
+                {isWorkdayFormOpen
+                  ? (editingWorkdayId ? 'ویرایش کارکرد موظفی ماهانه' : 'افزودن کارکرد موظفی ماهانه جدید')
+                  : `لیست کارکرد موظفی ماه‌های سال ${toPersianDigits(workdayYearFilter)}`}
+              </h3>
+              <span className="text-[11px] text-slate-400">
+                تنظیم تعداد روز کاری و ساعت موظفی هر ماه جهت محاسبات حقوق و اضافه‌کاری
+              </span>
+            </div>
+          </div>
 
-          <form onSubmit={handleSaveWorkdaySetting} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {!isWorkdayFormOpen ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleExportWorkdaysExcel}
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl text-[11px] font-bold border border-slate-800 hover:border-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="دانلود قالب اکسل"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  دانلود الگو
+                </button>
+
+                <label className="px-2.5 py-2 bg-emerald-950/40 hover:bg-emerald-950/60 text-emerald-400 hover:text-emerald-300 rounded-xl text-[11px] font-bold border border-emerald-900/40 hover:border-emerald-700/60 transition-all flex items-center gap-1.5 cursor-pointer">
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  بارگذاری اکسل
+                  <input 
+                    type="file" 
+                    accept=".xlsx, .xls" 
+                    onChange={handleImportWorkdaysExcel} 
+                    className="hidden" 
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingWorkdayId(null);
+                    setWorkdayYear(workdayYearFilter || defaultFiscalYearStr);
+                    setIsWorkdayFormOpen(true);
+                  }}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20"
+                >
+                  <Plus className="h-4 w-4" />
+                  افزودن کارکرد موظفی
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCloseWorkdayForm}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border border-slate-700"
+              >
+                <X className="h-4 w-4" />
+                بازگشت
+              </button>
+            )}
+          </div>
+        </div>
+
+        {isWorkdayFormOpen ? (
+          <form onSubmit={handleSaveWorkdaySetting} className="space-y-5 bg-slate-950/60 p-5 rounded-2xl border border-slate-800/80 animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4">
               <div>
-                <label className="block text-[11px] text-slate-400 font-bold mb-1.5">سال (خورشیدی)</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">سال (خورشیدی)</label>
                 <input 
                   type="number"
                   required
                   value={workdayYear}
                   onChange={(e) => setWorkdayYear(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] text-slate-400 font-bold mb-1.5">ماه</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">ماه</label>
                 <select
                   value={workdayMonth}
                   onChange={(e) => setWorkdayMonth(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg text-xs text-white text-center cursor-pointer font-bold"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl text-xs text-white text-center cursor-pointer font-bold"
                 >
                   {persianMonths.map((m, idx) => (
                     <option key={idx} value={(idx + 1).toString()}>{m} ({idx + 1})</option>
                   ))}
                 </select>
               </div>
-            </div>
 
-            <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="block text-[10px] text-slate-400 font-bold mb-1">کل روزها</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">کل روزها</label>
                 <input 
                   type="number"
                   required
                   value={workdayDaysInMonth}
                   onChange={(e) => setWorkdayDaysInMonth(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-1.5 rounded-lg font-mono text-center text-xs text-white"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white"
                 />
               </div>
 
               <div>
-                <label className="block text-[10px] text-slate-400 font-bold mb-1">تعداد جمعه</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">تعداد جمعه</label>
                 <input 
                   type="number"
                   required
                   value={workdayFridaysCount}
                   onChange={(e) => setWorkdayFridaysCount(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-1.5 rounded-lg font-mono text-center text-xs text-white"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white"
                 />
               </div>
 
               <div>
-                <label className="block text-[10px] text-slate-400 font-bold mb-1">تعطیل غیرجمعه</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">تعطیل غیرجمعه</label>
                 <input 
                   type="number"
                   required
                   value={workdayNonFridayHolidays}
                   onChange={(e) => setWorkdayNonFridayHolidays(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-1.5 rounded-lg font-mono text-center text-xs text-white"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white"
                 />
               </div>
             </div>
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
+              <div className="grid grid-cols-2 gap-4 w-full sm:w-auto sm:min-w-[340px]">
+                <div>
+                  <label className="block text-[11px] text-slate-300 font-bold mb-1.5">روزهای کاری موظفی</label>
+                  <input 
+                    type="number"
+                    required
+                    value={workdayWorkingDaysCount}
+                    onChange={(e) => setWorkdayWorkingDaysCount(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] text-slate-300 font-bold mb-1.5">ساعت کار موظفی</label>
+                  <input 
+                    type="number"
+                    required
+                    value={workdayRequiredWorkHours}
+                    onChange={(e) => setWorkdayRequiredWorkHours(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
+                  />
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={handleAutoCalculate}
-                className="text-[10px] bg-amber-950/40 text-amber-400 hover:text-amber-300 border border-amber-900/50 hover:border-amber-700 rounded px-2.5 py-1 font-bold cursor-pointer transition-all"
+                className="text-xs bg-amber-950/40 text-amber-400 hover:text-amber-300 border border-amber-700/50 rounded-xl px-3.5 py-2.5 font-bold cursor-pointer transition-all"
               >
                 محاسبه خودکار روز و ساعت کارکرد موظفی
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-900">
-              <div>
-                <label className="block text-[11px] text-slate-400 font-bold mb-1.5">روزهای کاری موظفی</label>
-                <input 
-                  type="number"
-                  required
-                  value={workdayWorkingDaysCount}
-                  onChange={(e) => setWorkdayWorkingDaysCount(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] text-slate-400 font-bold mb-1.5">ساعت کار موظفی</label>
-                <input 
-                  type="number"
-                  required
-                  value={workdayRequiredWorkHours}
-                  onChange={(e) => setWorkdayRequiredWorkHours(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-2 pt-2">
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={handleCloseWorkdayForm}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-colors border border-slate-700"
+              >
+                انصراف و بازگشت
+              </button>
               <button
                 type="submit"
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center justify-center gap-1"
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl text-xs font-black cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-md"
               >
                 {editingWorkdayId ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                 {editingWorkdayId ? 'ذخیره تغییرات' : 'ثبت کارکرد موظفی'}
               </button>
-
-              {editingWorkdayId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingWorkdayId(null);
-                    setWorkdayYear('1405');
-                    setWorkdayMonth('1');
-                    setWorkdayDaysInMonth('31');
-                    setWorkdayFridaysCount('4');
-                    setWorkdayNonFridayHolidays('0');
-                    setWorkdayWorkingDaysCount('27');
-                    setWorkdayRequiredWorkHours('192');
-                  }}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-lg text-xs font-bold cursor-pointer transition-colors"
-                >
-                  انصراف
-                </button>
-              )}
             </div>
           </form>
-        </div>
-
-        {/* Workday Table & Search Side */}
-        <div className="xl:col-span-2 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-850 pb-3 gap-3">
-            <h3 className="text-sm font-black text-white flex items-center gap-2">
-              <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
-              لیست کارکرد موظفی ماه‌های سال {toPersianDigits(workdayYearFilter)}
-            </h3>
-
-            {/* Excel Actions */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportWorkdaysExcel}
-                className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg text-[10px] font-bold border border-slate-800 hover:border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
-                title="دانلود قالب اکسل"
-              >
-                <Download className="h-3.5 w-3.5" />
-                دانلود الگو
-              </button>
-
-              <label className="px-2.5 py-1.5 bg-emerald-950/40 hover:bg-emerald-950/60 text-emerald-400 hover:text-emerald-300 rounded-lg text-[10px] font-bold border border-emerald-900/40 hover:border-emerald-700/60 transition-all flex items-center gap-1 cursor-pointer">
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                بارگذاری اکسل
-                <input 
-                  type="file" 
-                  accept=".xlsx, .xls" 
-                  onChange={handleImportWorkdaysExcel} 
-                  className="hidden" 
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Search bar */}
-          <div className="flex items-center gap-3 bg-slate-900/40 border border-slate-850 p-3 rounded-xl max-w-sm">
-            <Search className="h-4 w-4 text-slate-500 shrink-0" />
-            <span className="text-xs text-slate-400 font-bold shrink-0">فیلتر بر اساس سال:</span>
-            <input 
-              type="number"
-              value={workdayYearFilter}
-              onChange={(e) => setWorkdayYearFilter(e.target.value)}
-              placeholder="مثال: 1405"
-              className="w-full bg-transparent focus:outline-none font-mono text-xs text-white"
-            />
-          </div>
-
-          <div className="overflow-x-auto border border-slate-850 rounded-xl">
-            <table className="min-w-full divide-y divide-slate-850 text-right text-xs">
-              <thead className="bg-slate-950 text-slate-400 font-bold">
-                <tr>
-                  <th className="px-4 py-3">ماه</th>
-                  <th className="px-3 py-3 text-center">کل روزها</th>
-                  <th className="px-3 py-3 text-center">تعداد جمعه</th>
-                  <th className="px-3 py-3 text-center">تعطیلات غیرجمعه</th>
-                  <th className="px-3 py-3 text-center">روز کاری موظفی</th>
-                  <th className="px-3 py-3 text-center">ساعت کار موظفی</th>
-                  <th className="px-4 py-3 text-center w-24">عملیات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-850/60">
-                {filteredWorkdays.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-slate-500 font-bold">
-                      هیچ ردیفی جهت نمایش با این فیلتر سال یافت نشد. می‌توانید ردیف جدید تعریف کنید یا فایل اکسل بارگذاری نمایید.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredWorkdays
-                    .sort((a, b) => a.month - b.month)
-                    .map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-900/30 transition-colors">
-                        <td className="px-4 py-3 font-bold text-slate-200">
-                          {persianMonths[item.month - 1]} ({toPersianDigits(item.month)})
-                        </td>
-                        <td className="px-3 py-3 text-center font-mono text-slate-300">
-                          {toPersianDigits(item.daysInMonth)}
-                        </td>
-                        <td className="px-3 py-3 text-center font-mono text-slate-300">
-                          {toPersianDigits(item.fridaysCount)}
-                        </td>
-                        <td className="px-3 py-3 text-center font-mono text-rose-400">
-                          {toPersianDigits(item.nonFridayHolidays)}
-                        </td>
-                        <td className="px-3 py-3 text-center font-mono text-emerald-400 font-bold">
-                          {toPersianDigits(item.workingDaysCount)} روز
-                        </td>
-                        <td className="px-3 py-3 text-center font-mono text-white font-bold">
-                          {toPersianDigits(item.requiredWorkHours)} ساعت
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleEditWorkday(item)}
-                              className="p-1 text-slate-400 hover:text-emerald-400 cursor-pointer transition-colors"
-                              title="ویرایش"
-                            >
-                              <Edit3 className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteWorkday(item.id)}
-                              className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer transition-colors"
-                              title="حذف"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {/* 3. Official Holidays of the Year (تعطیلات رسمی سال) */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        
-        {/* Holiday Form Side */}
-        <div className="xl:col-span-1 bg-slate-950 p-6 rounded-2xl border border-slate-800 h-fit space-y-6 shadow-xl">
-          <h3 className="text-sm font-black text-white border-b border-slate-850 pb-3 flex items-center gap-2">
-            <Calendar className="h-5 w-5 text-rose-400" />
-            {editingHolidayId ? 'ویرایش روز تعطیل رسمی' : 'ثبت روز تعطیل رسمی'}
-          </h3>
-
-          <form onSubmit={handleSaveHoliday} className="space-y-4">
-            <div>
-              <label className="block text-[11px] text-slate-400 font-bold mb-1.5">سال (خورشیدی)</label>
+        ) : (
+          <div className="space-y-4">
+            {/* Search bar */}
+            <div className="flex items-center gap-3 bg-slate-950/70 border border-slate-800 p-3 rounded-xl max-w-sm">
+              <Search className="h-4 w-4 text-slate-400 shrink-0" />
+              <span className="text-xs text-slate-400 font-bold shrink-0">فیلتر بر اساس سال:</span>
               <input 
                 type="number"
-                required
-                value={holidayYear}
-                onChange={(e) => setHolidayYear(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white"
+                value={workdayYearFilter}
+                onChange={(e) => setWorkdayYearFilter(e.target.value)}
+                placeholder="مثال: 1405"
+                className="w-full bg-transparent focus:outline-none font-mono text-xs text-white"
               />
             </div>
 
+            <div className="overflow-x-auto border border-slate-800 rounded-2xl">
+              <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
+                <thead className="bg-slate-950 text-slate-400 font-bold">
+                  <tr>
+                    <th className="px-4 py-3">ماه</th>
+                    <th className="px-3 py-3 text-center">کل روزها</th>
+                    <th className="px-3 py-3 text-center">تعداد جمعه</th>
+                    <th className="px-3 py-3 text-center">تعطیلات غیرجمعه</th>
+                    <th className="px-3 py-3 text-center">روز کاری موظفی</th>
+                    <th className="px-3 py-3 text-center">ساعت کار موظفی</th>
+                    <th className="px-4 py-3 text-center w-24">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {filteredWorkdays.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-slate-400 font-bold">
+                        هیچ ردیفی جهت نمایش با این فیلتر سال یافت نشد. از دکمه «افزودن کارکرد موظفی» یا بارگذاری اکسل استفاده کنید.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredWorkdays
+                      .sort((a, b) => a.month - b.month)
+                      .map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                          <td className="px-4 py-3 font-bold text-slate-200">
+                            {persianMonths[item.month - 1]} ({toPersianDigits(item.month)})
+                          </td>
+                          <td className="px-3 py-3 text-center font-mono text-slate-300">
+                            {toPersianDigits(item.daysInMonth)}
+                          </td>
+                          <td className="px-3 py-3 text-center font-mono text-slate-300">
+                            {toPersianDigits(item.fridaysCount)}
+                          </td>
+                          <td className="px-3 py-3 text-center font-mono text-rose-400">
+                            {toPersianDigits(item.nonFridayHolidays)}
+                          </td>
+                          <td className="px-3 py-3 text-center font-mono text-emerald-400 font-bold">
+                            {toPersianDigits(item.workingDaysCount)} روز
+                          </td>
+                          <td className="px-3 py-3 text-center font-mono text-white font-bold">
+                            {toPersianDigits(item.requiredWorkHours)} ساعت
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleEditWorkday(item)}
+                                className="p-1.5 bg-slate-800 hover:bg-amber-500/20 text-amber-400 rounded-lg cursor-pointer transition-colors"
+                                title="ویرایش"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteWorkday(item.id)}
+                                className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-rose-400 rounded-lg cursor-pointer transition-colors"
+                                title="حذف"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 2. Official Holidays of the Year (تعطیلات رسمی سال — Table-first + Add/Back) */}
+      <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-800 pb-4 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl shrink-0">
+              <Clock className="h-5 w-5" />
+            </div>
             <div>
-              <label className="block text-[11px] text-slate-400 font-bold mb-1.5">تاریخ تعطیلی (فرمت: YYYY/MM/DD)</label>
-              <input 
-                type="text"
-                required
-                placeholder="مثال: 1405/01/01"
-                value={holidayDate}
-                onChange={(e) => setHolidayDate(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
-              />
+              <h3 className="text-sm sm:text-base font-black text-white">
+                {isHolidayFormOpen
+                  ? (editingHolidayId ? 'ویرایش روز تعطیل رسمی' : 'ثبت روز تعطیل رسمی جدید')
+                  : `لیست روزهای تعطیل رسمی سال ${toPersianDigits(holidayYearFilter)}`}
+              </h3>
+              <span className="text-[11px] text-slate-400">
+                تعریف روزهای تعطیل تقویم رسمی برای شناسایی خودکار تعطیل‌کاری پرسنل
+              </span>
             </div>
+          </div>
 
-            <div className="flex gap-2 pt-2">
-              <button
-                type="submit"
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white p-2 rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center justify-center gap-1"
-              >
-                {editingHolidayId ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                {editingHolidayId ? 'ذخیره تغییرات' : 'افزودن روز تعطیل'}
-              </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {!isHolidayFormOpen ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleExportHolidaysExcel}
+                  className="px-2.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl text-[11px] font-bold border border-slate-800 hover:border-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="دانلود قالب اکسل"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  دانلود الگو
+                </button>
 
-              {editingHolidayId && (
+                <label className="px-2.5 py-2 bg-emerald-950/40 hover:bg-emerald-950/60 text-emerald-400 hover:text-emerald-300 rounded-xl text-[11px] font-bold border border-emerald-900/40 hover:border-emerald-700/60 transition-all flex items-center gap-1.5 cursor-pointer">
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  بارگذاری اکسل
+                  <input 
+                    type="file" 
+                    accept=".xlsx, .xls" 
+                    onChange={handleImportHolidaysExcel} 
+                    className="hidden" 
+                  />
+                </label>
+
                 <button
                   type="button"
                   onClick={() => {
                     setEditingHolidayId(null);
-                    setHolidayYear('1405');
+                    setHolidayYear(holidayYearFilter || defaultFiscalYearStr);
                     setHolidayDate('');
+                    setIsHolidayFormOpen(true);
                   }}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-2 rounded-lg text-xs font-bold cursor-pointer transition-colors"
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20"
                 >
-                  انصراف
+                  <Plus className="h-4 w-4" />
+                  افزودن روز تعطیل
                 </button>
-              )}
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCloseHolidayForm}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border border-slate-700"
+              >
+                <X className="h-4 w-4" />
+                بازگشت
+              </button>
+            )}
+          </div>
+        </div>
+
+        {isHolidayFormOpen ? (
+          <form onSubmit={handleSaveHoliday} className="space-y-5 bg-slate-950/60 p-5 rounded-2xl border border-slate-800/80 animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">سال (خورشیدی)</label>
+                <input 
+                  type="number"
+                  required
+                  value={holidayYear}
+                  onChange={(e) => setHolidayYear(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">تاریخ تعطیلی (فرمت: YYYY/MM/DD)</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="مثال: 1405/01/01"
+                  value={holidayDate}
+                  onChange={(e) => setHolidayDate(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={handleCloseHolidayForm}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-colors border border-slate-700"
+              >
+                انصراف و بازگشت
+              </button>
+              <button
+                type="submit"
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl text-xs font-black cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-md"
+              >
+                {editingHolidayId ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                {editingHolidayId ? 'ذخیره تغییرات' : 'ثبت روز تعطیل رسمی'}
+              </button>
             </div>
           </form>
-        </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Search Bar */}
+            <div className="flex items-center gap-3 bg-slate-950/70 border border-slate-800 p-3 rounded-xl max-w-sm">
+              <Search className="h-4 w-4 text-slate-400 shrink-0" />
+              <span className="text-xs text-slate-400 font-bold shrink-0">فیلتر بر اساس سال:</span>
+              <input 
+                type="number"
+                value={holidayYearFilter}
+                onChange={(e) => setHolidayYearFilter(e.target.value)}
+                placeholder="مثال: 1405"
+                className="w-full bg-transparent focus:outline-none font-mono text-xs text-white"
+              />
+            </div>
 
-        {/* Holiday Table & Search Side */}
-        <div className="xl:col-span-2 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-850 pb-3 gap-3">
-            <h3 className="text-sm font-black text-white flex items-center gap-2">
-              <Clock className="h-5 w-5 text-rose-400" />
-              لیست روزهای تعطیل رسمی سال {toPersianDigits(holidayYearFilter)}
-            </h3>
+            <div className="overflow-x-auto border border-slate-800 rounded-2xl">
+              <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
+                <thead className="bg-slate-950 text-slate-400 font-bold">
+                  <tr>
+                    <th className="px-6 py-3">ردیف</th>
+                    <th className="px-6 py-3">سال</th>
+                    <th className="px-6 py-3 text-center">تاریخ تعطیل رسمی</th>
+                    <th className="px-6 py-3 text-center w-28">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {filteredHolidays.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-10 text-center text-slate-400 font-bold">
+                        هیچ روز تعطیل رسمی برای این فیلتر سال یافت نشد. از دکمه «افزودن روز تعطیل» یا بارگذاری اکسل استفاده کنید.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredHolidays
+                      .sort((a, b) => a.date.localeCompare(b.date))
+                      .map((item, idx) => (
+                        <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                          <td className="px-6 py-3 font-mono text-slate-400 font-semibold">
+                            {toPersianDigits(idx + 1)}
+                          </td>
+                          <td className="px-6 py-3 font-bold text-slate-300">
+                            سال {toPersianDigits(item.year)}
+                          </td>
+                          <td className="px-6 py-3 text-center font-mono text-rose-400 font-bold text-sm">
+                            {toPersianDigits(item.date)}
+                          </td>
+                          <td className="px-6 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleEditHoliday(item)}
+                                className="p-1.5 bg-slate-800 hover:bg-amber-500/20 text-amber-400 rounded-lg cursor-pointer transition-colors"
+                                title="ویرایش"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteHoliday(item.id)}
+                                className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-rose-400 rounded-lg cursor-pointer transition-colors"
+                                title="حذف"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
 
-            {/* Excel Actions */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleExportHolidaysExcel}
-                className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg text-[10px] font-bold border border-slate-800 hover:border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
-                title="دانلود قالب اکسل"
-              >
-                <Download className="h-3.5 w-3.5" />
-                دانلود الگو
-              </button>
-
-              <label className="px-2.5 py-1.5 bg-emerald-950/40 hover:bg-emerald-950/60 text-emerald-400 hover:text-emerald-300 rounded-lg text-[10px] font-bold border border-emerald-900/40 hover:border-emerald-700/60 transition-all flex items-center gap-1 cursor-pointer">
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                بارگذاری اکسل
-                <input 
-                  type="file" 
-                  accept=".xlsx, .xls" 
-                  onChange={handleImportHolidaysExcel} 
-                  className="hidden" 
-                />
-              </label>
+      {/* 3. Tax Configuration Section (تنظیمات طبقات مالیات حقوق — Table-first + Add/Back) */}
+      <div className="bg-slate-900/95 p-5 sm:p-6 rounded-3xl border border-slate-800 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-800 pb-4 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl shrink-0">
+              <Settings className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-black text-white">
+                {isBracketFormOpen
+                  ? (editingBracketId ? 'ویرایش طبقه مالیاتی حقوق' : 'ثبت طبقه مالیاتی حقوق جدید')
+                  : 'تنظیمات معافیت سالانه و طبقات مالیات حقوق'}
+              </h3>
+              <span className="text-[11px] text-slate-400">
+                تعریف پلکان نرخ مالیات حقوق بر اساس سال مالی جهت کسر خودکار مالیات
+              </span>
             </div>
           </div>
 
-          {/* Search Bar */}
-          <div className="flex items-center gap-3 bg-slate-900/40 border border-slate-850 p-3 rounded-xl max-w-sm">
-            <Search className="h-4 w-4 text-slate-500 shrink-0" />
-            <span className="text-xs text-slate-400 font-bold shrink-0">فیلتر بر اساس سال:</span>
-            <input 
-              type="number"
-              value={holidayYearFilter}
-              onChange={(e) => setHolidayYearFilter(e.target.value)}
-              placeholder="مثال: 1405"
-              className="w-full bg-transparent focus:outline-none font-mono text-xs text-white"
-            />
-          </div>
-
-          <div className="overflow-x-auto border border-slate-850 rounded-xl">
-            <table className="min-w-full divide-y divide-slate-850 text-right text-xs">
-              <thead className="bg-slate-950 text-slate-400 font-bold">
-                <tr>
-                  <th className="px-6 py-3">ردیف</th>
-                  <th className="px-6 py-3">سال</th>
-                  <th className="px-6 py-3 text-center">تاریخ تعطیل رسمی</th>
-                  <th className="px-6 py-3 text-center w-28">عملیات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-850/60">
-                {filteredHolidays.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-slate-500 font-bold">
-                      هیچ روز تعطیل رسمی برای این فیلتر سال یافت نشد. می‌توانید روز جدید تعریف کنید یا فایل اکسل بارگذاری نمایید.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredHolidays
-                    .sort((a, b) => a.date.localeCompare(b.date))
-                    .map((item, idx) => (
-                      <tr key={item.id} className="hover:bg-slate-900/30 transition-colors">
-                        <td className="px-6 py-3 font-mono text-slate-450 font-semibold">
-                          {toPersianDigits(idx + 1)}
-                        </td>
-                        <td className="px-6 py-3 font-bold text-slate-300">
-                          سال {toPersianDigits(item.year)}
-                        </td>
-                        <td className="px-6 py-3 text-center font-mono text-rose-400 font-bold text-sm">
-                          {toPersianDigits(item.date)}
-                        </td>
-                        <td className="px-6 py-3 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleEditHoliday(item)}
-                              className="p-1 text-slate-400 hover:text-emerald-400 cursor-pointer transition-colors"
-                              title="ویرایش"
-                            >
-                              <Edit3 className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteHoliday(item.id)}
-                              className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer transition-colors"
-                              title="حذف"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                )}
-              </tbody>
-            </table>
+          <div className="flex items-center gap-2">
+            {!isBracketFormOpen ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingBracketId(null);
+                  setBracketYear(defaultFiscalYearStr);
+                  setBracketFrom('');
+                  setBracketTo('');
+                  setBracketRate('');
+                  setIsBracketFormOpen(true);
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20"
+              >
+                <Plus className="h-4 w-4" />
+                افزودن طبقه مالیاتی
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCloseBracketForm}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border border-slate-700"
+              >
+                <X className="h-4 w-4" />
+                بازگشت
+              </button>
+            )}
           </div>
         </div>
-      </div>
 
-      {/* 3. Tax Configuration Section (تنظیمات معافیت و طبقات مالیات حقوق) */}
-      <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-6">
-        <h3 className="text-sm font-black text-white border-b border-slate-850 pb-3 flex items-center gap-2">
-          <Settings className="h-5 w-5 text-amber-500" />
-          تنظیمات معافیت سالانه و طبقات مالیات حقوق
-        </h3>
-
-        <div className="grid grid-cols-1 gap-6">
-          
-          {/* Tax Brackets Form & Table (طبقات مالیات حقوق) */}
-          <div className="bg-slate-900/50 p-5 rounded-xl border border-slate-800 space-y-4">
-            <h4 className="text-xs font-black text-slate-200 border-b border-slate-800 pb-2 flex items-center gap-1.5">
-              <span>{editingBracketId ? 'ویرایش طبقه مالیاتی' : 'ثبت طبقه مالیاتی حقوق'}</span>
-            </h4>
-
-            <form onSubmit={handleSaveBracket} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+        {isBracketFormOpen ? (
+          <form onSubmit={handleSaveBracket} className="space-y-5 bg-slate-950/60 p-5 rounded-2xl border border-slate-800/80 animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
               <div>
-                <label className="block text-[10.5px] text-slate-400 font-bold mb-1">سال مالی</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">سال مالی</label>
                 <input 
                   type="number"
                   required
                   value={bracketYear}
                   onChange={(e) => setBracketYear(toEnglishDigits(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[10.5px] text-slate-400 font-bold mb-1">از مبلغ ماهانه (ریال)</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">از مبلغ ماهانه (ریال)</label>
                 <input 
                   type="text"
                   required
@@ -1319,12 +1434,12 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
                       setBracketFrom(formatWithCommas(clean));
                     }
                   }}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[10.5px] text-slate-400 font-bold mb-1">تا مبلغ ماهانه (ریال - خالی برای بی‌سقف)</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">تا مبلغ ماهانه (ریال - خالی برای بی‌سقف)</label>
                 <input 
                   type="text"
                   placeholder="مثال: ۱۸۰,۰۰۰,۰۰۰"
@@ -1335,12 +1450,12 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
                       setBracketTo(formatWithCommas(clean));
                     }
                   }}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[10.5px] text-slate-400 font-bold mb-1">نرخ مالیات (درصد)</label>
+                <label className="block text-[11px] text-slate-300 font-bold mb-1.5">نرخ مالیات (درصد)</label>
                 <div className="flex items-center gap-2">
                   <input 
                     type="number"
@@ -1350,118 +1465,116 @@ export default function AttendanceSettingsForm({ db, onUpdateDb, activePeriodId 
                     placeholder="۱۰"
                     value={bracketRate}
                     onChange={(e) => setBracketRate(toEnglishDigits(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:outline-none p-2 rounded-lg font-mono text-center text-xs text-white font-bold"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 focus:outline-none p-2.5 rounded-xl font-mono text-center text-xs text-white font-bold"
                   />
-                  <span className="text-xs text-slate-400">%</span>
+                  <span className="text-xs text-slate-300 font-bold">%</span>
                 </div>
               </div>
+            </div>
 
-              <div className="md:col-span-4 flex justify-end gap-2 pt-2 border-t border-slate-800/50">
-                {editingBracketId && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingBracketId(null);
-                      setBracketFrom('');
-                      setBracketTo('');
-                      setBracketRate('');
-                    }}
-                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-lg text-xs font-bold cursor-pointer transition-colors"
-                  >
-                    انصراف
-                  </button>
-                )}
-                <button
-                  type="submit"
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-md"
-                >
-                  {editingBracketId ? 'ثبت تغییرات طبقه' : 'افزودن طبقه مالیاتی جدید'}
-                </button>
-              </div>
-            </form>
-
-            <div className="border-t border-slate-800/80 pt-3 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-black text-amber-500">طبقات مالیاتی تعریف شده (بر اساس سال مالی):</span>
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={handleCloseBracketForm}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-colors border border-slate-700"
+              >
+                انصراف و بازگشت
+              </button>
+              <button
+                type="submit"
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer shadow-md flex items-center gap-1.5"
+              >
+                {editingBracketId ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                {editingBracketId ? 'ثبت تغییرات طبقه' : 'ثبت طبقه مالیاتی جدید'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs font-bold text-amber-400">طبقات مالیاتی تعریف شده (بر اساس سال مالی):</span>
+              <div className="relative w-44">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                 <input
                   type="text"
                   placeholder="جستجوی سال..."
                   value={bracketSearchQuery}
                   onChange={(e) => setBracketSearchQuery(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 focus:outline-none p-1 rounded text-[9px] w-32 text-center text-white font-bold"
+                  className="w-full bg-slate-950 border border-slate-800 focus:outline-none focus:border-rose-500 pr-8 pl-3 py-1.5 rounded-xl text-xs text-white font-bold"
                 />
               </div>
+            </div>
 
-              <div className="overflow-x-auto max-h-[180px] overflow-y-auto pr-1">
-                <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
-                  <thead className="bg-slate-950 text-slate-400 font-bold sticky top-0">
-                    <tr>
-                      <th className="px-4 py-2">سال مالی</th>
-                      <th className="px-4 py-2">از مبلغ ماهانه</th>
-                      <th className="px-4 py-2">تا مبلغ ماهانه</th>
-                      <th className="px-4 py-2 text-center">نرخ مالیات</th>
-                      <th className="px-4 py-2 text-center w-24">عملیات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60 bg-slate-950/20">
-                    {(() => {
-                      const brackets = (db.taxBrackets || []).filter(item => 
-                        item.periodId === effectivePeriodId &&
-                        String(item.fiscalYear).includes(toEnglishDigits(bracketSearchQuery))
-                      ).sort((a, b) => Number(a.fiscalYear) - Number(b.fiscalYear) || a.fromAmount - b.fromAmount);
+            <div className="overflow-x-auto border border-slate-800 rounded-2xl">
+              <table className="min-w-full divide-y divide-slate-800 text-right text-xs">
+                <thead className="bg-slate-950 text-slate-400 font-bold">
+                  <tr>
+                    <th className="px-4 py-3">سال مالی</th>
+                    <th className="px-4 py-3">از مبلغ ماهانه</th>
+                    <th className="px-4 py-3">تا مبلغ ماهانه</th>
+                    <th className="px-4 py-3 text-center">نرخ مالیات</th>
+                    <th className="px-4 py-3 text-center w-24">عملیات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {(() => {
+                    const brackets = (db.taxBrackets || []).filter(item => 
+                      item.periodId === effectivePeriodId &&
+                      String(item.fiscalYear).includes(toEnglishDigits(bracketSearchQuery))
+                    ).sort((a, b) => Number(a.fiscalYear) - Number(b.fiscalYear) || a.fromAmount - b.fromAmount);
 
-                      if (brackets.length === 0) {
-                        return (
-                          <tr>
-                            <td colSpan={5} className="px-4 py-6 text-center text-slate-500 font-bold">
-                              هیچ طبقه مالیاتی برای این سال مالی ثبت نشده است.
-                            </td>
-                          </tr>
-                        );
-                      }
-
-                      return brackets.map((item: any) => (
-                        <tr key={item.id} className="hover:bg-slate-900/30 transition-colors">
-                          <td className="px-4 py-2 font-bold text-slate-300">
-                            سال {toPersianDigits(item.fiscalYear)}
-                          </td>
-                          <td className="px-4 py-2 font-mono text-slate-300">
-                            {toPersianDigits(formatWithCommas(item.fromAmount))} ریال
-                          </td>
-                          <td className="px-4 py-2 font-mono text-slate-300">
-                            {item.toAmount !== null ? `${toPersianDigits(formatWithCommas(item.toAmount))} ریال` : <span className="text-slate-500">بدون سقف</span>}
-                          </td>
-                          <td className="px-4 py-2 text-center font-mono font-black text-rose-400 text-xs">
-                            {toPersianDigits(item.taxRate)} %
-                          </td>
-                          <td className="px-4 py-2 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleEditBracket(item)}
-                                className="p-1 text-slate-400 hover:text-emerald-450 cursor-pointer transition-colors"
-                              >
-                                <Edit3 className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteBracket(item.id)}
-                                className="p-1 text-slate-400 hover:text-rose-455 cursor-pointer transition-colors"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
+                    if (brackets.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-10 text-center text-slate-400 font-bold">
+                            هیچ طبقه مالیاتی برای این سال مالی ثبت نشده است. از دکمه «افزودن طبقه مالیاتی» استفاده کنید.
                           </td>
                         </tr>
-                      ));
-                    })()}
-                  </tbody>
-                </table>
-              </div>
+                      );
+                    }
+
+                    return brackets.map((item: any) => (
+                      <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="px-4 py-3 font-bold text-slate-200">
+                          سال {toPersianDigits(item.fiscalYear)}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-slate-300">
+                          {toPersianDigits(formatWithCommas(item.fromAmount))} ریال
+                        </td>
+                        <td className="px-4 py-3 font-mono text-slate-300">
+                          {item.toAmount !== null ? `${toPersianDigits(formatWithCommas(item.toAmount))} ریال` : <span className="text-slate-400">بدون سقف</span>}
+                        </td>
+                        <td className="px-4 py-3 text-center font-mono font-black text-rose-400 text-xs">
+                          {toPersianDigits(item.taxRate)} %
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleEditBracket(item)}
+                              className="p-1.5 bg-slate-800 hover:bg-amber-500/20 text-amber-400 rounded-lg cursor-pointer transition-colors"
+                              title="ویرایش"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBracket(item.id)}
+                              className="p-1.5 bg-slate-800 hover:bg-rose-950/50 text-rose-400 rounded-lg cursor-pointer transition-colors"
+                              title="حذف"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
             </div>
           </div>
-
-        </div>
+        )}
       </div>
 
     </div>

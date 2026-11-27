@@ -2540,27 +2540,42 @@ export default function PersonnelSettlementTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-850 text-xs font-bold text-slate-200 rounded-xl border border-slate-750 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
-            title="دانلود فایل رسمی اکسل (.xlsx) تسویه حساب‌های پرسنل"
-          >
-            <Download className="h-4 w-4 text-emerald-400" />
-            خروجی اکسل (.xlsx)
-          </button>
-          
-          <button
-            type="button"
-            onClick={() => handleOpenAdd()}
-            className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-rose-600/25 border border-rose-500/40"
-          >
-            <Plus className="h-4 w-4" />
-            محاسبه و صدور تسویه حساب جدید
-          </button>
+          {!showModal ? (
+            <>
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-850 text-xs font-bold text-slate-200 rounded-xl border border-slate-750 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                title="دانلود فایل رسمی اکسل (.xlsx) تسویه حساب‌های پرسنل"
+              >
+                <Download className="h-4 w-4 text-emerald-400" />
+                خروجی اکسل (.xlsx)
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => handleOpenAdd()}
+                className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-rose-600/25 border border-rose-500/40"
+              >
+                <Plus className="h-4 w-4" />
+                افزودن / صدور تسویه حساب جدید
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-black text-slate-200 rounded-xl border border-slate-700 transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+            >
+              <RotateCcw className="h-4 w-4" />
+              بازگشت به لیست تسویه حساب‌ها
+            </button>
+          )}
         </div>
       </div>
 
+      {!showModal && (
+        <>
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <div className="bg-slate-950 p-4 rounded-xl border border-slate-850">
@@ -2828,21 +2843,22 @@ export default function PersonnelSettlementTab({
           </table>
         </div>
       </div>
+        </>
+      )}
 
       {/* ======================================================== */}
-      {/* MODAL: CREATE / EDIT SETTLEMENT WIZARD */}
+      {/* FULL-PAGE VIEW: CREATE / EDIT SETTLEMENT WIZARD          */}
       {/* ======================================================== */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-fade-in my-auto">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-5 border-b border-slate-850 bg-slate-900/60">
+        <div className="bg-slate-900/95 border border-slate-800 rounded-3xl w-full flex flex-col shadow-xl overflow-hidden animate-fade-in">
+            {/* Full-Page Form Header (Customer-style) */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-5 sm:p-6 border-b border-slate-800 bg-slate-900/60">
               <div className="flex items-center gap-3">
-                <div className="bg-rose-500/20 p-2.5 rounded-xl border border-rose-500/30 text-rose-400">
+                <div className="p-2.5 bg-rose-500/15 border border-rose-500/30 text-rose-400 rounded-xl shrink-0">
                   <Calculator className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <h3 className="text-base font-black text-white flex flex-wrap items-center gap-2">
                     <span>
                       {isModalReadOnly
                         ? 'مشاهده سند تسویه حساب پرسنل (فقط خواندنی)'
@@ -2851,12 +2867,12 @@ export default function PersonnelSettlementTab({
                         : 'محاسبه و صدور سند تسویه حساب پرسنل'}
                     </span>
                     {isModalReadOnly && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
                         سند حقوق ماه ترک کار قفل است
                       </span>
                     )}
                   </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
+                  <p className="text-xs text-slate-300 mt-1">
                     {formSettlementType === 'without_departure'
                       ? 'تسویه کامل یک قرارداد بدون قطع همکاری (پرسنل فعال باقی می‌ماند و مانده مرخصی و سنوات تا پایان این قرارداد تسویه می‌شود).'
                       : 'اطلاعات حقوق و دستمزد ماه‌ها مستقیماً مطابق لیست‌های حقوق محاسبه می‌شود؛ در ماه ترک کار مانده مرخصی و اضافه‌کار صرفاً در تسویه حساب اعمال می‌گردد.'}
@@ -2866,16 +2882,17 @@ export default function PersonnelSettlementTab({
               <button
                 type="button"
                 onClick={handleCloseModal}
-                className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border border-slate-700 shrink-0"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
+                {isModalReadOnly ? 'بازگشت' : 'انصراف و بازگشت'}
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+            {/* Form Body */}
+            <div className="p-5 sm:p-6 space-y-6 flex-1 text-xs">
               {isModalReadOnly && (
-                <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl p-3 flex items-center gap-2.5 text-amber-200 text-xs font-bold">
+                <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl p-3.5 flex items-center gap-2.5 text-amber-200 text-xs font-bold">
                   <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
                   <span>
                     سند حقوق و دستمزد ماه ترک کار قفل شده است؛ این برگه تسویه حساب در حالت «فقط مشاهده» باز شده و امکان ویرایش یا تغییر اطلاعات آن وجود ندارد.
@@ -2884,7 +2901,7 @@ export default function PersonnelSettlementTab({
               )}
 
               {/* SECTION 1: PERSONNEL & CONTRACT SELECTION */}
-              <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-850 space-y-4">
+              <div className="bg-slate-950/60 p-4 sm:p-5 rounded-2xl border border-slate-800 space-y-4">
                 <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
                   <Users className="h-4 w-4 text-rose-400" />
                   مرحله ۱: انتخاب نوع تسویه، پرسنل، قرارداد و بازه زمانی
@@ -2896,21 +2913,21 @@ export default function PersonnelSettlementTab({
                     type="button"
                     disabled={isModalReadOnly}
                     onClick={() => handleSettlementTypeChange('with_departure')}
-                    className={`p-3 rounded-xl border text-right transition-all ${
+                    className={`p-3.5 rounded-xl border text-right transition-all ${
                       isModalReadOnly ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
                     } ${
                       formSettlementType === 'with_departure'
-                        ? 'bg-rose-600/20 border-rose-500 text-white shadow-md shadow-rose-950/30'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                        ? 'bg-rose-500/15 border-rose-500 text-white shadow-sm'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-white hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-black text-xs">تسویه حساب کامل به همراه ترک کار</span>
+                      <span className="font-black text-xs text-white">تسویه حساب کامل به همراه ترک کار</span>
                       {formSettlementType === 'with_departure' && (
                         <CheckCircle2 className="h-4 w-4 text-rose-400 shrink-0" />
                       )}
                     </div>
-                    <span className="block text-[10.5px] text-slate-400 mt-1">
+                    <span className="block text-[11px] text-slate-300 mt-1 leading-relaxed">
                       ثبت تاریخ و علت ترک کار در پرونده پرسنل، اعمال قوانین ماه ترک کار بر لیست حقوق و مختومه شدن همکاری
                     </span>
                   </button>
@@ -2919,21 +2936,21 @@ export default function PersonnelSettlementTab({
                     type="button"
                     disabled={isModalReadOnly}
                     onClick={() => handleSettlementTypeChange('without_departure')}
-                    className={`p-3 rounded-xl border text-right transition-all ${
+                    className={`p-3.5 rounded-xl border text-right transition-all ${
                       isModalReadOnly ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
                     } ${
                       formSettlementType === 'without_departure'
-                        ? 'bg-sky-600/20 border-sky-500 text-white shadow-md shadow-sky-950/30'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                        ? 'bg-sky-500/15 border-sky-500 text-white shadow-sm'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-white hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-black text-xs">تسویه حساب قرارداد بدون ترک کار</span>
+                      <span className="font-black text-xs text-white">تسویه حساب قرارداد بدون ترک کار</span>
                       {formSettlementType === 'without_departure' && (
                         <CheckCircle2 className="h-4 w-4 text-sky-400 shrink-0" />
                       )}
                     </div>
-                    <span className="block text-[10.5px] text-slate-400 mt-1">
+                    <span className="block text-[11px] text-slate-300 mt-1 leading-relaxed">
                       تسویه کامل یک قرارداد در پایان دوره همراه با بازخرید مرخصی (پرسنل فعال می‌ماند و در تسویه نهایی کسر می‌شود)
                     </span>
                   </button>
@@ -2941,7 +2958,7 @@ export default function PersonnelSettlementTab({
 
                 {/* Prior without_departure settlements notice */}
                 {priorWithoutDepartureForForm.length > 0 && (
-                  <div className="bg-sky-950/30 border border-sky-500/35 rounded-xl p-3 space-y-1.5 text-[11px]">
+                  <div className="bg-sky-950/30 border border-sky-500/35 rounded-xl p-3.5 space-y-2 text-[11px]">
                     <div className="flex items-center gap-2 font-extrabold text-sky-300">
                       <AlertCircle className="h-4 w-4 text-sky-400 shrink-0" />
                       <span>
@@ -2952,7 +2969,7 @@ export default function PersonnelSettlementTab({
                       {priorWithoutDepartureForForm.map(ps => (
                         <span
                           key={ps.id}
-                          className="inline-flex items-center gap-1.5 bg-slate-950/80 border border-sky-500/30 rounded-lg px-2.5 py-1 text-[10.5px] text-slate-200"
+                          className="inline-flex items-center gap-1.5 bg-slate-950 border border-sky-500/30 rounded-lg px-2.5 py-1 text-[10.5px] text-slate-200"
                         >
                           <strong className="font-mono text-sky-300">{toPersianDigits(ps.settlementNo)}</strong>
                           <span>|</span>
@@ -2962,7 +2979,7 @@ export default function PersonnelSettlementTab({
                         </span>
                       ))}
                     </div>
-                    <p className="text-[10px] text-sky-200/80 leading-relaxed">
+                    <p className="text-[10.5px] text-sky-300 font-medium leading-relaxed">
                       مانده مرخصی، کارکرد، عیدی و سنوات بازه‌های قبلی بدون ترک کار یک‌بار تسویه شده‌اند و در محاسبه تسویه جدید و انتقال مرخصی ماه‌های بعد به‌صورت خودکار لحاظ و کسر می‌شوند.
                     </p>
                   </div>
@@ -3216,12 +3233,12 @@ export default function PersonnelSettlementTab({
                             </>
                           )}
                         </div>
-                        <span className="text-[10px] text-emerald-300/85">
+                        <span className="text-[10.5px] text-emerald-300 font-medium">
                           ثبت ترک کار با یک روز فاصله باعث می‌شود کارکرد روز آخر در محاسبات کسر نشود.
                         </span>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-1.5 text-[10.5px] text-amber-200">
+                      <div className="flex items-center gap-2 bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-1.5 text-[10.5px] text-amber-300 font-medium">
                         <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                         <span>
                           برای این پرسنل در دوره جاری تردد ثبت‌شده‌ای یافت نشد؛ در صورت وجود تاریخ ترک کار، آن را یک روز پس از آخرین روز کاری وارد فرمایید.
@@ -3234,17 +3251,17 @@ export default function PersonnelSettlementTab({
                         <Clock className="h-3.5 w-3.5 text-amber-400" />
                         <span>نرخ ساعتی اضافه‌کار و تعطیل‌کاری ثوابت سال تسویه حساب ({toPersianDigits(settlementYear)} - مبنای ۸ ساعت):</span>
                         <strong className="font-mono text-white font-bold">{toPersianDigits(formatWithCommas(settlementOvertimeHourlyRate))}</strong>
-                        <span className="text-[10px] text-amber-200/80">ریال/ساعت</span>
+                        <span className="text-[10px] text-amber-300 font-bold">ریال/ساعت</span>
                       </div>
                       <div className="flex items-center gap-1.5 bg-sky-950/40 text-sky-300 border border-sky-500/30 px-2.5 py-1 rounded-lg">
                         <span>بن خواربار ماهانه:</span>
                         <strong className="font-mono text-white font-bold">{toPersianDigits(formatWithCommas(contractSalaryRate?.foodAllowance || 0))}</strong>
-                        <span className="text-[10px] text-sky-200/80">ریال</span>
+                        <span className="text-[10px] text-sky-300 font-bold">ریال</span>
                       </div>
                       <div className="flex items-center gap-1.5 bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
                         <span>حق مسکن ماهانه:</span>
                         <strong className="font-mono text-white font-bold">{toPersianDigits(formatWithCommas(contractSalaryRate?.housingAllowance || 0))}</strong>
-                        <span className="text-[10px] text-emerald-200/80">ریال</span>
+                        <span className="text-[10px] text-emerald-300 font-bold">ریال</span>
                       </div>
                     </div>
                   </div>
@@ -3497,7 +3514,7 @@ export default function PersonnelSettlementTab({
                 </div>
 
                 {departureUnpaidLeaveInfo && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-950/35 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-xs text-amber-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-950/35 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-xs text-amber-300">
                     <div className="flex items-center gap-2 font-bold">
                       <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
                       <span>
@@ -3508,7 +3525,7 @@ export default function PersonnelSettlementTab({
                         روز مرخصی بدون حقوق داشته است.
                       </span>
                     </div>
-                    <span className="text-[11px] text-amber-300/90 font-mono">
+                    <span className="text-[11px] text-amber-300 font-bold font-mono">
                       (روزهای ماه تا تاریخ ترک کار: {toPersianDigits(departureUnpaidLeaveInfo.calendarDaysToDeparture)} روز | روز کارکرد ثبت‌شده: {toPersianDigits(departureUnpaidLeaveInfo.workedDays)} روز)
                     </span>
                   </div>
@@ -3674,7 +3691,7 @@ export default function PersonnelSettlementTab({
                         <span>مانده: <strong className="text-indigo-300 font-mono font-bold">{formatMinutesToPersianHM(settlementSummary.unusedLeaveMinutes)}</strong> ساعت</span>
                       </>
                     )}
-                    <span className="text-indigo-300/90 w-full">
+                    <span className="text-indigo-300 font-medium w-full">
                       نرخ هر ساعت بازخرید (جمع آیتم‌های مشمول ÷ ۲۲۰):{' '}
                       <strong className="font-mono text-white">
                         {formatWithCommas(Math.round(settlementSummary.leaveHourlyRate))}
@@ -3743,13 +3760,13 @@ export default function PersonnelSettlementTab({
                         {/* Tooltip نمایش جزئیات روش محاسبه بازخرید مرخصی */}
                         <div
                           role="tooltip"
-                          className="pointer-events-none opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all duration-150 absolute bottom-full left-0 mb-2 z-50 w-80 max-w-[90vw] bg-slate-950/98 border border-indigo-400/50 rounded-xl shadow-2xl p-3 text-right space-y-2 backdrop-blur-md"
+                          className="pointer-events-none opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all duration-150 absolute bottom-full left-0 mb-2 z-50 w-80 max-w-[90vw] bg-slate-950 border border-indigo-400/50 rounded-xl shadow-2xl p-3 text-right space-y-2"
                         >
                           <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5">
                             <span className="text-[11px] font-black text-indigo-300">
                               روش محاسبه مبلغ بازخرید مرخصی
                             </span>
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-400/30 font-bold">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 font-bold">
                               {settlementSummary.isLeaveBuyoutCustomConfigured ? 'طبق قوانین ثبت‌شده' : 'پیش‌فرض قانونی'}
                             </span>
                           </div>
@@ -3827,7 +3844,7 @@ export default function PersonnelSettlementTab({
                       <DollarSign className="h-4 w-4 text-teal-400" />
                       طلب حساب از قبل پرسنل (مانده بستانکاری منتقل‌شده از سال / دوره قبل)
                     </span>
-                    <span className="text-[10px] text-teal-200/80 bg-teal-500/15 px-2 py-0.5 rounded-full border border-teal-500/25">
+                    <span className="text-[10px] text-teal-300 font-bold bg-teal-500/15 px-2.5 py-0.5 rounded-full border border-teal-500/30">
                       افزوده می‌شود به جمع مطالبات تسویه (+)
                     </span>
                   </div>
@@ -3993,14 +4010,14 @@ export default function PersonnelSettlementTab({
               </div>
 
               {/* FINAL SUMMARY CARD */}
-              <div className="bg-gradient-to-br from-rose-950/40 via-slate-950 to-slate-950 p-5 rounded-2xl border-2 border-rose-500/40 space-y-3">
+              <div className="bg-rose-950/25 p-5 rounded-2xl border-2 border-rose-500/40 space-y-3">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
                     <span className="text-xs text-rose-300 font-extrabold block">خلاصه حساب تسویه نهایی:</span>
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300 mt-1">
-                      <span>کل مطالبات: <strong>{formatWithCommas(settlementSummary.totalGrossPayable)}</strong></span>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-200 mt-1.5">
+                      <span>کل مطالبات: <strong className="text-white">{formatWithCommas(settlementSummary.totalGrossPayable)}</strong></span>
                       {settlementSummary.previousYearReceivable > 0 && (
-                        <span className="text-teal-300">(شامل {formatWithCommas(settlementSummary.previousYearReceivable)} طلب از قبل)</span>
+                        <span className="text-teal-300 font-bold">(شامل {formatWithCommas(settlementSummary.previousYearReceivable)} طلب از قبل)</span>
                       )}
                       <span>-</span>
                       <span>کل کسورات: <strong className="text-rose-400">{formatWithCommas(settlementSummary.totalDeductions)}</strong></span>
@@ -4010,28 +4027,28 @@ export default function PersonnelSettlementTab({
                   </div>
 
                   <div className="text-left">
-                    <span className="text-[11px] text-slate-400 block">مانده قابل پرداخت به پرسنل:</span>
+                    <span className="text-[11px] text-slate-300 font-bold block">مانده قابل پرداخت به پرسنل:</span>
                     <span className="text-2xl font-black text-rose-400 font-mono">
-                      {formatWithCommas(settlementSummary.finalNetPayable)} <span className="text-xs text-slate-300 font-sans">ریال</span>
+                      {formatWithCommas(settlementSummary.finalNetPayable)} <span className="text-xs text-slate-200 font-sans">ریال</span>
                     </span>
                   </div>
                 </div>
 
-                <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2">
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-200 flex items-center gap-2">
                   <span className="text-rose-400 font-bold">معادل حروفی:</span>
-                  <span className="text-white font-medium">{numberToWordsPersian(settlementSummary.finalNetPayable)} ریال</span>
+                  <span className="text-white font-bold">{numberToWordsPersian(settlementSummary.finalNetPayable)} ریال</span>
                 </div>
               </div>
             </div>
 
-            {/* Modal Footer */}
-            <div className="p-4 border-t border-slate-850 bg-slate-900/80 flex items-center justify-between">
+            {/* Form Footer */}
+            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={handleCloseModal}
-                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-slate-300 rounded-xl transition-colors cursor-pointer"
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-slate-200 rounded-xl transition-colors cursor-pointer border border-slate-700"
               >
-                {isModalReadOnly ? 'بستن' : 'انصراف'}
+                {isModalReadOnly ? 'بازگشت به لیست' : 'انصراف و بازگشت'}
               </button>
 
               <div className="flex items-center gap-2">
@@ -4057,7 +4074,6 @@ export default function PersonnelSettlementTab({
                 )}
               </div>
             </div>
-          </div>
         </div>
       )}
       </div>

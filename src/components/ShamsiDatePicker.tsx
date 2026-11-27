@@ -18,6 +18,8 @@ export interface ShamsiDatePickerProps {
   popoverAlign?: 'right' | 'left';
   defaultYear?: number;
   disabled?: boolean;
+  minDate?: string;
+  maxDate?: string;
 }
 
 const SHAMSI_MONTHS = [
@@ -123,6 +125,10 @@ function parseDateParts(value: string): { year: number; month: number; day: numb
   return { year, month, day };
 }
 
+function formatDateYMD(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, '0')}/${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}`;
+}
+
 export default function ShamsiDatePicker({
   id,
   label,
@@ -133,17 +139,45 @@ export default function ShamsiDatePicker({
   buttonClassName = 'w-full flex items-center justify-between px-3.5 py-2.5 border border-slate-300 dark:border-slate-800 rounded-xl text-xs bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-extrabold cursor-pointer shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-all focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none',
   popoverAlign = 'right',
   defaultYear,
-  disabled = false
+  disabled = false,
+  minDate,
+  maxDate
 }: ShamsiDatePickerProps) {
   const todayParts = parseDateParts(getTodayJalali()) || { year: 1405, month: 1, day: 1 };
   const parsedValue = parseDateParts(value);
+  const minParts = parseDateParts(minDate || '');
+  const maxParts = parseDateParts(maxDate || '');
+  const normMin = minParts ? formatDateYMD(minParts.year, minParts.month, minParts.day) : '';
+  const normMax = maxParts ? formatDateYMD(maxParts.year, maxParts.month, maxParts.day) : '';
+
+  const isDateOutOfRange = (ymd: string): boolean => {
+    if (normMin && ymd < normMin) return true;
+    if (normMax && ymd > normMax) return true;
+    return false;
+  };
+
+  const isMonthOutOfRange = (year: number, month: number): boolean => {
+    const firstDay = formatDateYMD(year, month, 1);
+    const lastDay = formatDateYMD(year, month, getShamsiMonthDays(year, month));
+    if (normMin && lastDay < normMin) return true;
+    if (normMax && firstDay > normMax) return true;
+    return false;
+  };
+
+  const getFirstValidMonthForYear = (year: number, preferredMonth: number): number => {
+    if (!isMonthOutOfRange(year, preferredMonth)) return preferredMonth;
+    for (let m = 1; m <= 12; m++) {
+      if (!isMonthOutOfRange(year, m)) return m;
+    }
+    return preferredMonth;
+  };
 
   const [isOpen, setIsOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState<number>(
-    parsedValue?.year || defaultYear || todayParts.year
+    parsedValue?.year || defaultYear || minParts?.year || todayParts.year
   );
   const [pickerMonth, setPickerMonth] = useState<number>(
-    parsedValue?.month || todayParts.month
+    parsedValue?.month || minParts?.month || todayParts.month
   );
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -174,48 +208,80 @@ export default function ShamsiDatePicker({
       return;
     }
     const current = parseDateParts(value);
-    if (current) {
+    if (current && !isDateOutOfRange(formatDateYMD(current.year, current.month, current.day))) {
       setPickerYear(current.year);
       setPickerMonth(current.month);
     } else {
       const today = parseDateParts(getTodayJalali()) || { year: 1405, month: 1, day: 1 };
-      setPickerYear(defaultYear || today.year);
-      setPickerMonth(today.month);
+      const todayYmd = formatDateYMD(today.year, today.month, today.day);
+      if (!isDateOutOfRange(todayYmd)) {
+        const targetYear = defaultYear && (!minParts || defaultYear >= minParts.year) && (!maxParts || defaultYear <= maxParts.year)
+          ? defaultYear
+          : today.year;
+        setPickerYear(targetYear);
+        setPickerMonth(getFirstValidMonthForYear(targetYear, today.month));
+      } else if (minParts) {
+        const clampedYear = defaultYear
+          ? Math.min(Math.max(defaultYear, minParts.year), maxParts?.year ?? defaultYear)
+          : minParts.year;
+        setPickerYear(clampedYear);
+        setPickerMonth(getFirstValidMonthForYear(clampedYear, minParts.month));
+      } else if (maxParts) {
+        setPickerYear(maxParts.year);
+        setPickerMonth(getFirstValidMonthForYear(maxParts.year, maxParts.month));
+      } else {
+        setPickerYear(defaultYear || today.year);
+        setPickerMonth(today.month);
+      }
     }
     setIsOpen(true);
   };
 
   const handleSelectDay = (day: number) => {
-    const yStr = String(pickerYear);
-    const mStr = String(pickerMonth).padStart(2, '0');
-    const dStr = String(day).padStart(2, '0');
-    onChange(`${yStr}/${mStr}/${dStr}`);
+    const ymd = formatDateYMD(pickerYear, pickerMonth, day);
+    if (isDateOutOfRange(ymd)) return;
+    onChange(ymd);
     setIsOpen(false);
   };
 
+  const prevTargetYear = pickerMonth === 1 ? pickerYear - 1 : pickerYear;
+  const prevTargetMonth = pickerMonth === 1 ? 12 : pickerMonth - 1;
+  const nextTargetYear = pickerMonth === 12 ? pickerYear + 1 : pickerYear;
+  const nextTargetMonth = pickerMonth === 12 ? 1 : pickerMonth + 1;
+
+  const canGoPrevMonth = !isMonthOutOfRange(prevTargetYear, prevTargetMonth) && prevTargetYear >= 1320;
+  const canGoNextMonth = !isMonthOutOfRange(nextTargetYear, nextTargetMonth) && nextTargetYear <= 1415;
+
   const nextMonth = () => {
-    if (pickerMonth === 12) {
-      setPickerMonth(1);
-      setPickerYear(prev => prev + 1);
-    } else {
-      setPickerMonth(prev => prev + 1);
-    }
+    if (!canGoNextMonth) return;
+    setPickerYear(nextTargetYear);
+    setPickerMonth(nextTargetMonth);
   };
 
   const prevMonth = () => {
-    if (pickerMonth === 1) {
-      setPickerMonth(12);
-      setPickerYear(prev => prev - 1);
-    } else {
-      setPickerMonth(prev => prev - 1);
-    }
+    if (!canGoPrevMonth) return;
+    setPickerYear(prevTargetYear);
+    setPickerMonth(prevTargetMonth);
   };
 
+  const todayYmd = formatDateYMD(todayParts.year, todayParts.month, todayParts.day);
+  const isTodayOutOfRange = isDateOutOfRange(todayYmd);
+
   const handleSelectToday = () => {
-    const todayStr = toEnglishDigits(getTodayJalali());
-    onChange(todayStr);
+    if (isTodayOutOfRange) return;
+    onChange(todayYmd);
     setIsOpen(false);
   };
+
+  const availableYears = SHAMSI_YEARS.filter(y => {
+    if (minParts && y < minParts.year) return false;
+    if (maxParts && y > maxParts.year) return false;
+    return true;
+  });
+  if (!availableYears.includes(pickerYear)) {
+    availableYears.push(pickerYear);
+    availableYears.sort((a, b) => a - b);
+  }
 
   const totalDays = getShamsiMonthDays(pickerYear, pickerMonth);
   const startWeekday = getShamsiWeekdayStart(pickerYear, pickerMonth);
@@ -263,12 +329,21 @@ export default function ShamsiDatePicker({
             }`}
             dir="rtl"
           >
+            {(normMin || normMax) && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-900/50 text-[10px] font-bold text-rose-700 dark:text-rose-300 text-center font-mono">
+                بازه مجاز: {normMin ? toPersianDigits(normMin) : '—'} تا {normMax ? toPersianDigits(normMax) : '—'}
+              </div>
+            )}
+
             {/* Month & Year Navigation Controls */}
             <div className="flex items-center justify-between gap-1">
               <button
                 type="button"
+                disabled={!canGoPrevMonth}
                 onClick={prevMonth}
-                className="p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
+                className={`p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 font-black transition-colors text-xs ${
+                  canGoPrevMonth ? 'hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer' : 'opacity-40 cursor-not-allowed'
+                }`}
                 title="ماه قبل"
               >
                 ◀
@@ -280,19 +355,26 @@ export default function ShamsiDatePicker({
                   value={pickerMonth}
                   onChange={(e) => setPickerMonth(Number(e.target.value))}
                 >
-                  {SHAMSI_MONTHS.map(m => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
+                  {SHAMSI_MONTHS.map(m => {
+                    const monthDisabled = isMonthOutOfRange(pickerYear, m.id);
+                    return (
+                      <option key={m.id} value={m.id} disabled={monthDisabled}>
+                        {m.name}
+                      </option>
+                    );
+                  })}
                 </select>
 
                 <select
                   className="p-1 px-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold cursor-pointer focus:outline-none focus:border-rose-500"
                   value={pickerYear}
-                  onChange={(e) => setPickerYear(Number(e.target.value))}
+                  onChange={(e) => {
+                    const nextY = Number(e.target.value);
+                    setPickerYear(nextY);
+                    setPickerMonth(prevM => getFirstValidMonthForYear(nextY, prevM));
+                  }}
                 >
-                  {SHAMSI_YEARS.map(y => (
+                  {availableYears.map(y => (
                     <option key={y} value={y}>
                       {toPersianDigits(String(y))}
                     </option>
@@ -302,8 +384,11 @@ export default function ShamsiDatePicker({
 
               <button
                 type="button"
+                disabled={!canGoNextMonth}
                 onClick={nextMonth}
-                className="p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 font-black transition-colors cursor-pointer text-xs"
+                className={`p-1 px-3 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 font-black transition-colors text-xs ${
+                  canGoNextMonth ? 'hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer' : 'opacity-40 cursor-not-allowed'
+                }`}
                 title="ماه بعد"
               >
                 ▶
@@ -325,6 +410,8 @@ export default function ShamsiDatePicker({
                 if (day === null) {
                   return <div key={`empty-${idx}`} className="h-7" />;
                 }
+                const cellYmd = formatDateYMD(pickerYear, pickerMonth, day);
+                const cellDisabled = isDateOutOfRange(cellYmd);
                 const isSelected = Boolean(
                   parsedValue &&
                     parsedValue.year === pickerYear &&
@@ -335,11 +422,15 @@ export default function ShamsiDatePicker({
                   <button
                     key={`day-${day}`}
                     type="button"
+                    disabled={cellDisabled}
                     onClick={() => handleSelectDay(day)}
-                    className={`h-7 w-7 mx-auto text-xs flex items-center justify-center rounded-lg font-mono font-black transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
-                        : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200'
+                    title={cellDisabled ? 'خارج از بازه دوره کاری سامانه' : undefined}
+                    className={`h-7 w-7 mx-auto text-xs flex items-center justify-center rounded-lg font-mono font-black transition-colors ${
+                      cellDisabled
+                        ? 'bg-slate-50 dark:bg-slate-800/40 text-slate-300 dark:text-slate-600 cursor-not-allowed line-through opacity-50'
+                        : isSelected
+                          ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30 cursor-pointer'
+                          : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 cursor-pointer'
                     }`}
                   >
                     {toPersianDigits(String(day))}
@@ -352,8 +443,14 @@ export default function ShamsiDatePicker({
             <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 pt-2 text-[11px] font-black">
               <button
                 type="button"
+                disabled={isTodayOutOfRange}
                 onClick={handleSelectToday}
-                className="text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 font-black cursor-pointer transition-colors"
+                title={isTodayOutOfRange ? 'تاریخ امروز خارج از بازه مجاز است' : undefined}
+                className={`font-black transition-colors ${
+                  isTodayOutOfRange
+                    ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                    : 'text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 cursor-pointer'
+                }`}
               >
                 انتخاب امروز
               </button>
