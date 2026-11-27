@@ -1117,6 +1117,18 @@ export default function PersonnelSettlementTab({
         ? mapPersianReasonToSettlementReason(emp.departureReason)
         : fallbackReason;
     const empContracts = emp ? allContracts.filter(c => c.employeeCode === emp.employeeCode) : [];
+    const latestEmpContractEndDate = empContracts
+      .map(c => normalizeJalaliDate(toEnglishDigits(c.contractEndDate || '')))
+      .filter(Boolean)
+      .sort()
+      .reverse()[0] || '';
+    const fallbackContractEndRaw = contract?.contractEndDate || latestEmpContractEndDate || emp?.contractEndDate || '';
+    const normFallbackContractEnd = fallbackContractEndRaw
+      ? (normalizeJalaliDate(toEnglishDigits(fallbackContractEndRaw)) || '')
+      : '';
+    const suggestedDepartureAfterContract = normFallbackContractEnd
+      ? addDaysToJalali(normFallbackContractEnd, 1)
+      : '';
     const targetYearForStart = preferredYear || currentYear;
     const detectedLastAttendance = findLastAttendanceDateForEmployee(
       db,
@@ -1129,11 +1141,10 @@ export default function PersonnelSettlementTab({
     const defaultPeriodDate = getDefaultSettlementDateInActivePeriod();
     const rawEndDate =
       settlementType === 'without_departure'
-        ? (contract?.contractEndDate || detectedLastAttendance || emp?.contractEndDate || defaultPeriodDate)
+        ? (contract?.contractEndDate || latestEmpContractEndDate || detectedLastAttendance || emp?.contractEndDate || defaultPeriodDate)
         : (suggestedDepartureDate ||
           (emp?.departureDate && String(emp.departureDate).trim()) ||
-          contract?.contractEndDate ||
-          emp?.contractEndDate ||
+          suggestedDepartureAfterContract ||
           defaultPeriodDate);
     const maxAllowedEnd = settlementType === 'with_departure' ? maxDepartureEndDate : activePeriodEndDate;
     const normRawEnd = normalizeJalaliDate(toEnglishDigits(rawEndDate)) || defaultPeriodDate;
@@ -1483,21 +1494,22 @@ export default function PersonnelSettlementTab({
 
     const contract = allContracts.find(c => c.id === contractId);
     if (contract) {
-      setFormStartDate(contract.contractStartDate);
-      const detected = findLastAttendanceDateForEmployee(db, selectedPersonnel, activePeriodId);
-      setLastDetectedAttendanceDate(detected);
-      const suggestedDeparture = detected ? addDaysToJalali(detected, 1) : '';
-      const endToUse =
-        formSettlementType === 'without_departure'
-          ? (contract.contractEndDate || detected || formEndDate)
-          : (suggestedDeparture ||
-            (selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim()) ||
-            formEndDate ||
-            contract.contractEndDate);
-      setFormEndDate(endToUse);
+      const resolved = resolveDepartureDefaults(
+        selectedPersonnel,
+        contract,
+        formReason,
+        currentYear,
+        undefined,
+        false,
+        formSettlementType,
+        editingId
+      );
+      setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+      setFormStartDate(resolved.startDate);
+      setFormEndDate(resolved.endDate);
       const generated = generateMonthsList(
-        contract.contractStartDate,
-        endToUse,
+        resolved.startDate,
+        resolved.endDate,
         selectedPersonnel,
         contract,
         false,
@@ -1511,23 +1523,22 @@ export default function PersonnelSettlementTab({
     }
 
     // Fallback: قرارداد پیش‌فرض پرونده پرسنلی
-    const fallbackStart = selectedPersonnel?.contractStartDate || selectedPersonnel?.entryDate || `${currentYear}/01/01`;
-    const detected = findLastAttendanceDateForEmployee(db, selectedPersonnel, activePeriodId);
-    setLastDetectedAttendanceDate(detected);
-    const suggestedDeparture = detected ? addDaysToJalali(detected, 1) : '';
-    const endToUse =
-      formSettlementType === 'without_departure'
-        ? (selectedPersonnel?.contractEndDate || detected || formEndDate || getTodayJalali())
-        : (suggestedDeparture ||
-          (selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim()) ||
-          formEndDate ||
-          selectedPersonnel?.contractEndDate ||
-          getTodayJalali());
-    setFormStartDate(fallbackStart);
-    setFormEndDate(endToUse);
+    const resolved = resolveDepartureDefaults(
+      selectedPersonnel,
+      undefined,
+      formReason,
+      currentYear,
+      undefined,
+      false,
+      formSettlementType,
+      editingId
+    );
+    setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+    setFormStartDate(resolved.startDate);
+    setFormEndDate(resolved.endDate);
     const generated = generateMonthsList(
-      fallbackStart,
-      endToUse,
+      resolved.startDate,
+      resolved.endDate,
       selectedPersonnel,
       undefined,
       false,
@@ -3564,13 +3575,37 @@ export default function PersonnelSettlementTab({
                           </span>
                         </div>
                       );
-                    })() : (
-                      <span className="text-[10px] text-amber-400 mt-1 block">
-                        {formSettlementType === 'without_departure'
-                          ? 'تاریخ دقیق پایان قرارداد مورد تسویه را وارد کنید.'
-                          : 'تردد ثبت‌شده‌ای در این دوره یافت نشد؛ تاریخ ترک کار (یک روز پس از آخرین روز حضور) را وارد کنید.'}
-                      </span>
-                    )}
+                    })() : (() => {
+                      const empLatestContractEnd = selectedPersonnel
+                        ? (
+                            allContracts
+                              .filter(c => c.employeeCode === selectedPersonnel.employeeCode)
+                              .map(c => normalizeJalaliDate(toEnglishDigits(c.contractEndDate || '')))
+                              .filter(Boolean)
+                              .sort()
+                              .reverse()[0] || ''
+                          )
+                        : '';
+                      const refContractEnd =
+                        (selectedContract?.contractEndDate && normalizeJalaliDate(toEnglishDigits(selectedContract.contractEndDate))) ||
+                        empLatestContractEnd ||
+                        (selectedPersonnel?.contractEndDate && normalizeJalaliDate(toEnglishDigits(selectedPersonnel.contractEndDate))) ||
+                        '';
+                      const suggestedAfterContract = refContractEnd ? addDaysToJalali(refContractEnd, 1) : '';
+                      const profileDep = selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim();
+
+                      return (
+                        <span className="text-[10px] text-amber-400 mt-1 block">
+                          {formSettlementType === 'without_departure'
+                            ? 'تاریخ دقیق پایان قرارداد مورد تسویه را وارد کنید.'
+                            : profileDep
+                            ? `ترددی یافت نشد | مبنا: تاریخ ترک کار پرونده پرسنلی (${toPersianDigits(profileDep)})`
+                            : suggestedAfterContract
+                            ? `ترددی یافت نشد | پیشنهاد (یک روز پس از اتمام قرارداد ${toPersianDigits(refContractEnd)}): ${toPersianDigits(suggestedAfterContract)}`
+                            : 'تردد ثبت‌شده‌ای در این دوره یافت نشد؛ تاریخ ترک کار (یک روز پس از آخرین روز حضور) را وارد کنید.'}
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   <div>
@@ -3662,14 +3697,40 @@ export default function PersonnelSettlementTab({
                           ثبت ترک کار با یک روز فاصله باعث می‌شود کارکرد روز آخر در محاسبات کسر نشود.
                         </span>
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-2 bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-1.5 text-[10.5px] text-amber-300 font-medium">
-                        <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                        <span>
-                          برای این پرسنل در دوره جاری تردد ثبت‌شده‌ای یافت نشد؛ در صورت وجود تاریخ ترک کار، آن را یک روز پس از آخرین روز کاری وارد فرمایید.
-                        </span>
-                      </div>
-                    )}
+                    ) : (() => {
+                      const empLatestContractEnd = selectedPersonnel
+                        ? (
+                            allContracts
+                              .filter(c => c.employeeCode === selectedPersonnel.employeeCode)
+                              .map(c => normalizeJalaliDate(toEnglishDigits(c.contractEndDate || '')))
+                              .filter(Boolean)
+                              .sort()
+                              .reverse()[0] || ''
+                          )
+                        : '';
+                      const refContractEnd =
+                        (selectedContract?.contractEndDate && normalizeJalaliDate(toEnglishDigits(selectedContract.contractEndDate))) ||
+                        empLatestContractEnd ||
+                        (selectedPersonnel?.contractEndDate && normalizeJalaliDate(toEnglishDigits(selectedPersonnel.contractEndDate))) ||
+                        '';
+                      const suggestedAfterContract = refContractEnd ? addDaysToJalali(refContractEnd, 1) : '';
+                      const profileDep = selectedPersonnel?.departureDate && String(selectedPersonnel.departureDate).trim();
+
+                      return (
+                        <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-1.5 text-[10.5px] text-amber-300 font-medium">
+                          <div className="flex items-center gap-2">
+                            <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                            <span>
+                              {formSettlementType === 'with_departure' && !profileDep && suggestedAfterContract
+                                ? <>برای این پرسنل ترددی در دوره یافت نشد؛ تاریخ پیشنهادی ترک کار یک روز پس از اتمام قرارداد (<strong className="font-mono text-white">{toPersianDigits(refContractEnd)}</strong>) یعنی <strong className="font-mono text-sky-300">{toPersianDigits(suggestedAfterContract)}</strong> قرار داده شد.</>
+                                : formSettlementType === 'with_departure' && profileDep
+                                ? <>برای این پرسنل ترددی در دوره یافت نشد؛ تاریخ ترک کار ثبت‌شده در پرونده پرسنلی (<strong className="font-mono text-sky-300">{toPersianDigits(profileDep)}</strong>) مبنا قرار گرفت.</>
+                                : 'برای این پرسنل در دوره جاری تردد ثبت‌شده‌ای یافت نشد؛ در صورت وجود تاریخ ترک کار، آن را یک روز پس از آخرین روز کاری وارد فرمایید.'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-850/80 text-[11px]">
                       <div className="flex items-center gap-1.5 bg-amber-950/40 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-lg">
