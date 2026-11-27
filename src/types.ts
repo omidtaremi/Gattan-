@@ -540,6 +540,8 @@ export interface SeniorityRateRule {
   seniorityYears: number; // سابقه (سال)
   dailyRate: number;      // مبلغ پایه سنوات روزانه
   fiscalYear: string;     // سال مالی
+  startDate?: string;     // تاریخ شروع اعتبار به شمسی (YYYY/MM/DD)
+  endDate?: string;       // تاریخ پایان اعتبار به شمسی (YYYY/MM/DD)
 }
 
 export interface PersonnelAllocation {

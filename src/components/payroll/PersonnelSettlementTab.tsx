@@ -1665,8 +1665,23 @@ export default function PersonnelSettlementTab({
             const completedYears = Math.floor(totalMonthsDiff / 12);
             if (completedYears >= 1) {
               const yrStr = String(contractEndYear);
-              const rule = (db.seniorityRateRules || []).find(
-                r => r.seniorityYears === completedYears && toEnglishDigits(String(r.fiscalYear || '')).trim() === yrStr
+              const refDateNorm = `${String(refDateParsed.y).padStart(4, '0')}/${String(refDateParsed.m).padStart(2, '0')}/${String(refDateParsed.d).padStart(2, '0')}`;
+              const normRuleDate = (d?: string) => {
+                if (!d) return '';
+                const p = parseJalali(d);
+                if (!p) return '';
+                return `${String(p.y).padStart(4, '0')}/${String(p.m).padStart(2, '0')}/${String(p.d).padStart(2, '0')}`;
+              };
+              const matchingYears = (db.seniorityRateRules || []).filter(r => r.seniorityYears === completedYears);
+              const rule = matchingYears.find(r => {
+                const s = normRuleDate(r.startDate);
+                const e = normRuleDate(r.endDate);
+                if (!s && !e) return false;
+                if (s && refDateNorm < s) return false;
+                if (e && refDateNorm > e) return false;
+                return true;
+              }) || matchingYears.find(
+                r => toEnglishDigits(String(r.fiscalYear || '')).trim() === yrStr
               );
               if (rule && rule.dailyRate > 0) {
                 return Math.round(rule.dailyRate * 30);

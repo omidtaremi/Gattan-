@@ -923,7 +923,9 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     periodId: r.periodId || '',
     seniorityYears: r.seniorityYears,
     dailyRate: r.dailyRate,
-    fiscalYear: r.fiscalYear
+    fiscalYear: r.fiscalYear,
+    startDate: r.startDate || '',
+    endDate: r.endDate || ''
   }));
   addSheet(seniorityRateRulesExport, "Seniority_Rate_Rules");
 
@@ -2388,6 +2390,8 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
       seniorityYears: parseNumber(r.seniorityYears),
       dailyRate: parseNumber(r.dailyRate),
       fiscalYear: String(r.fiscalYear || ''),
+      startDate: r.startDate ? String(r.startDate).trim() : undefined,
+      endDate: r.endDate ? String(r.endDate).trim() : undefined,
     })).filter(x => x.id);
   } else {
     result.seniorityRateRules = currentDb.seniorityRateRules || [];

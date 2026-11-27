@@ -486,6 +486,52 @@ export const findSalaryBaseRateByDate = (
   return undefined;
 };
 
+export const findSeniorityRateRule = (
+  rules: SeniorityRateRule[],
+  seniorityYears: number,
+  targetDateStr?: string,
+  fallbackYearStr?: string,
+  activePeriodId?: string
+): SeniorityRateRule | undefined => {
+  if (!rules || rules.length === 0) return undefined;
+  const scoped = activePeriodId ? rules.filter(r => r.periodId === activePeriodId) : rules;
+  const pool = scoped.length > 0 ? scoped : rules;
+  const byYears = pool.filter(r => Number(r.seniorityYears) === Number(seniorityYears));
+  if (byYears.length === 0) return undefined;
+
+  const normTarget = normalizeRateDateYMD(targetDateStr);
+  const yearStr = fallbackYearStr
+    ? toEnglishDigits(String(fallbackYearStr)).trim()
+    : (normTarget ? normTarget.slice(0, 4) : '');
+
+  if (normTarget) {
+    const datedMatches = byYears.filter((r) => {
+      const s = normalizeRateDateYMD(r.startDate);
+      const e = normalizeRateDateYMD(r.endDate);
+      if (!s && !e) return false;
+      if (s && normTarget < s) return false;
+      if (e && normTarget > e) return false;
+      return true;
+    });
+    if (datedMatches.length > 0) {
+      datedMatches.sort((a, b) => normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate)));
+      return datedMatches[0];
+    }
+  }
+
+  if (yearStr) {
+    const yearMatches = byYears.filter((r) => toEnglishDigits(String(r.fiscalYear || '')).trim() === yearStr);
+    if (yearMatches.length > 0) {
+      const undated = yearMatches.find((r) => !normalizeRateDateYMD(r.startDate) && !normalizeRateDateYMD(r.endDate));
+      if (undated && !normTarget) return undated;
+      const sorted = [...yearMatches].sort((a, b) => normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate)));
+      return sorted[0];
+    }
+  }
+
+  return undefined;
+};
+
 export const getSalaryBaseRateForYearMonth = (
   db: AppDatabase,
   year?: number | string,
@@ -2702,6 +2748,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [seniorityYears, setSeniorityYears] = useState<string>('');
   const [seniorityDailyRate, setSeniorityDailyRate] = useState<string>('');
   const [seniorityFiscalYear, setSeniorityFiscalYear] = useState<string>('');
+  const [seniorityStartDate, setSeniorityStartDate] = useState<string>('');
+  const [seniorityEndDate, setSeniorityEndDate] = useState<string>('');
   const [seniorityYearFilter, setSeniorityYearFilter] = useState<string>('');
 
   const handleRateInputChange = (value: string, setter: (val: string) => void) => {
@@ -2742,8 +2790,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (list.length === 0) {
       list = db.seniorityRateRules || [];
     }
-    if (!seniorityYearFilter) return list;
-    return list.filter(r => r.fiscalYear === seniorityYearFilter);
+    const filtered = seniorityYearFilter ? list.filter(r => r.fiscalYear === seniorityYearFilter) : list;
+    return [...filtered].sort((a, b) => {
+      const yDiff = (Number(toEnglishDigits(String(b.fiscalYear || ''))) || 0) - (Number(toEnglishDigits(String(a.fiscalYear || ''))) || 0);
+      if (yDiff !== 0) return yDiff;
+      const dDiff = normalizeRateDateYMD(b.startDate).localeCompare(normalizeRateDateYMD(a.startDate));
+      if (dDiff !== 0) return dDiff;
+      return (a.seniorityYears || 0) - (b.seniorityYears || 0);
+    });
   }, [db.seniorityRateRules, activePeriodId, seniorityYearFilter]);
 
   const seniorityFiscalYears = useMemo(() => {
@@ -3178,6 +3232,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSeniorityYears('');
     setSeniorityDailyRate('');
     setSeniorityFiscalYear('');
+    setSeniorityStartDate('');
+    setSeniorityEndDate('');
   };
 
   const handleSaveSeniorityRateRule = (e: React.FormEvent) => {
@@ -3190,27 +3246,66 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       alert('لطفا مبلغ پایه سنوات روزانه را وارد کنید.');
       return;
     }
-    if (!seniorityFiscalYear.toString().trim()) {
-      alert('لطفا سال مالی مربوطه را وارد کنید.');
+
+    const normStart = normalizeRateDateYMD(seniorityStartDate);
+    const normEnd = normalizeRateDateYMD(seniorityEndDate);
+    if ((seniorityStartDate.trim() && !normStart) || (seniorityEndDate.trim() && !normEnd)) {
+      alert('فرمت تاریخ شروع یا پایان بازه اعتبار معتبر نیست. لطفاً تاریخ را از انتخابگر شمسی انتخاب کنید.');
+      return;
+    }
+    if ((normStart && !normEnd) || (!normStart && normEnd)) {
+      alert('در صورت تعیین بازه زمانی اعتبار، لطفاً هر دو تاریخ «از تاریخ» و «تا تاریخ» را انتخاب کنید.');
+      return;
+    }
+    if (normStart && normEnd && normStart > normEnd) {
+      alert('تاریخ شروع اعتبار نمی‌تواند بزرگ‌تر از تاریخ پایان اعتبار باشد.');
+      return;
+    }
+
+    const derivedFiscalYear = toEnglishDigits(String(seniorityFiscalYear)).trim() || (normStart ? normStart.slice(0, 4) : '');
+    if (!derivedFiscalYear) {
+      alert('لطفا سال مالی مربوطه یا بازه تاریخ اعتبار را وارد کنید.');
       return;
     }
 
     const currentRules = db.seniorityRateRules || [];
     const parsedYears = parseInt(toEnglishDigits(String(seniorityYears)), 10);
     const parsedDailyRate = parseNumber(String(seniorityDailyRate));
-    const cleanFiscalYear = toEnglishDigits(String(seniorityFiscalYear)).trim();
+    const cleanFiscalYear = derivedFiscalYear;
 
     if (isNaN(parsedYears) || parsedYears < 0) {
       alert('میزان سابقه باید یک عدد معتبر بزرگتر یا مساوی صفر باشد.');
       return;
     }
 
-    const duplicate = currentRules.some(
-      r => r.periodId === activePeriodId && r.id !== editingSeniorityId && r.seniorityYears === parsedYears && r.fiscalYear === cleanFiscalYear
+    const sameYearAndSeniorityRules = currentRules.filter(
+      r => r.periodId === activePeriodId && r.id !== editingSeniorityId && r.seniorityYears === parsedYears
     );
-    if (duplicate) {
-      alert(`قبلا برای سابقه ${parsedYears} سال در سال مالی ${cleanFiscalYear} نرخ پایه سنوات روزانه ثبت شده است. از ویرایش استفاده کنید.`);
-      return;
+
+    if (normStart && normEnd) {
+      const overlapping = sameYearAndSeniorityRules.find(r => {
+        const rs = normalizeRateDateYMD(r.startDate);
+        const re = normalizeRateDateYMD(r.endDate);
+        if (rs && re) {
+          return !(normEnd < rs || normStart > re);
+        }
+        return toEnglishDigits(String(r.fiscalYear || '')).trim() === cleanFiscalYear;
+      });
+      if (overlapping) {
+        const overlapRange = overlapping.startDate && overlapping.endDate
+          ? `${toPersianDigits(overlapping.startDate)} تا ${toPersianDigits(overlapping.endDate)}`
+          : `کل سال ${toPersianDigits(overlapping.fiscalYear)}`;
+        alert(`بازه تاریخ انتخاب‌شده برای سابقه ${toPersianDigits(parsedYears)} سال با نرخ ثبت‌شده (${overlapRange}) همپوشانی دارد. لطفاً بازه غیرمتداخل انتخاب کنید یا رکورد قبلی را اصلاح نمایید.`);
+        return;
+      }
+    } else {
+      const duplicate = sameYearAndSeniorityRules.some(
+        r => toEnglishDigits(String(r.fiscalYear || '')).trim() === cleanFiscalYear
+      );
+      if (duplicate) {
+        alert(`قبلا برای سابقه ${toPersianDigits(parsedYears)} سال در سال مالی ${toPersianDigits(cleanFiscalYear)} نرخ پایه سنوات روزانه ثبت شده است. برای ثبت چند نرخ در یک سال، بازه تاریخ اعتبار بدون همپوشانی تعیین کنید یا از ویرایش استفاده نمایید.`);
+        return;
+      }
     }
 
     const newRule: SeniorityRateRule = {
@@ -3218,7 +3313,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       periodId: activePeriodId,
       seniorityYears: parsedYears,
       dailyRate: parsedDailyRate,
-      fiscalYear: cleanFiscalYear
+      fiscalYear: cleanFiscalYear,
+      startDate: normStart || undefined,
+      endDate: normEnd || undefined
     };
 
     let updatedRules: SeniorityRateRule[];
@@ -3256,6 +3353,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSeniorityYears(String(rule.seniorityYears));
     setSeniorityDailyRate(formatWithCommas(rule.dailyRate));
     setSeniorityFiscalYear(rule.fiscalYear);
+    setSeniorityStartDate(rule.startDate || '');
+    setSeniorityEndDate(rule.endDate || '');
   };
 
   const WEEKDAYS = useMemo(() => ['شنبه', 'یک‌شنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه'], []);
@@ -9105,8 +9204,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
     const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
-    const foundSeniorityRule = (db.seniorityRateRules || []).find(
-      (r: any) => r.periodId === activePeriodId && r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
+    const foundSeniorityRule = findSeniorityRateRule(
+      db.seniorityRateRules || [],
+      tempSeniorityYears,
+      tStartDate,
+      startYear,
+      activePeriodId
     );
     const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
 
@@ -17118,50 +17221,92 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 <form onSubmit={handleSaveInsuredItem} className="space-y-4 font-sans text-right">
-                  {/* Two dates: Start Date and End Date */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10.5px] font-bold text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
-                      <div className="flex gap-1">
-                        {['1403', '1404', '1405'].map((yr) => (
-                          <button
-                            key={yr}
-                            type="button"
-                            onClick={() => {
-                              setInsuredItemStartDate(`${yr}/01/01`);
-                              setInsuredItemEndDate(`${yr}/12/29`);
-                            }}
-                            className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer transition-colors"
-                          >
-                            سال {toPersianDigits(yr)}
-                          </button>
-                        ))}
+                  {/* Jalali Date Range Picker */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                      <div className="flex items-center gap-1">
+                        {(() => {
+                          const yr = getJalaliYear(insuredItemStartDate) || activeFiscalYearStr || '1405';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setInsuredItemStartDate(`${yr}/01/01`);
+                                  setInsuredItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                              >
+                                کل سال
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setInsuredItemStartDate(`${yr}/01/01`);
+                                  setInsuredItemEndDate(`${yr}/06/31`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه اول
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setInsuredItemStartDate(`${yr}/07/01`);
+                                  setInsuredItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه دوم
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ شروع اعتبار</label>
-                        <input
-                          type="text"
-                          value={insuredItemStartDate}
-                          onChange={(e) => setInsuredItemStartDate(e.target.value)}
-                          placeholder="۱۴۰۳/۰۱/۰۱"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ پایان اعتبار</label>
-                        <input
-                          type="text"
-                          value={insuredItemEndDate}
-                          onChange={(e) => setInsuredItemEndDate(e.target.value)}
-                          placeholder="۱۴۰۳/۱۲/۲۹"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500"
-                        />
-                      </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <ShamsiDatePicker
+                        label="از تاریخ (شروع اعتبار)"
+                        value={insuredItemStartDate}
+                        onChange={(val) => setInsuredItemStartDate(val)}
+                        placeholder="انتخاب تاریخ شروع"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="right"
+                        defaultYear={Number(getJalaliYear(insuredItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
+                      <ShamsiDatePicker
+                        label="تا تاریخ (پایان اعتبار)"
+                        value={insuredItemEndDate}
+                        onChange={(val) => setInsuredItemEndDate(val)}
+                        placeholder="انتخاب تاریخ پایان"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="left"
+                        defaultYear={Number(getJalaliYear(insuredItemEndDate) || getJalaliYear(insuredItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
                     </div>
+                    {(insuredItemStartDate || insuredItemEndDate) && (
+                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                        <span>
+                          بازه انتخاب‌شده:{' '}
+                          <strong className="text-slate-700 font-mono">
+                            {insuredItemStartDate ? toPersianDigits(insuredItemStartDate) : '—'} تا {insuredItemEndDate ? toPersianDigits(insuredItemEndDate) : '—'}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInsuredItemStartDate('');
+                            setInsuredItemEndDate('');
+                          }}
+                          className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
+                        >
+                          پاک کردن بازه
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -17213,10 +17358,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     const scopedInsured = (db.insuredSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
                     const allInsuredItems = scopedInsured.length > 0 ? scopedInsured : (db.insuredSalaryItems || []);
 
-                    const getAmountForInsuredItem = (key: string, itemYear: string) => {
+                    const getAmountForInsuredItem = (key: string, itemYear: string, itemStartDate?: string) => {
                       const yr = itemYear || activeFiscalYearStr;
                       const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
+                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                        || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17263,7 +17410,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                     {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForInsuredItem(item.itemKey, itemYear)}</span>
+                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForInsuredItem(item.itemKey, itemYear, itemStart)}</span>
                               </div>
                               <div className="flex gap-1 shrink-0">
                                 <button
@@ -17305,50 +17452,92 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 <form onSubmit={handleSaveLeaveBuyoutItem} className="space-y-4 font-sans text-right">
-                  {/* Two dates: Start Date and End Date */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10.5px] font-bold text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
-                      <div className="flex gap-1">
-                        {['1403', '1404', '1405'].map((yr) => (
-                          <button
-                            key={yr}
-                            type="button"
-                            onClick={() => {
-                              setLeaveBuyoutItemStartDate(`${yr}/01/01`);
-                              setLeaveBuyoutItemEndDate(`${yr}/12/29`);
-                            }}
-                            className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer transition-colors"
-                          >
-                            سال {toPersianDigits(yr)}
-                          </button>
-                        ))}
+                  {/* Jalali Date Range Picker */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                      <div className="flex items-center gap-1">
+                        {(() => {
+                          const yr = getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr || '1405';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLeaveBuyoutItemStartDate(`${yr}/01/01`);
+                                  setLeaveBuyoutItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                              >
+                                کل سال
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLeaveBuyoutItemStartDate(`${yr}/01/01`);
+                                  setLeaveBuyoutItemEndDate(`${yr}/06/31`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه اول
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLeaveBuyoutItemStartDate(`${yr}/07/01`);
+                                  setLeaveBuyoutItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه دوم
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ شروع اعتبار</label>
-                        <input
-                          type="text"
-                          value={leaveBuyoutItemStartDate}
-                          onChange={(e) => setLeaveBuyoutItemStartDate(e.target.value)}
-                          placeholder="۱۴۰۳/۰۱/۰۱"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ پایان اعتبار</label>
-                        <input
-                          type="text"
-                          value={leaveBuyoutItemEndDate}
-                          onChange={(e) => setLeaveBuyoutItemEndDate(e.target.value)}
-                          placeholder="۱۴۰۳/۱۲/۲۹"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                      </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <ShamsiDatePicker
+                        label="از تاریخ (شروع اعتبار)"
+                        value={leaveBuyoutItemStartDate}
+                        onChange={(val) => setLeaveBuyoutItemStartDate(val)}
+                        placeholder="انتخاب تاریخ شروع"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="right"
+                        defaultYear={Number(getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
+                      <ShamsiDatePicker
+                        label="تا تاریخ (پایان اعتبار)"
+                        value={leaveBuyoutItemEndDate}
+                        onChange={(val) => setLeaveBuyoutItemEndDate(val)}
+                        placeholder="انتخاب تاریخ پایان"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="left"
+                        defaultYear={Number(getJalaliYear(leaveBuyoutItemEndDate) || getJalaliYear(leaveBuyoutItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
                     </div>
+                    {(leaveBuyoutItemStartDate || leaveBuyoutItemEndDate) && (
+                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                        <span>
+                          بازه انتخاب‌شده:{' '}
+                          <strong className="text-slate-700 font-mono">
+                            {leaveBuyoutItemStartDate ? toPersianDigits(leaveBuyoutItemStartDate) : '—'} تا {leaveBuyoutItemEndDate ? toPersianDigits(leaveBuyoutItemEndDate) : '—'}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLeaveBuyoutItemStartDate('');
+                            setLeaveBuyoutItemEndDate('');
+                          }}
+                          className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
+                        >
+                          پاک کردن بازه
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -17399,10 +17588,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   {(() => {
                     const allLeaveBuyoutItems = (db.leaveBuyoutSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
 
-                    const getAmountForLeaveBuyoutItem = (key: string, itemYear: string) => {
+                    const getAmountForLeaveBuyoutItem = (key: string, itemYear: string, itemStartDate?: string) => {
                       const yr = itemYear || activeFiscalYearStr;
                       const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
+                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                        || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17449,7 +17640,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                     {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-indigo-700 font-black">مبلغ مرجع: {getAmountForLeaveBuyoutItem(item.itemKey, itemYear)}</span>
+                                <span className="text-[9px] text-indigo-700 font-black">مبلغ مرجع: {getAmountForLeaveBuyoutItem(item.itemKey, itemYear, itemStart)}</span>
                               </div>
                               <div className="flex gap-1 shrink-0">
                                 <button
@@ -17491,50 +17682,92 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 </div>
 
                 <form onSubmit={(e) => { e.preventDefault(); handleSaveTaxableItem(); }} className="space-y-4 font-sans text-right">
-                  {/* Two dates: Start Date and End Date */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10.5px] font-bold text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
-                      <div className="flex gap-1">
-                        {['1403', '1404', '1405'].map((yr) => (
-                          <button
-                            key={yr}
-                            type="button"
-                            onClick={() => {
-                              setTaxableItemStartDate(`${yr}/01/01`);
-                              setTaxableItemEndDate(`${yr}/12/29`);
-                            }}
-                            className="px-2 py-0.5 text-[9px] font-bold rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer transition-colors"
-                          >
-                            سال {toPersianDigits(yr)}
-                          </button>
-                        ))}
+                  {/* Jalali Date Range Picker */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                      <div className="flex items-center gap-1">
+                        {(() => {
+                          const yr = getJalaliYear(taxableItemStartDate) || activeFiscalYearStr || '1405';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTaxableItemStartDate(`${yr}/01/01`);
+                                  setTaxableItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                              >
+                                کل سال
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTaxableItemStartDate(`${yr}/01/01`);
+                                  setTaxableItemEndDate(`${yr}/06/31`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه اول
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTaxableItemStartDate(`${yr}/07/01`);
+                                  setTaxableItemEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه دوم
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ شروع اعتبار</label>
-                        <input
-                          type="text"
-                          value={taxableItemStartDate}
-                          onChange={(e) => setTaxableItemStartDate(e.target.value)}
-                          placeholder="۱۴۰۳/۰۱/۰۱"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[9.5px] font-bold text-slate-500 mb-1">تاریخ پایان اعتبار</label>
-                        <input
-                          type="text"
-                          value={taxableItemEndDate}
-                          onChange={(e) => setTaxableItemEndDate(e.target.value)}
-                          placeholder="۱۴۰۳/۱۲/۲۹"
-                          dir="ltr"
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono text-center font-bold focus:bg-white focus:outline-none focus:ring-1 focus:ring-rose-500"
-                        />
-                      </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <ShamsiDatePicker
+                        label="از تاریخ (شروع اعتبار)"
+                        value={taxableItemStartDate}
+                        onChange={(val) => setTaxableItemStartDate(val)}
+                        placeholder="انتخاب تاریخ شروع"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="right"
+                        defaultYear={Number(getJalaliYear(taxableItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
+                      <ShamsiDatePicker
+                        label="تا تاریخ (پایان اعتبار)"
+                        value={taxableItemEndDate}
+                        onChange={(val) => setTaxableItemEndDate(val)}
+                        placeholder="انتخاب تاریخ پایان"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="left"
+                        defaultYear={Number(getJalaliYear(taxableItemEndDate) || getJalaliYear(taxableItemStartDate) || activeFiscalYearStr) || 1405}
+                      />
                     </div>
+                    {(taxableItemStartDate || taxableItemEndDate) && (
+                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                        <span>
+                          بازه انتخاب‌شده:{' '}
+                          <strong className="text-slate-700 font-mono">
+                            {taxableItemStartDate ? toPersianDigits(taxableItemStartDate) : '—'} تا {taxableItemEndDate ? toPersianDigits(taxableItemEndDate) : '—'}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTaxableItemStartDate('');
+                            setTaxableItemEndDate('');
+                          }}
+                          className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
+                        >
+                          پاک کردن بازه
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -17586,10 +17819,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     const scopedTaxable = (db.taxableSalaryItems || []).filter((item: any) => item.periodId === activePeriodId);
                     const allTaxableItems = scopedTaxable.length > 0 ? scopedTaxable : (db.taxableSalaryItems || []);
 
-                    const getAmountForTaxableItem = (key: string, itemYear: string) => {
+                    const getAmountForTaxableItem = (key: string, itemYear: string, itemStartDate?: string) => {
                       const yr = itemYear || activeFiscalYearStr;
                       const periodRates = (db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId);
-                      const activeRates = periodRates.find((r: any) => r.year === yr) || periodRates[0];
+                      const activeRates = findSalaryBaseRateByDate(periodRates, itemStartDate, yr)
+                        || findSalaryBaseRateByDate(db.salaryBaseRates || [], itemStartDate, yr)
+                        || periodRates[0];
                       if (!activeRates) return 'تعریف نشده';
                       switch (key) {
                         case 'dailyBaseSalary':
@@ -17646,7 +17881,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                     {toPersianDigits(itemStart)} تا {toPersianDigits(itemEnd)}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForTaxableItem(item.itemKey, itemYear)}</span>
+                                <span className="text-[9px] text-[#e11d48] font-black">مبلغ مرجع: {getAmountForTaxableItem(item.itemKey, itemYear, itemStart)}</span>
                               </div>
                               <div className="flex gap-1 shrink-0">
                                 <button
@@ -17722,6 +17957,103 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       onChange={(e) => setSeniorityFiscalYear(toPersianDigits(e.target.value))}
                       className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
                     />
+                  </div>
+
+                  {/* Jalali Date Range Picker for Seniority Rate Rules */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-black text-slate-700">بازه زمانی تاریخ اعتبار آیتم</label>
+                      <div className="flex items-center gap-1">
+                        {(() => {
+                          const yr = toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr || '1405';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSeniorityFiscalYear(toPersianDigits(yr));
+                                  setSeniorityStartDate(`${yr}/01/01`);
+                                  setSeniorityEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                              >
+                                کل سال
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSeniorityFiscalYear(toPersianDigits(yr));
+                                  setSeniorityStartDate(`${yr}/01/01`);
+                                  setSeniorityEndDate(`${yr}/06/31`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه اول
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSeniorityFiscalYear(toPersianDigits(yr));
+                                  setSeniorityStartDate(`${yr}/07/01`);
+                                  setSeniorityEndDate(`${yr}/12/29`);
+                                }}
+                                className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer"
+                              >
+                                ۶ ماه دوم
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <ShamsiDatePicker
+                        label="از تاریخ (شروع اعتبار)"
+                        value={seniorityStartDate}
+                        onChange={(val) => {
+                          setSeniorityStartDate(val);
+                          const y = getJalaliYear(val);
+                          if (y && !seniorityFiscalYear.trim()) {
+                            setSeniorityFiscalYear(toPersianDigits(y));
+                          }
+                        }}
+                        placeholder="انتخاب تاریخ شروع"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="right"
+                        defaultYear={Number(toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr) || 1405}
+                      />
+                      <ShamsiDatePicker
+                        label="تا تاریخ (پایان اعتبار)"
+                        value={seniorityEndDate}
+                        onChange={(val) => setSeniorityEndDate(val)}
+                        placeholder="انتخاب تاریخ پایان"
+                        labelClassName="block text-[9.5px] font-bold text-slate-600 mb-1"
+                        buttonClassName="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-[11px] bg-white font-mono font-bold text-slate-800 hover:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-500 flex items-center justify-between gap-1 cursor-pointer"
+                        popoverAlign="left"
+                        defaultYear={Number(toEnglishDigits(seniorityFiscalYear.trim()) || getJalaliYear(seniorityEndDate) || getJalaliYear(seniorityStartDate) || activeFiscalYearStr) || 1405}
+                      />
+                    </div>
+                    {(seniorityStartDate || seniorityEndDate) && (
+                      <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                        <span>
+                          بازه انتخاب‌شده:{' '}
+                          <strong className="text-slate-700 font-mono">
+                            {seniorityStartDate ? toPersianDigits(seniorityStartDate) : '—'} تا {seniorityEndDate ? toPersianDigits(seniorityEndDate) : '—'}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSeniorityStartDate('');
+                            setSeniorityEndDate('');
+                          }}
+                          className="text-rose-600 hover:text-rose-700 font-bold cursor-pointer"
+                        >
+                          پاک کردن بازه
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex gap-2 pt-2">
@@ -17964,6 +18296,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       <thead>
                         <tr className="border-b border-slate-800 text-slate-400 font-bold font-sans">
                           <th className="py-2.5 px-3">سال مالی</th>
+                          <th className="py-2.5 px-3">بازه تاریخ اعتبار</th>
                           <th className="py-2.5 px-3">سابقه مشمول (سال کامل)</th>
                           <th className="py-1.5 px-3 text-left">مبلغ سنوات روزانه</th>
                           <th className="py-2.5 px-3 text-left">مبلغ سنوات ماهانه (۳۰ روز)</th>
@@ -17979,6 +18312,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             }`}
                           >
                             <td className="py-2.5 px-3 text-slate-300 font-bold font-mono">{toPersianDigits(rule.fiscalYear)}</td>
+                            <td className="py-2.5 px-3">
+                              {rule.startDate && rule.endDate ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-rose-500/15 text-rose-300 border border-rose-500/30 whitespace-nowrap">
+                                  {toPersianDigits(rule.startDate)} تا {toPersianDigits(rule.endDate)}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 font-bold">کل سال مالی</span>
+                              )}
+                            </td>
                             <td className="py-2.5 px-3 text-white font-extrabold">{toPersianDigits(rule.seniorityYears)} سال کامل</td>
                             <td className="py-2.5 px-3 text-left font-bold text-emerald-400 font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate))} ریال</td>
                             <td className="py-2.5 px-3 text-left font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rule.dailyRate * 30))} ریال</td>
@@ -18510,8 +18852,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       seniorityYearsCount = diffDate.years;
                     }
                     
-                    const foundSeniorityRule = (db.seniorityRateRules || []).find(
-                      r => r.seniorityYears === seniorityYearsCount && r.fiscalYear === startYear
+                    const foundSeniorityRule = findSeniorityRateRule(
+                      db.seniorityRateRules || [],
+                      seniorityYearsCount,
+                      conStartDate,
+                      startYear,
+                      activePeriodId
                     );
                     const matchedDailyRate = foundSeniorityRule ? foundSeniorityRule.dailyRate : 0;
                     
@@ -18641,8 +18987,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             }
                           }
                           const startYearForPrint = getJalaliYear(conStartDate) || activeFiscalYearStr || '';
-                          const foundSeniorityRule = (db.seniorityRateRules || []).find(
-                            (r: any) => r.periodId === activePeriodId && r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
+                          const foundSeniorityRule = findSeniorityRateRule(
+                            db.seniorityRateRules || [],
+                            seniorityYears,
+                            conStartDate,
+                            startYearForPrint,
+                            activePeriodId
                           );
                           const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * 30) : 0;
 
@@ -18967,8 +19317,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     }
                   }
                   const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
-                  const foundSeniorityRule = (db.seniorityRateRules || []).find(
-                    r => r.periodId === activePeriodId && r.seniorityYears === tempSeniorityYears && r.fiscalYear === startYear
+                  const foundSeniorityRule = findSeniorityRateRule(
+                    db.seniorityRateRules || [],
+                    tempSeniorityYears,
+                    tStartDate,
+                    startYear,
+                    activePeriodId
                   );
                   // Seniority base for viewing is dailyRate * viewBasisDays
                   const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * viewBasisDays) : 0;
@@ -19803,8 +20157,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         }
         
         const startYearForPrint = getJalaliYear(displayStartDate) || activeFiscalYearStr || '';
-        const foundSeniorityRule = (db.seniorityRateRules || []).find(
-          r => r.periodId === activePeriodId && r.seniorityYears === seniorityYears && r.fiscalYear === startYearForPrint
+        const foundSeniorityRule = findSeniorityRateRule(
+          db.seniorityRateRules || [],
+          seniorityYears,
+          displayStartDate,
+          startYearForPrint,
+          activePeriodId
         );
         const calSeniorityBase = contractModalContractData?.calculatedSeniorityBase !== undefined
           ? contractModalContractData.calculatedSeniorityBase
