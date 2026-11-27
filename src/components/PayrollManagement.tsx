@@ -5212,9 +5212,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             : 0;
       }
 
-      const grossBaseSalaryCalculated = monthlyBaseSalaryCalculated + computedFoodAllowance + computedHousingAllowance + childAllowance + marriageAllowance + computedSeniorityBase + monthlyEidi + monthlyYearsBenefit + computedJobAllowance;
+      const grossBaseSalaryCalculated = monthlyBaseSalaryCalculated + computedFoodAllowance + computedHousingAllowance + childAllowance + marriageAllowance + computedSeniorityBase + monthlyEidi + monthlyYearsBenefit;
       const totalHolidayWorkPay = holidayWorkPay;
-      const totalGrossWithAdditions = grossBaseSalaryCalculated + overtimePay + fridayWorkPay + totalHolidayWorkPay;
+      const totalGrossWithAdditions = grossBaseSalaryCalculated + computedJobAllowance + overtimePay + fridayWorkPay + totalHolidayWorkPay;
 
       const insuranceMonthlyBenefits =
         staticInsuranceBenefitsWithoutJob + (hasActiveInsuranceDays && b.insJobSelected ? insJobAllowance : 0);
@@ -6015,7 +6015,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           overtimePay: otPay,
           fridayPay: friPay,
           holidayPay: holPay,
-          totalGross: r.totalGrossWithAdditions || (r.grossBaseSalaryCalculated + otPay + friPay + holPay),
+          totalGross: r.totalGrossWithAdditions || (r.grossBaseSalaryCalculated + (r.computedJobAllowance || 0) + otPay + friPay + holPay),
           insurableBase: r.computedInsBaseUser || 0,
           workerIns7: r.calWorkerInsurance7 || 0,
           employerIns20: r.calEmployerInsurance20 || 0,
@@ -6035,9 +6035,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const marriageAllowance = item.marriageAllowance || 0;
         const eidi = item.monthlyEidi || 0;
         const years = item.monthlyYearsBenefit || 0;
-        const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + childAllowance + marriageAllowance + (item.seniorityBase || 0) + eidi + years + (item.jobAllowance || 0);
+        const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + childAllowance + marriageAllowance + (item.seniorityBase || 0) + eidi + years;
         const otPay = item.overtimePay ?? item.overtimeHoursAmount ?? 0;
-        const totalG = item.grossSalary !== undefined ? item.grossSalary : (grossB + otPay + friPay + holPay);
+        const totalG = item.grossSalary !== undefined ? item.grossSalary : (grossB + (item.jobAllowance || 0) + otPay + friPay + holPay);
         const emp20 = item.employerPensionShare !== undefined ? item.employerPensionShare : Math.round((item.employerInsurance23 || 0) * (20 / 23));
         const unemp3 = item.employerUnemploymentShare !== undefined ? item.employerUnemploymentShare : Math.round((item.employerInsurance23 || 0) * (3 / 23));
         const insBaseVal = item.insurableBase !== undefined ? item.insurableBase : ((item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0));
@@ -6154,8 +6154,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       { label: 'پایه سنوات', minUnits: 4.0, getVal: r => formatWithCommas(r.seniorityBase), totalVal: formatWithCommas(totalSeniority) },
       { label: 'عیدی و پاداش', minUnits: 4.2, getVal: r => formatWithCommas(r.monthlyEidi), totalVal: formatWithCommas(totalEidi) },
       { label: 'حق سنوات', minUnits: 4.0, getVal: r => formatWithCommas(r.monthlyYearsBenefit), totalVal: formatWithCommas(totalYears) },
-      { label: 'فوق‌العاده شغلی', minUnits: 4.5, getVal: r => formatWithCommas(r.jobAllowance), totalVal: formatWithCommas(totalJob) },
       { label: 'جمع ناخالص', minUnits: 4.8, getVal: r => formatWithCommas(r.grossBase), totalVal: formatWithCommas(totalGrossBase), extraBuffer: 1.5 },
+      { label: 'فوق‌العاده شغلی', minUnits: 4.5, getVal: r => formatWithCommas(r.jobAllowance), totalVal: formatWithCommas(totalJob) },
       { label: 'مبلغ اضافه‌کار', minUnits: 4.2, getVal: r => formatWithCommas(r.overtimePay), totalVal: formatWithCommas(totalOvertimePay) },
       { label: 'مبلغ جمعه‌کاری', minUnits: 4.2, getVal: r => formatWithCommas(r.fridayPay), totalVal: formatWithCommas(totalFridayPay) },
       { label: 'مبلغ تعطیل‌کاری', minUnits: 4.2, getVal: r => formatWithCommas(r.holidayPay), totalVal: formatWithCommas(totalHolidayPay) },
@@ -6374,9 +6374,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <th rowspan="2" style="text-align: center;">کد پرسنل</th>
                 <th rowspan="2" style="text-align: right;">نام و نام خانوادگی</th>
                 <th colspan="6" style="text-align: center; background-color: #e0f2fe !important;">کارکرد و تردد</th>
-                <th colspan="9" style="text-align: center; background-color: #ccfbf1 !important;">حقوق پایه و مزایای مستمر ماهانه (ریال)</th>
+                <th colspan="8" style="text-align: center; background-color: #ccfbf1 !important;">حقوق پایه و مزایای مستمر ماهانه (ریال)</th>
                 <th rowspan="2" style="text-align: left; background-color: #d1fae5 !important; font-weight: 900;">جمع ناخالص</th>
-                <th colspan="3" style="text-align: center; background-color: #ede9fe !important;">اضافات و پاداش (ریال)</th>
+                <th colspan="4" style="text-align: center; background-color: #ede9fe !important;">اضافات و پاداش (ریال)</th>
                 <th rowspan="2" style="text-align: left; background-color: #bbf7d0 !important; font-weight: 900;">جمع ناخالص و اضافات</th>
                 <th colspan="2" style="text-align: center; background-color: #fef3c7 !important;">بیمه تامین اجتماعی (ریال)</th>
                 <th rowspan="2" style="text-align: center; background-color: #f3e8ff !important;">مالیات حقوق</th>
@@ -6401,9 +6401,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <th style="text-align: center; background-color: #ccfbf1 !important;">پایه سنوات</th>
                 <th style="text-align: center; background-color: #ccfbf1 !important;">عیدی و پاداش</th>
                 <th style="text-align: center; background-color: #ccfbf1 !important;">حق سنوات</th>
-                <th style="text-align: center; background-color: #ccfbf1 !important;">فوق‌العاده شغلی</th>
 
                 <!-- Additions subheaders -->
+                <th style="text-align: center; background-color: #ede9fe !important;">فوق‌العاده شغلی</th>
                 <th style="text-align: center; background-color: #ede9fe !important;">مبلغ اضافه‌کار</th>
                 <th style="text-align: center; background-color: #ede9fe !important;">مبلغ جمعه‌کاری</th>
                 <th style="text-align: center; background-color: #ede9fe !important;">مبلغ تعطیل‌کاری</th>
@@ -6440,12 +6440,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   <td class="font-mono text-center" style="font-weight: 700;">${formatWithCommas(r.seniorityBase)}</td>
                   <td class="font-mono text-center">${formatWithCommas(r.monthlyEidi)}</td>
                   <td class="font-mono text-center">${formatWithCommas(r.monthlyYearsBenefit)}</td>
-                  <td class="font-mono text-center">${formatWithCommas(r.jobAllowance)}</td>
 
                   <!-- Gross Base -->
                   <td class="font-mono text-left" style="font-weight: 800; background-color: #f0fdf4 !important;">${formatWithCommas(r.grossBase)}</td>
 
                   <!-- Additions -->
+                  <td class="font-mono text-center">${formatWithCommas(r.jobAllowance)}</td>
                   <td class="font-mono text-center">${formatWithCommas(r.overtimePay)}</td>
                   <td class="font-mono text-center">${formatWithCommas(r.fridayPay)}</td>
                   <td class="font-mono text-center">${formatWithCommas(r.holidayPay)}</td>
@@ -6485,8 +6485,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <td class="font-mono text-center">${formatWithCommas(totalSeniority)}</td>
                 <td class="font-mono text-center">${formatWithCommas(totalEidi)}</td>
                 <td class="font-mono text-center">${formatWithCommas(totalYears)}</td>
-                <td class="font-mono text-center">${formatWithCommas(totalJob)}</td>
                 <td class="font-mono text-left" style="background-color: #bbf7d0 !important;">${formatWithCommas(totalGrossBase)}</td>
+                <td class="font-mono text-center">${formatWithCommas(totalJob)}</td>
                 <td class="font-mono text-center">${formatWithCommas(totalOvertimePay)}</td>
                 <td class="font-mono text-center">${formatWithCommas(totalFridayPay)}</td>
                 <td class="font-mono text-center">${formatWithCommas(totalHolidayPay)}</td>
@@ -6700,8 +6700,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       'حق پایه سنوات ماهانه',
       'عیدی و پاداش ماهانه',
       'سنوات ماهانه',
-      'فوق العاده شغلی',
       'جمع حقوق ناخالص',
+      'فوق العاده شغلی',
       'مبلغ اضافه کار',
       'مبلغ جمعه کاری',
       'مبلغ تعطیل کاری',
@@ -6727,9 +6727,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           const insDays = item.insuranceDaysCount ?? workDays;
           const dailyBase = item.dailyBaseSalary ?? Math.round((item.baseSalary || 0) / Math.max(1, workDays));
           const dailyIns = item.dailyInsuranceSalary ?? dailyBase;
-          const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0) + (item.jobAllowance || 0);
+          const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0);
           const otPay = item.overtimePay ?? item.overtimeHoursAmount ?? 0;
-          const totalG = item.grossSalary !== undefined ? item.grossSalary : (grossB + otPay + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0));
+          const totalG = item.grossSalary !== undefined ? item.grossSalary : (grossB + (item.jobAllowance || 0) + otPay + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0));
           const insBase = item.insurableBase !== undefined ? item.insurableBase : ((item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0));
           const emp20 = item.employerPensionShare !== undefined ? item.employerPensionShare : Math.round((item.employerInsurance23 || 0) * (20 / 23));
           const unemp3 = item.employerUnemploymentShare !== undefined ? item.employerUnemploymentShare : Math.round((item.employerInsurance23 || 0) * (3 / 23));
@@ -6757,8 +6757,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             (item.seniorityBase || 0).toString(),
             (item.monthlyEidi || 0).toString(),
             (item.monthlyYearsBenefit || 0).toString(),
-            (item.jobAllowance || 0).toString(),
             grossB.toString(),
+            (item.jobAllowance || 0).toString(),
             otPay.toString(),
             (item.fridayWorkPay || 0).toString(),
             (item.holidayWorkPay || 0).toString(),
@@ -6797,8 +6797,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           r.computedSeniorityBase.toString(),
           r.monthlyEidi.toString(),
           r.monthlyYearsBenefit.toString(),
-          r.computedJobAllowance.toString(),
           r.grossBaseSalaryCalculated.toString(),
+          r.computedJobAllowance.toString(),
           r.overtimePay.toString(),
           r.fridayWorkPay.toString(),
           r.totalHolidayWorkPay.toString(),
@@ -6830,7 +6830,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const emp20 = item.employerPensionShare !== undefined ? item.employerPensionShare : Math.round((item.employerInsurance23 || 0) * (20 / 23));
         const unemp3 = item.employerUnemploymentShare !== undefined ? item.employerUnemploymentShare : Math.round((item.employerInsurance23 || 0) * (3 / 23));
         const wIns7 = item.workerInsurance7 !== undefined ? item.workerInsurance7 : Math.round(insBase * 0.07);
-        const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0) + (item.jobAllowance || 0);
+        const grossB = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0);
         const otPay = item.overtimePay ?? item.overtimeHoursAmount ?? 0;
         return {
           employee: emp || { employeeCode: item.employeeCode, firstName: '', lastName: item.employeeCode, role: '' },
@@ -6859,7 +6859,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           overtimePay: otPay,
           fridayWorkPay: item.fridayWorkPay || 0,
           totalHolidayWorkPay: item.holidayWorkPay || 0,
-          totalGrossWithAdditions: item.grossSalary !== undefined ? item.grossSalary : (grossB + otPay + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0)),
+          totalGrossWithAdditions: item.grossSalary !== undefined ? item.grossSalary : (grossB + (item.jobAllowance || 0) + otPay + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0)),
           computedInsBaseUser: insBase,
           calEmployerInsurance20: emp20,
           calUnemploymentInsurance3: unemp3,
@@ -13483,8 +13483,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       sumFriday += friPay;
       sumHoliday += holPay;
 
-      const rowGrossBase = base + food + housing + child + marriage + seniority + eidi + years + job;
-      sumTotalGross += i.grossSalary !== undefined ? i.grossSalary : (rowGrossBase + otPay + friPay + holPay);
+      const rowGrossBase = base + food + housing + child + marriage + seniority + eidi + years;
+      sumTotalGross += i.grossSalary !== undefined ? i.grossSalary : (rowGrossBase + job + otPay + friPay + holPay);
 
       const rowInsB = i.insurableBase !== undefined ? i.insurableBase : (base + food + housing);
       sumInsBaseSalary += i.insuranceMonthlyBaseSalary ?? Math.round(((i.dailyInsuranceSalary ?? i.dailyBaseSalary ?? Math.round(base / 30)) + Math.round(seniority / 30)) * insDays);
@@ -13505,7 +13505,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       sumNet += i.payableAmount || 0;
     }
 
-    const sumGrossBase = sumBase + sumFood + sumHousing + sumChild + sumMarriage + sumSeniority + sumEidi + sumYears + sumJob;
+    const sumGrossBase = sumBase + sumFood + sumHousing + sumChild + sumMarriage + sumSeniority + sumEidi + sumYears;
 
     return {
       count: monthlyRegisteredPayrollItems.length,
@@ -17812,12 +17812,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <th colSpan={2} className="px-2 py-1.5 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">مبالغ پایه روزانه</th>
                           
                           {/* Group 4: Benefits allowances */}
-                          <th colSpan={9} className="px-2 py-1.5 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">مزایای مستمر و ماهانه قرارداد (ریال)</th>
+                          <th colSpan={8} className="px-2 py-1.5 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">مزایای مستمر و ماهانه قرارداد (ریال)</th>
                           
                           <th rowSpan={2} className="px-3 py-3 font-black text-left border-l border-b border-slate-200 bg-slate-100 text-slate-800 text-xs">جمع حقوق ناخالص</th>
                           
                           {/* Group 5: Overtime & holiday additions */}
-                          <th colSpan={3} className="px-2 py-1.5 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">اضافات و پاداش کارکرد</th>
+                          <th colSpan={4} className="px-2 py-1.5 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">اضافات و پاداش کارکرد</th>
                           
                           <th rowSpan={2} className="px-3 py-3 font-black text-left border-l border-b border-slate-200 bg-slate-100 text-slate-800 text-xs">جمع حقوق و اضافات</th>
                           
@@ -17860,9 +17860,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800" title="حق پایه سنوات ماهانه = (پایه سنوات ماهانه در قرارداد / ۳۰) × روز کارکرد">حق پایه سنوات</th>
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">عیدی و پاداش</th>
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">حق سنوات</th>
-                          <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">فوق العاده شغلی</th>
                           
                           {/* Group 5 Subheaders */}
+                          <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">فوق العاده شغلی</th>
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">اضافه کار</th>
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">مبلغ جمعه کاری</th>
                           <th className="px-2 py-1.5 font-bold text-center border-l bg-slate-100 text-slate-800">تعطیل کاری</th>
@@ -17900,8 +17900,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               const rowDailyBase = item.dailyBaseSalary ?? Math.round((item.baseSalary || 0) / 30);
                               const rowDailyIns = item.dailyInsuranceSalary ?? rowDailyBase;
                               const rowInsMonthlyBaseSalary = item.insuranceMonthlyBaseSalary ?? Math.round((rowDailyIns + Math.round((item.seniorityBase || 0) / 30)) * rowInsDays);
-                              const grossBase = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0) + (item.jobAllowance || 0);
-                              const otAddition = (item.overtimePay ?? item.overtimeHoursAmount ?? 0) + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0);
+                              const grossBase = (item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0) + (item.childAllowance || 0) + (item.marriageAllowance || 0) + (item.seniorityBase || 0) + (item.monthlyEidi || 0) + (item.monthlyYearsBenefit || 0);
+                              const otAddition = (item.jobAllowance || 0) + (item.overtimePay ?? item.overtimeHoursAmount ?? 0) + (item.fridayWorkPay || 0) + (item.holidayWorkPay || 0);
                               const totalGross = item.grossSalary !== undefined ? item.grossSalary : (grossBase + otAddition);
                               const insBase = item.insurableBase !== undefined ? item.insurableBase : ((item.baseSalary || 0) + (item.foodAllowance || 0) + (item.housingAllowance || 0));
                               const empPension = item.employerPensionShare !== undefined ? item.employerPensionShare : Math.round((item.employerInsurance23 || 0) * (20 / 23));
@@ -17949,7 +17949,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   <td className="px-2 py-3 text-left font-mono border-l">{formatWithCommas(rowDailyBase)}</td>
                                   <td className="px-2 py-3 text-left font-mono border-l">{formatWithCommas(rowDailyIns)}</td>
 
-                                  {/* Group 4: Benefits allowances (9 individual cols) */}
+                                  {/* Group 4: Benefits allowances (8 individual cols) */}
                                   <td className="px-2 py-3 text-left font-mono border-l bg-teal-50/5">{formatWithCommas(item.baseSalary || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.foodAllowance || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.housingAllowance || 0)}</td>
@@ -17958,12 +17958,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.seniorityBase || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.monthlyEidi || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.monthlyYearsBenefit || 0)}</td>
-                                  <td className="px-2 py-3 text-center font-mono border-l bg-teal-50/5">{formatWithCommas(item.jobAllowance || 0)}</td>
 
                                   {/* جمع حقوق ناخالص */}
                                   <td className="px-2 py-3 text-left bg-teal-50/20 text-teal-950 font-mono font-bold border-l text-[12px]">{formatWithCommas(grossBase)}</td>
 
-                                  {/* Group 5: Overtime & holiday additions (3 cols) */}
+                                  {/* Group 5: Job allowance, overtime & holiday additions (4 cols) */}
+                                  <td className="px-2 py-3 text-center font-mono border-l bg-indigo-50/10">{formatWithCommas(item.jobAllowance || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-indigo-50/10">{formatWithCommas(item.overtimePay || item.overtimeHoursAmount || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-indigo-50/10">{formatWithCommas(item.fridayWorkPay || 0)}</td>
                                   <td className="px-2 py-3 text-center font-mono border-l bg-indigo-50/10">{formatWithCommas(item.holidayWorkPay || 0)}</td>
@@ -17998,14 +17998,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   </td>
 
                                   {/* Action */}
-                                  <td className="px-2 py-2 text-center bg-slate-50">
+                                  <td className="px-2 py-2 text-right bg-slate-50 whitespace-nowrap">
                                     {(() => {
                                       const hasRegisteredDeparture = Boolean(emp?.departureDate && String(emp.departureDate).trim());
                                       const existingSettlement = activePeriodSettlementByEmpCode.get(String(item.employeeCode || '').trim());
                                       const canShowSettlement = hasRegisteredDeparture || Boolean(existingSettlement);
 
                                       return (
-                                        <div className="flex items-center justify-center gap-1 flex-wrap">
+                                        <div className="flex flex-nowrap items-center justify-start gap-1 whitespace-nowrap">
                                           <button
                                             type="button"
                                             onClick={(e) => {
@@ -18013,10 +18013,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                               setSelectedPayslipEmpCode(item.employeeCode);
                                               setIsPayslipModalOpen(true);
                                             }}
-                                            className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                            className="p-1 px-2 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs"
                                             title="مشاهده و چاپ فیش رسمی حقوق ثبت‌شده"
                                           >
-                                            <FileText className="h-3.5 w-3.5 text-white" />
+                                            <FileText className="h-3.5 w-3.5 text-white shrink-0" />
                                             <span>فیش</span>
                                           </button>
                                           {emp?.id && (
@@ -18026,7 +18026,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                                 e.stopPropagation();
                                                 openDepartureDeclarationModal(emp);
                                               }}
-                                              className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs border ${
+                                              className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs border ${
                                                 hasRegisteredDeparture
                                                   ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
                                                   : 'bg-slate-800 hover:bg-rose-600 text-white border-slate-700'
@@ -18037,7 +18037,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                                   : `اعلام ترک کار ${emp.firstName || ''} ${emp.lastName || ''} (با بازگشایی و قفل مجدد خودکار سند)`
                                               }
                                             >
-                                              <UserMinus className="h-3 w-3" />
+                                              <UserMinus className="h-3 w-3 shrink-0" />
                                               <span>{hasRegisteredDeparture ? 'ویرایش ترک کار' : 'اعلام ترک کار'}</span>
                                             </button>
                                           )}
@@ -18050,7 +18050,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                                 setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
                                                 setActiveTab('settlement');
                                               }}
-                                              className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
+                                              className={`p-1 px-2 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs ${
                                                 existingSettlement
                                                   ? 'bg-amber-600 hover:bg-amber-500'
                                                   : 'bg-rose-600 hover:bg-rose-500'
@@ -18061,11 +18061,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                                   : 'محاسبه و ثبت تسویه حساب بر اساس لیست‌های حقوق ثبت‌شده دوره مالی'
                                               }
                                             >
-                                              <Receipt className="h-3 w-3 text-white" />
+                                              <Receipt className="h-3 w-3 text-white shrink-0" />
                                               <span>{existingSettlement ? 'ویرایش تسویه حساب' : 'تسویه حساب'}</span>
                                             </button>
                                           )}
-                                          <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
+                                          <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0 whitespace-nowrap">
                                             🔒 قفل
                                           </span>
                                         </div>
@@ -18203,8 +18203,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               </td>
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5">{formatWithCommas(row.monthlyEidi)}</td>
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5">{formatWithCommas(row.monthlyYearsBenefit)}</td>
+                              
+                              {/* جمع حقوق ناخالص */}
+                              <td className="px-2 py-3 text-left bg-teal-50/20 text-teal-950 font-mono font-bold border-l text-[12px]">{formatWithCommas(row.grossBaseSalaryCalculated)}</td>
+                              
+                              {/* Group 5: Job Allowance, Overtime & Holiday Additions */}
                               <td
-                                className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5"
+                                className="px-2 py-3 text-center text-slate-800 font-mono font-bold border-l bg-indigo-50/15"
                                 title={
                                   row.isAgreedJobAllowanceAdjusted
                                     ? `تنظیم خودکار برای تطبیق خالص عادی با مبلغ توافقی (${formatWithCommas(row.agreedTargetRegularNet)} ریال) بر اساس ${toPersianDigits(row.userInsuranceDaysCount)} روز بیمه این ماه`
@@ -18218,11 +18223,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   </span>
                                 )}
                               </td>
-                              
-                              {/* جمع حقوق ناخالص */}
-                              <td className="px-2 py-3 text-left bg-teal-50/20 text-teal-950 font-mono font-bold border-l text-[12px]">{formatWithCommas(row.grossBaseSalaryCalculated)}</td>
-                              
-                              {/* Group 5: Overtime & Holiday Additions */}
                               <td className="px-2 py-3 text-center text-slate-800 font-mono font-bold border-l bg-indigo-50/15" title={`${toPersianDigits(roundMinutesToHourHelper(row.finalOtMinutes))} ساعت × ${formatWithCommas(row.overtimeHourlyRateVal)} ریال = ${formatWithCommas(row.overtimePay)} ریال`}>{formatWithCommas(row.overtimePay)}</td>
                               <td className="px-2 py-3 text-center text-slate-800 font-mono font-bold border-l bg-indigo-50/10" title={`${toPersianDigits(roundMinutesToHourHelper(row.finalFridayMinutes))} ساعت × ${formatWithCommas(row.fridayWorkHourlyRateVal)} ریال = ${formatWithCommas(row.fridayWorkPay)} ریال`}>{formatWithCommas(row.fridayWorkPay)}</td>
                               <td className="px-2 py-3 text-center text-slate-800 font-mono font-bold border-l bg-indigo-50/15" title={`${toPersianDigits(roundMinutesToHourHelper(row.finalHolidayMinutes))} ساعت × ${formatWithCommas(row.holidayWorkHourlyRateVal)} ریال = ${formatWithCommas(row.totalHolidayWorkPay)} ریال`}>{formatWithCommas(row.totalHolidayWorkPay)}</td>
@@ -18259,14 +18259,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               <td className="px-2 py-3 bg-emerald-600 text-white font-mono font-black text-left text-[12px] border-l border-slate-300">{formatWithCommas(row.netPayableUser)} <span className="text-[9px] text-emerald-100 font-bold">ریال</span></td>
 
                               {/* عملیات و فیش رسمی */}
-                              <td className="px-2 py-2 text-center bg-slate-50">
+                              <td className="px-2 py-2 text-right bg-slate-50 whitespace-nowrap">
                                 {(() => {
                                   const hasRegisteredDeparture = Boolean(row.employee?.departureDate && String(row.employee.departureDate).trim());
                                   const existingSettlement = activePeriodSettlementByEmpCode.get(String(row.employee.employeeCode || '').trim());
                                   const canShowSettlement = hasRegisteredDeparture || Boolean(existingSettlement);
 
                                   return (
-                                    <div className="flex items-center justify-center gap-1 flex-wrap">
+                                    <div className="flex flex-nowrap items-center justify-start gap-1 whitespace-nowrap">
                                       <button
                                         type="button"
                                         onClick={(e) => {
@@ -18274,10 +18274,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                           setSelectedPayslipEmpCode(row.employee.employeeCode);
                                           setIsPayslipModalOpen(true);
                                         }}
-                                        className="p-1 px-2.5 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10.5px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                        className="p-1 px-2 bg-slate-900 hover:bg-rose-600 hover:text-white border border-slate-800 text-slate-200 text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs"
                                         title={`مشاهده و چاپ فیش رسمی حقوق ${row.employee.firstName} ${row.employee.lastName}`}
                                       >
-                                        <FileText className="h-3.5 w-3.5 text-rose-400" />
+                                        <FileText className="h-3.5 w-3.5 text-rose-400 shrink-0" />
                                         <span>فیش حقوق</span>
                                       </button>
                                       <button
@@ -18286,7 +18286,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                           e.stopPropagation();
                                           openDepartureDeclarationModal(row.employee);
                                         }}
-                                        className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs border ${
+                                        className={`p-1 px-2 text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs border ${
                                           hasRegisteredDeparture
                                             ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
                                             : 'bg-slate-800 hover:bg-rose-600 text-white border-slate-700'
@@ -18297,7 +18297,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                             : `اعلام و ثبت ترک کار برای ${row.employee.firstName} ${row.employee.lastName}`
                                         }
                                       >
-                                        <UserMinus className="h-3 w-3" />
+                                        <UserMinus className="h-3 w-3 shrink-0" />
                                         <span>{hasRegisteredDeparture ? 'ویرایش ترک کار' : 'اعلام ترک کار'}</span>
                                       </button>
                                       {canShowSettlement && (
@@ -18317,7 +18317,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                             setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
                                             setActiveTab('settlement');
                                           }}
-                                          className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
+                                          className={`p-1 px-2 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 shrink-0 whitespace-nowrap cursor-pointer transition-all shadow-xs ${
                                             existingSettlement
                                               ? 'bg-amber-600 hover:bg-amber-500'
                                               : 'bg-rose-600 hover:bg-rose-500'
@@ -18328,7 +18328,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                               : `محاسبه و انجام تسویه حساب برای ${row.employee.firstName} ${row.employee.lastName}`
                                           }
                                         >
-                                          <Receipt className="h-3 w-3 text-white" />
+                                          <Receipt className="h-3 w-3 text-white shrink-0" />
                                           <span>{existingSettlement ? 'ویرایش تسویه حساب' : 'تسویه حساب'}</span>
                                         </button>
                                       )}
@@ -18364,8 +18364,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(lockedPayrollTotals.sumSeniority)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(lockedPayrollTotals.sumEidi)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(lockedPayrollTotals.sumYears)}</td>
-                            <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(lockedPayrollTotals.sumJob)}</td>
                             <td className="px-2 py-3 text-left font-mono bg-violet-200 !text-black">{formatWithCommas(lockedPayrollTotals.sumGrossBase)}</td>
+                            <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(lockedPayrollTotals.sumJob)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(lockedPayrollTotals.sumOt)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(lockedPayrollTotals.sumFriday)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(lockedPayrollTotals.sumHoliday)}</td>
@@ -18409,8 +18409,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(activePayrollTotals.sumSeniority)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(activePayrollTotals.sumEidi)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(activePayrollTotals.sumYears)}</td>
-                            <td className="px-2 py-3 text-center font-mono bg-teal-50 !text-black">{formatWithCommas(activePayrollTotals.sumJobAllowance)}</td>
                             <td className="px-2 py-3 text-left font-mono bg-violet-200 !text-black">{formatWithCommas(activePayrollTotals.sumGrossBase)}</td>
+                            <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(activePayrollTotals.sumJobAllowance)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(activePayrollTotals.sumOvertimePay)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(activePayrollTotals.sumFridayPay)}</td>
                             <td className="px-2 py-3 text-center font-mono bg-indigo-100 !text-black">{formatWithCommas(activePayrollTotals.sumHolidayPay)}</td>
