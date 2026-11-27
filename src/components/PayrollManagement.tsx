@@ -53,6 +53,7 @@ import { CopySectionKey } from '../utils/periodCopyEngine';
 import {
   ModuleHeader,
   ModulePrimaryTabs,
+  UnifiedToolbar,
   ErpButton,
   ERP_BUTTON_LABELS
 } from './ui/UnifiedErpUi';
@@ -60,7 +61,7 @@ import { CopyFromPeriodModal } from './ui/CopyFromPeriodModal';
 import { 
   Users, Search, Plus, Trash, Trash2, Printer, CheckCircle, FileSpreadsheet, Sparkles, Layers,
   DollarSign, Briefcase, Calendar, ShieldCheck, Download, Award, ChevronLeft, CreditCard, ChevronDown, CheckSquare, Square, RefreshCcw, AlertTriangle, Tag, Copy,
-  FileCheck, FileText, X, Check, Edit3, Clock, Settings, Receipt, Filter, CheckCircle2, UserMinus, RotateCcw, Unlock, ArrowRight
+  FileCheck, FileText, X, Check, Edit3, Clock, Settings, Receipt, Filter, CheckCircle2, UserMinus, RotateCcw, Unlock, ArrowRight, ArrowUpDown
 } from 'lucide-react';
 
 function parseJalali(dateStr: string) {
@@ -8890,24 +8891,161 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   // TAB 1: EMPLOYEES ARCHIVE (مدیریت مشخصات پرسنل)
   // ==========================================
   const [empSearch, setEmpSearch] = useState('');
+  const [empDeptFilter, setEmpDeptFilter] = useState<string>('all');
+  const [empInsuranceFilter, setEmpInsuranceFilter] = useState<'all' | 'insured' | 'uninsured'>('all');
+  const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'active' | 'departed' | 'inactive'>('all');
+  const [empSortBy, setEmpSortBy] = useState<'code' | 'name' | 'childAllowance' | 'seniorityBase'>('code');
+  const [empSortOrder, setEmpSortOrder] = useState<'asc' | 'desc'>('asc');
   const [editingEmp, setEditingEmp] = useState<Personnel | null>(null);
   const [isPersonnelFormOpen, setIsPersonnelFormOpen] = useState(false);
 
-  const searchedPersonnel = useMemo(() => {
-    const list = db.personnel.filter(p => p.periodId === activePeriodId);
-    if (!empSearch.trim()) return list;
-    return list.filter(p => {
-      const q = empSearch.toLowerCase();
-      return (
-        p.fullName?.toLowerCase().includes(q) ||
-        p.employeeCode.includes(q) ||
-        p.attendanceCode?.toLowerCase().includes(q) ||
-        p.role?.toLowerCase().includes(q) ||
-        p.nationalId?.includes(q) ||
-        p.mobile?.includes(q)
-      );
+  // استخراج آخرین قرارداد فعال هر پرسنل در دوره جاری جهت نمایش حق اولاد و حق پایه سنوات در جدول پرونده پرسنل
+  const activeContractSummaryByEmpCode = useMemo(() => {
+    const map: Record<string, { hasContract: boolean; childAllowance: number; seniorityBase: number }> = {};
+    const empByCode = new Map<string, Personnel>();
+    (db.personnel || []).forEach(p => {
+      if (p.periodId === activePeriodId && p.employeeCode) {
+        empByCode.set(p.employeeCode.trim(), p);
+      }
     });
-  }, [db.personnel, activePeriodId, empSearch]);
+
+    const periodActiveContracts = (db.personnelContracts || []).filter(
+      c => c.periodId === activePeriodId && c.isActive !== false
+    );
+    const grouped: Record<string, PersonnelContract[]> = {};
+    periodActiveContracts.forEach(c => {
+      const code = (c.employeeCode || '').trim();
+      if (!code) return;
+      if (!grouped[code]) grouped[code] = [];
+      grouped[code].push(c);
+    });
+
+    Object.entries(grouped).forEach(([code, list]) => {
+      const sorted = [...list].sort((a, b) => {
+        const dA = normalizeDateStr(a.contractStartDate || '');
+        const dB = normalizeDateStr(b.contractStartDate || '');
+        if (dA !== dB) return dB.localeCompare(dA);
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+      const con = sorted[0];
+      const conAny = con as any;
+      const emp = empByCode.get(code);
+
+      let childVal: number | undefined;
+      if (conAny.calculatedChildAllowance !== undefined && conAny.calculatedChildAllowance !== null) {
+        childVal = Number(conAny.calculatedChildAllowance) || 0;
+      } else if (con.contract?.calculatedChildAllowance !== undefined && con.contract?.calculatedChildAllowance !== null) {
+        childVal = Number(con.contract.calculatedChildAllowance) || 0;
+      } else if (emp) {
+        const computed = calculateContractFieldsForDb(con, emp, db, activePeriodId);
+        childVal = Number(computed?.calculatedChildAllowance) || 0;
+      } else {
+        childVal = 0;
+      }
+
+      const seniorityCandidates = [
+        con.contractSeniorityBase,
+        conAny.calculatedSeniorityBase,
+        con.contract?.contractSeniorityBase,
+        con.contract?.calculatedSeniorityBase,
+        conAny.baseYearsRate,
+        con.contract?.baseYearsRate,
+        conAny.seniorityBase,
+        con.contract?.seniorityBase
+      ];
+      let seniorityVal = 0;
+      for (const val of seniorityCandidates) {
+        if (val !== undefined && val !== null && val !== '') {
+          seniorityVal = Math.max(0, Number(val) || 0);
+          break;
+        }
+      }
+
+      map[code] = {
+        hasContract: true,
+        childAllowance: Math.max(0, childVal),
+        seniorityBase: seniorityVal
+      };
+    });
+
+    return map;
+  }, [db, activePeriodId]);
+
+  const searchedPersonnel = useMemo(() => {
+    const q = empSearch.trim().toLowerCase();
+    const filtered = db.personnel.filter(p => {
+      if (p.periodId !== activePeriodId) return false;
+
+      if (q) {
+        const matchesSearch =
+          p.fullName?.toLowerCase().includes(q) ||
+          p.employeeCode.toLowerCase().includes(q) ||
+          p.attendanceCode?.toLowerCase().includes(q) ||
+          p.role?.toLowerCase().includes(q) ||
+          p.nationalId?.includes(q) ||
+          p.mobile?.includes(q);
+        if (!matchesSearch) return false;
+      }
+
+      if (empDeptFilter !== 'all') {
+        const alloc = allocMap[p.employeeCode];
+        const deptId = alloc?.departmentCategoryId || 'cat-4';
+        if (empDeptFilter === 'cat-4') {
+          if (deptId !== 'cat-4' && !deptId.includes('cat-4')) return false;
+        } else if (deptId !== empDeptFilter) {
+          return false;
+        }
+      }
+
+      if (empInsuranceFilter === 'insured' && p.hasInsurance === false) return false;
+      if (empInsuranceFilter === 'uninsured' && p.hasInsurance !== false) return false;
+
+      if (empStatusFilter === 'active' && (!p.isActive || Boolean(p.departureDate))) return false;
+      if (empStatusFilter === 'departed' && !p.departureDate) return false;
+      if (empStatusFilter === 'inactive' && (p.isActive || Boolean(p.departureDate))) return false;
+
+      return true;
+    });
+
+    const dir = empSortOrder === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      if (empSortBy === 'name') {
+        const nameA = a.fullName || `${a.firstName || ''} ${a.lastName || ''}`;
+        const nameB = b.fullName || `${b.firstName || ''} ${b.lastName || ''}`;
+        return nameA.localeCompare(nameB, 'fa') * dir;
+      }
+      if (empSortBy === 'childAllowance') {
+        const valA = activeContractSummaryByEmpCode[a.employeeCode]?.hasContract
+          ? activeContractSummaryByEmpCode[a.employeeCode].childAllowance
+          : -1;
+        const valB = activeContractSummaryByEmpCode[b.employeeCode]?.hasContract
+          ? activeContractSummaryByEmpCode[b.employeeCode].childAllowance
+          : -1;
+        return (valA - valB) * dir;
+      }
+      if (empSortBy === 'seniorityBase') {
+        const valA = activeContractSummaryByEmpCode[a.employeeCode]?.hasContract
+          ? activeContractSummaryByEmpCode[a.employeeCode].seniorityBase
+          : -1;
+        const valB = activeContractSummaryByEmpCode[b.employeeCode]?.hasContract
+          ? activeContractSummaryByEmpCode[b.employeeCode].seniorityBase
+          : -1;
+        return (valA - valB) * dir;
+      }
+      return a.employeeCode.localeCompare(b.employeeCode, 'fa', { numeric: true }) * dir;
+    });
+  }, [
+    db.personnel,
+    activePeriodId,
+    empSearch,
+    empDeptFilter,
+    empInsuranceFilter,
+    empStatusFilter,
+    empSortBy,
+    empSortOrder,
+    allocMap,
+    activeContractSummaryByEmpCode
+  ]);
 
   // New Employee Form Build States
   const [newCode, setNewCode] = useState('');
@@ -11255,8 +11393,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     downloadCSV('Gatan_Personnel_Extended_Template', headers, rows);
   };
 
-  const importPersonnelCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const importPersonnelFile = (file: File) => {
     if (!file) return;
 
     const fileName = (file.name || '').toLowerCase();
@@ -11420,7 +11557,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       alert(`${importCount} پرونده پرسنلی با فیلدهای تکمیلی و تخصیص مستقیم دپارتمان با موفقیت از سیستم اکسل بارگذاری گردید.`);
     };
     reader.readAsArrayBuffer(file);
-    e.target.value = '';
+  };
+
+  const handlePrintPersonnelList = () => {
+    printElement('personnel-printable-section', 'فهرست پرونده پرسنل کارگاه');
   };
 
   const exportPersonnelCSV = () => {
@@ -13211,74 +13351,117 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
                 </div>
 
-                {/* SEARCH & ACTIONS TOOLBAR */}
-                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800" dir="rtl">
-                  <div className="flex items-center gap-2.5 w-full xl:w-auto">
-                    <div className="relative flex-1 xl:w-72">
-                      <span className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                        <Search className="h-4 w-4 text-slate-500" />
-                      </span>
-                      <input
-                        id="employee-search-inp"
-                        type="text"
-                        placeholder="جستجو در نام پرسنل، کد پرسنلی، کد تردد یا سمت..."
-                        className="w-full pr-9 pl-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-rose-500 text-right font-sans"
-                        value={empSearch}
-                        onChange={(e) => setEmpSearch(e.target.value)}
-                      />
+                {/* SEARCH, FILTERS & ACTIONS TOOLBAR (Matching CustomerManagement) */}
+                <div className="space-y-3">
+                  <UnifiedToolbar
+                    searchValue={empSearch}
+                    onSearchChange={setEmpSearch}
+                    searchPlaceholder="جستجو در نام پرسنل، کد پرسنلی، کد تردد، کد ملی، موبایل یا سمت..."
+                    hasActiveFilters={Boolean(
+                      empSearch ||
+                      empDeptFilter !== 'all' ||
+                      empInsuranceFilter !== 'all' ||
+                      empStatusFilter !== 'all'
+                    )}
+                    onClearFilters={() => {
+                      setEmpSearch('');
+                      setEmpDeptFilter('all');
+                      setEmpInsuranceFilter('all');
+                      setEmpStatusFilter('all');
+                    }}
+                    onDownloadTemplate={downloadSamplePersonnelCSV}
+                    onImportExcel={importPersonnelFile}
+                    importAccept=".xlsx,.xls,.csv"
+                    onExportExcel={exportPersonnelToExcel}
+                    onPrint={handlePrintPersonnelList}
+                    onAdd={() => {
+                      setEditingEmp(null);
+                      resetForm();
+                      setIsPersonnelFormOpen(true);
+                    }}
+                    addLabel={ERP_BUTTON_LABELS.add}
+                  />
+
+                  <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800" dir="rtl">
+                    {/* FILTERS ROW */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {/* Department Filter */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">دپارتمان تولید</label>
+                        <select
+                          value={empDeptFilter}
+                          onChange={(e) => setEmpDeptFilter(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                        >
+                          <option value="all">همه دپارتمان‌ها ({toPersianDigits(personnel.length)})</option>
+                          <option value="cat-4">
+                            بخش مشترک / سربار کارگاه ({toPersianDigits(personnel.filter(p => {
+                              const a = allocMap[p.employeeCode];
+                              return !a || a.departmentCategoryId === 'cat-4' || a.departmentCategoryId.includes('cat-4');
+                            }).length)})
+                          </option>
+                          {categories.filter(c => !isSharedDeptCat(c.id)).map(cat => (
+                            <option key={cat.id} value={cat.id}>
+                              {cat.name} ({toPersianDigits(personnel.filter(p => allocMap[p.employeeCode]?.departmentCategoryId === cat.id).length)})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Insurance Filter */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">وضعیت بیمه</label>
+                        <select
+                          value={empInsuranceFilter}
+                          onChange={(e) => setEmpInsuranceFilter(e.target.value as any)}
+                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                        >
+                          <option value="all">همه وضعیت‌های بیمه</option>
+                          <option value="insured">دارای بیمه تأمین اجتماعی</option>
+                          <option value="uninsured">بدون بیمه</option>
+                        </select>
+                      </div>
+
+                      {/* Status Filter */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">وضعیت فعالیت</label>
+                        <select
+                          value={empStatusFilter}
+                          onChange={(e) => setEmpStatusFilter(e.target.value as any)}
+                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                        >
+                          <option value="all">همه وضعیت‌ها</option>
+                          <option value="active">شاغل فعال</option>
+                          <option value="departed">ترک کار</option>
+                          <option value="inactive">غیرفعال</option>
+                        </select>
+                      </div>
+
+                      {/* Sorting */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 mb-1">مرتب‌سازی</label>
+                        <div className="flex gap-1">
+                          <select
+                            value={empSortBy}
+                            onChange={(e) => setEmpSortBy(e.target.value as any)}
+                            className="flex-grow px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                          >
+                            <option value="code">کد پرسنلی</option>
+                            <option value="name">نام پرسنل</option>
+                            <option value="childAllowance">مبلغ حق اولاد</option>
+                            <option value="seniorityBase">حق پایه سنوات</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => setEmpSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                            className="px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 hover:text-slate-200 cursor-pointer"
+                            title={empSortOrder === 'asc' ? 'صعودی' : 'نزولی'}
+                          >
+                            <ArrowUpDown className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingEmp(null);
-                        resetForm();
-                        setIsPersonnelFormOpen(true);
-                      }}
-                      className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/20 shrink-0 transition-all font-sans"
-                    >
-                      <Plus className="h-4 w-4" /> افزودن پرسنل
-                    </button>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={downloadSamplePersonnelCSV}
-                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                      title="دانلود فایل نمونه اکسل جهت وارد کردن پرسنل"
-                    >
-                      <Download className="h-3.5 w-3.5 text-slate-400" /> دانلود نمونه قالب
-                    </button>
-
-                    <label className="text-[11px] bg-slate-950 hover:bg-slate-800 text-cyan-300 border border-slate-800 hover:border-cyan-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer transition-colors">
-                      <Plus className="h-3.5 w-3.5 text-cyan-400" /> واردات از اکسل
-                      <input
-                        id="personnel-raw-import-file"
-                        type="file"
-                        accept=".xlsx, .xls, .csv"
-                        onChange={importPersonnelCSV}
-                        className="hidden"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={exportPersonnelToExcel}
-                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-emerald-300 border border-slate-800 hover:border-emerald-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                      title="دانلود فایل رسمی اکسل (.xlsx) کلیه پرسنل کارگاه"
-                    >
-                      <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" /> خروجی Excel
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleCopyPersonnelFromPreviousPeriod}
-                      className="text-[11px] bg-slate-950 hover:bg-slate-800 text-amber-300 border border-slate-800 hover:border-amber-500/40 px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                      title="کپی پرونده‌های پرسنلی و تخصیص‌ها از دوره قبل"
-                    >
-                      <Copy className="h-3.5 w-3.5 text-amber-400" /> کپی از دوره قبل
-                    </button>
                   </div>
                 </div>
 
@@ -13299,12 +13482,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 )}
 
                 {/* TABLE OF PERSONNEL (Matching CustomerManagement Palette) */}
-                <div className="bg-slate-900/90 rounded-3xl border border-slate-800 shadow-xl overflow-hidden" dir="rtl">
+                <div id="personnel-printable-section" className="bg-slate-900/90 rounded-3xl border border-slate-800 shadow-xl overflow-hidden" dir="rtl">
                   <div className="overflow-x-auto">
                     <table className="w-full text-right border-collapse">
                       <thead>
                         <tr className="bg-slate-950/90 text-slate-400 text-[11px] font-bold border-b border-slate-800">
-                          <th className="px-3.5 py-3.5 text-center w-10">
+                          <th className="px-3.5 py-3.5 text-center w-10 no-print">
                             <button
                               type="button"
                               onClick={handleToggleSelectAll}
@@ -13322,15 +13505,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <th className="px-4 py-3.5">نام و فامیل پرسنل</th>
                           <th className="px-4 py-3.5">وضعیت / عائله</th>
                           <th className="px-4 py-3.5">تخصیص دپارتمان</th>
-                          <th className="px-4 py-3.5 text-center w-32">عملیات</th>
+                          <th className="px-4 py-3.5 text-left">مبلغ حق اولاد</th>
+                          <th className="px-4 py-3.5 text-left">حق پایه سنوات</th>
+                          <th className="px-4 py-3.5 text-center w-32 no-print">عملیات</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 text-xs">
                         {searchedPersonnel.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
+                            <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
                               <Users className="h-10 w-10 mx-auto text-slate-700 mb-2 opacity-50" />
-                              هیچ پرسنلی منطبق با کلمات جستجو شده یافت نشد.
+                              هیچ پرسنلی با فیلترهای مشخص‌شده یافت نشد.
                             </td>
                           </tr>
                         ) : (
@@ -13338,12 +13523,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             const alloc = allocMap[emp.employeeCode];
                             const isSelected = selectedEmpCodes.includes(emp.employeeCode);
                             const isSharedDept = !alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4');
+                            const contractInfo = activeContractSummaryByEmpCode[emp.employeeCode];
                             return (
                               <tr
                                 key={emp.id}
                                 className={`hover:bg-slate-800/50 transition-colors group ${isSelected ? 'bg-rose-950/20' : ''}`}
                               >
-                                <td className="px-3.5 py-3.5 text-center">
+                                <td className="px-3.5 py-3.5 text-center no-print">
                                   <button
                                     type="button"
                                     onClick={() => handleToggleSelectOne(emp.employeeCode)}
@@ -13417,7 +13603,33 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                     {alloc ? (departmentNameMap[alloc.departmentCategoryId] || 'بخش مشترک / سربار کارگاه') : 'بخش مشترک / سربار کارگاه'}
                                   </span>
                                 </td>
-                                <td className="px-4 py-3.5 text-center">
+                                {/* مبلغ حق اولاد (از قرارداد فعال) */}
+                                <td className="px-4 py-3.5 text-left font-mono">
+                                  {contractInfo?.hasContract ? (
+                                    <div className={`font-bold ${contractInfo.childAllowance > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>
+                                      {toPersianDigits(formatWithCommas(contractInfo.childAllowance))}{' '}
+                                      <span className="text-[10px] text-slate-500 font-sans">ریال</span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] font-sans text-slate-500 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded-md">
+                                      بدون قرارداد
+                                    </span>
+                                  )}
+                                </td>
+                                {/* حق پایه سنوات (از قرارداد فعال) */}
+                                <td className="px-4 py-3.5 text-left font-mono">
+                                  {contractInfo?.hasContract ? (
+                                    <div className={`font-bold ${contractInfo.seniorityBase > 0 ? 'text-cyan-400' : 'text-slate-400'}`}>
+                                      {toPersianDigits(formatWithCommas(contractInfo.seniorityBase))}{' '}
+                                      <span className="text-[10px] text-slate-500 font-sans">ریال</span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] font-sans text-slate-500 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded-md">
+                                      بدون قرارداد
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3.5 text-center no-print">
                                   <div className="flex items-center justify-center gap-1">
                                     <button
                                       type="button"
