@@ -17592,22 +17592,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                         <FileText className="h-3.5 w-3.5 text-white" />
                                         <span>فیش</span>
                                       </button>
-                                      {didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId) && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSettlementPreselectEmpCode(item.employeeCode);
-                                            setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: true });
-                                            setActiveTab('settlement');
-                                          }}
-                                          className="p-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                          title="مشاهده برگه تسویه حساب ثبت‌شده (سند حقوق قفل است)"
-                                        >
-                                          <Receipt className="h-3 w-3 text-white" />
-                                          <span>مشاهده تسویه حساب</span>
-                                        </button>
-                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSettlementPreselectEmpCode(item.employeeCode);
+                                          setSettlementPreselectContext({ year: calcYear, month: calcMonth, readOnly: false });
+                                          setActiveTab('settlement');
+                                        }}
+                                        className={`p-1 px-2.5 text-white text-[10px] rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs ${
+                                          didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
+                                            ? 'bg-amber-600 hover:bg-amber-500'
+                                            : 'bg-rose-600 hover:bg-rose-500'
+                                        }`}
+                                        title={
+                                          didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
+                                            ? 'مشاهده و ویرایش برگه تسویه حساب'
+                                            : 'محاسبه و ثبت تسویه حساب بر اساس لیست‌های حقوق ثبت‌شده دوره مالی'
+                                        }
+                                      >
+                                        <Receipt className="h-3 w-3 text-white" />
+                                        <span>
+                                          {didEmployeeDepartInMonth(emp, calcYear, calcMonth, db.personnelSettlements, activePeriodId)
+                                            ? 'تسویه حساب (ثبت‌شده)'
+                                            : 'تسویه حساب'}
+                                        </span>
+                                      </button>
                                       <span className="text-[9px] text-emerald-700 font-bold bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
                                         🔒 قفل
                                       </span>

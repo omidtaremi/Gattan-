@@ -75,16 +75,15 @@ export function getMonthlyLeaveMinutesForYearMonth(
   year: number | string,
   activePeriodId?: string
 ): number {
-  const rates = db.salaryBaseRates || [];
+  const allRates = db.salaryBaseRates || [];
+  const rates = activePeriodId ? allRates.filter(r => r.periodId === activePeriodId) : allRates;
   const yearStr = toEnglishDigits(String(year || '')).trim();
   let matched: SalaryBaseRate | undefined;
   if (yearStr) {
-    matched =
-      rates.find(r => toEnglishDigits(String(r.year || '')).trim() === yearStr && (!activePeriodId || r.periodId === activePeriodId)) ||
-      rates.find(r => toEnglishDigits(String(r.year || '')).trim() === yearStr);
+    matched = rates.find(r => toEnglishDigits(String(r.year || '')).trim() === yearStr);
   }
-  if (!matched && activePeriodId) {
-    matched = rates.find(r => r.periodId === activePeriodId);
+  if (!matched && rates.length > 0) {
+    matched = rates[0];
   }
   if (matched && matched.monthlyLeaveHours && String(matched.monthlyLeaveHours).trim() !== '') {
     return parseMonthlyLeaveMinutes(matched.monthlyLeaveHours);
@@ -250,7 +249,10 @@ export function getLeaveBuyoutSalaryItemsForContract(
   db: AppDatabase,
   fallbackPeriodId: string
 ): { periodId: string; items: any[]; isConfigured: boolean } {
-  const allItems = db.leaveBuyoutSalaryItems || [];
+  const rawItems = db.leaveBuyoutSalaryItems || [];
+  const allItems = fallbackPeriodId
+    ? rawItems.filter((item: any) => item.periodId === fallbackPeriodId)
+    : rawItems;
   if (allItems.length === 0) {
     return { periodId: fallbackPeriodId, items: [], isConfigured: false };
   }
@@ -600,11 +602,7 @@ export function getPriorWithoutDepartureSettlements(
       if ((s.settlementType || 'with_departure') !== 'without_departure') return false;
       if (excludeSettlementId && s.id === excludeSettlementId) return false;
       if (normEmpCode(s.employeeCode) !== targetCode) return false;
-      if (activePeriodId && s.periodId && s.periodId !== activePeriodId) {
-        const activeY = toEnglishDigits(String(activePeriodId)).match(/^(\d{4})/)?.[1];
-        const sEndY = parseShamsiYearMonth(s.endDate)?.year;
-        if (activeY && sEndY && String(sEndY) !== activeY) return false;
-      }
+      if (activePeriodId && s.periodId !== activePeriodId) return false;
       return true;
     })
     .sort((a, b) => normalizeDateStr(a.endDate).localeCompare(normalizeDateStr(b.endDate)));
@@ -680,7 +678,7 @@ export function isDepartedOrSettlingInMonth(
       if (normEmpCode(s.employeeCode) !== targetEmpCode) continue;
       const endYM = parseEffectiveDepartureLastWorkYM(s.endDate);
       if (activePeriodId && s.periodId && s.periodId !== activePeriodId) {
-        if (endYM && endYM.year !== Number(targetYear)) continue;
+        continue;
       }
       if (endYM && endYM.year === Number(targetYear) && endYM.month === Number(targetMonth)) {
         return true;
@@ -888,12 +886,12 @@ function resolveSalaryRateForYearMonth(
   month: number,
   activePeriodId: string
 ): SalaryBaseRate | undefined {
-  const rates = db.salaryBaseRates || [];
+  const allRates = db.salaryBaseRates || [];
+  const rates = activePeriodId ? allRates.filter(r => r.periodId === activePeriodId) : allRates;
   if (rates.length === 0) return undefined;
 
   const targetYearStr = String(year).trim();
   const targetMonthStr = String(month).padStart(2, '0');
-  const periodYM = `${targetYearStr}-${targetMonthStr}`;
   const midMonthYMD = `${targetYearStr.padStart(4, '0')}/${targetMonthStr}/15`;
 
   const normalizeYMD = (d?: string) => {
@@ -915,23 +913,8 @@ function resolveSalaryRateForYearMonth(
   });
   if (matchedByDateRange) return matchedByDateRange;
 
-  const matchedByYM = rates.find(
-    r => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === periodYM
-  );
-  if (matchedByYM) return matchedByYM;
-
-  if (activePeriodId && activePeriodId.startsWith(targetYearStr)) {
-    const matchedByActive = rates.find(
-      r => toEnglishDigits(String(r.year || '')).trim() === targetYearStr && r.periodId === activePeriodId
-    );
-    if (matchedByActive) return matchedByActive;
-  }
-
   const matchedByYear = rates.find(r => toEnglishDigits(String(r.year || '')).trim() === targetYearStr);
   if (matchedByYear) return matchedByYear;
-
-  const matchedByPrefix = rates.find(r => r.periodId && toEnglishDigits(String(r.periodId)).startsWith(targetYearStr));
-  if (matchedByPrefix) return matchedByPrefix;
 
   const sorted = [...rates].sort(
     (a, b) => (Number(toEnglishDigits(String(b.year || ''))) || 0) - (Number(toEnglishDigits(String(a.year || ''))) || 0)
@@ -997,13 +980,14 @@ function findMatchingContractForYearMonth(
   periodId: string
 ): PersonnelContract | undefined {
   const cleanCode = normEmpCode(employeeCode);
-  const empContracts = (contracts || []).filter(c => normEmpCode(c.employeeCode) === cleanCode);
+  const empContracts = (contracts || []).filter(
+    c => normEmpCode(c.employeeCode) === cleanCode && (!periodId || c.periodId === periodId)
+  );
   if (empContracts.length === 0) return undefined;
 
   const daysInMonth = getShamsiMonthDaysHelper(year, month);
   const monthStart = `${year}/${String(month).padStart(2, '0')}/01`;
   const monthEnd = `${year}/${String(month).padStart(2, '0')}/${String(daysInMonth).padStart(2, '0')}`;
-  const targetYMId = `${year}-${String(month).padStart(2, '0')}`;
 
   const sorted = [...empContracts].sort((a, b) => {
     const actA = a.isActive === true ? 1 : 0;
@@ -1016,7 +1000,6 @@ function findMatchingContractForYearMonth(
   });
 
   return (
-    sorted.find(c => c.periodId === periodId || c.periodId === targetYMId) ||
     sorted.find(c => {
       if (!c.contractStartDate) return false;
       const start = normalizeDateStr(c.contractStartDate);
@@ -1036,7 +1019,8 @@ function resolveInsuredItemKeysForMonth(
   month: number,
   activePeriodId: string
 ): Set<string> {
-  const allInsured = db.insuredSalaryItems || [];
+  const rawInsured = db.insuredSalaryItems || [];
+  const allInsured = activePeriodId ? rawInsured.filter(i => i.periodId === activePeriodId) : rawInsured;
   if (allInsured.length === 0) {
     return new Set(['dailyBaseSalary', 'dailyInsuranceSalary', 'baseSalary', 'housingAllowance', 'foodAllowance', 'baseYearsRate', 'jobAllowance']);
   }
@@ -1061,10 +1045,6 @@ function resolveInsuredItemKeysForMonth(
     return false;
   });
   if (byYear.length > 0) return new Set(byYear.map(i => i.itemKey));
-
-  const targetPid = contract?.periodId || activePeriodId;
-  const byPid = allInsured.filter(i => i.periodId === targetPid);
-  if (byPid.length > 0) return new Set(byPid.map(i => i.itemKey));
 
   return new Set(allInsured.map(i => i.itemKey));
 }
@@ -1166,24 +1146,17 @@ export function findLastAttendanceDateForEmployee(
   if (!emp) return '';
   const empRecs = (db.attendanceRecords || []).filter(
     rec =>
+      (!activePeriodId || rec.periodId === activePeriodId) &&
       isRecordForEmployee(rec, emp) &&
       ((Array.isArray(rec.times) && rec.times.length > 0) || Number((rec as any).workedMinutes || 0) > 0) &&
       rec.date
   );
   if (empRecs.length === 0) return '';
 
-  const activeYearMatch = activePeriodId ? toEnglishDigits(String(activePeriodId)).match(/^(\d{4})/) : null;
-  const targetYear = preferredYear || (activeYearMatch ? parseInt(activeYearMatch[1], 10) : undefined);
-
-  const allNormalizedDates = empRecs
+  const dates = empRecs
     .map(r => normalizeDateStr(r.date))
     .filter(d => /^\d{4}\/\d{2}\/\d{2}$/.test(d));
-  if (allNormalizedDates.length === 0) return '';
-
-  const yearScopedDates = targetYear
-    ? allNormalizedDates.filter(d => d.startsWith(`${targetYear}/`))
-    : [];
-  const dates = yearScopedDates.length > 0 ? yearScopedDates : allNormalizedDates;
+  if (dates.length === 0) return '';
 
   if (preferredYear && preferredMonth) {
     const ymPrefix = `${preferredYear}/${String(preferredMonth).padStart(2, '0')}/`;
@@ -1235,7 +1208,8 @@ function resolveTaxableItemKeysForMonth(
   month: number,
   activePeriodId: string
 ): { isConfigured: boolean; keys: Set<string> } {
-  const allTaxable = db.taxableSalaryItems || [];
+  const rawTaxable = db.taxableSalaryItems || [];
+  const allTaxable = activePeriodId ? rawTaxable.filter(i => i.periodId === activePeriodId) : rawTaxable;
   if (allTaxable.length === 0) return { isConfigured: false, keys: new Set<string>() };
 
   const monthDate = `${year}/${String(month).padStart(2, '0')}/15`;
@@ -1258,10 +1232,6 @@ function resolveTaxableItemKeysForMonth(
     return false;
   });
   if (byYear.length > 0) return { isConfigured: true, keys: new Set(byYear.map(i => i.itemKey)) };
-
-  const targetPid = contract?.periodId || activePeriodId;
-  const byPid = allTaxable.filter(i => i.periodId === targetPid);
-  if (byPid.length > 0) return { isConfigured: true, keys: new Set(byPid.map(i => i.itemKey)) };
 
   return { isConfigured: true, keys: new Set(allTaxable.map(i => i.itemKey)) };
 }
@@ -1340,14 +1310,10 @@ function computeAttendancePerfForMonth(
 
   const isSessionUnlocked = Boolean(unlockedMonthsMap && unlockedMonthsMap[`${targetYear}-${targetMonth}`]);
 
-  // Check locked attendance performance snapshot first (unless explicitly unlocked in session)
-  const matchingPeriod =
-    (db.payrollPeriods || []).find(
-      pp => pp.periodId === activePeriodId && Number(pp.year) === targetYear && Number(pp.month) === targetMonth
-    ) ||
-    (db.payrollPeriods || []).find(
-      pp => Number(pp.year) === targetYear && Number(pp.month) === targetMonth
-    );
+  // Check locked attendance performance snapshot strictly within activePeriodId
+  const matchingPeriod = (db.payrollPeriods || []).find(
+    pp => pp.periodId === activePeriodId && Number(pp.year) === targetYear && Number(pp.month) === targetMonth
+  );
 
   const empCodeNorm = normEmpCode(emp.employeeCode);
   const lockedSnapRow = !isSessionUnlocked
@@ -1386,18 +1352,15 @@ function computeAttendancePerfForMonth(
   const reqHours = setting ? Number(setting.requiredWorkHours) : 192;
   const reqMinutes = reqHours * 60;
 
-  // Filter attendance records for this employee & month
-  const allMonthRecs = (db.attendanceRecords || []).filter(rec => {
+  // Filter attendance records strictly for this employee, month & activePeriodId
+  const monthRecs = (db.attendanceRecords || []).filter(rec => {
+    if (activePeriodId && rec.periodId !== activePeriodId) return false;
     if (!isRecordForEmployee(rec, emp)) return false;
     const dStr = normalizeDateStr(rec.date);
     const parts = dStr.split('/');
     if (parts.length < 3) return false;
     return parseInt(parts[0], 10) === targetYear && parseInt(parts[1], 10) === targetMonth;
   });
-
-  // Prefer scoped to activePeriodId if available, otherwise all records for that month
-  const scopedRecs = allMonthRecs.filter(r => r.periodId === activePeriodId);
-  const monthRecs = scopedRecs.length > 0 ? scopedRecs : allMonthRecs;
 
   // Previous month carryover leave (up to 12 months back within same year chain)
   // If previous month ended a `without_departure` settlement, its remaining leave was already settled/bought out -> reset carryover to 0
@@ -1664,13 +1627,10 @@ function computeAttendancePerfForMonth(
   const activeClothes = activeClothesNormal + activeHolidayClothes + activeFridayClothes;
 
   const overrideKey = `${activePeriodId}_${targetYear}_${targetMonth}`;
-  const fallbackYMKey = `${targetYear}-${monthPad}_${targetYear}_${targetMonth}`;
   const mgmtHours = Math.max(
     0,
     Number(
-      db.payrollManualOverrides?.[overrideKey]?.normalMgmtDeductions?.[emp.employeeCode] ??
-        db.payrollManualOverrides?.[fallbackYMKey]?.normalMgmtDeductions?.[emp.employeeCode] ??
-        0
+      db.payrollManualOverrides?.[overrideKey]?.normalMgmtDeductions?.[emp.employeeCode] ?? 0
     )
   );
   const mgmtMinutes = Math.round(mgmtHours * 60);
@@ -1797,14 +1757,14 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   options?: {
     treatEndAsDeparture?: boolean;
     provisionalDeparture?: ProvisionalSettlementPreview | null;
+    registeredOnly?: boolean;
   }
 ): PayrollMonthSnapshot | null {
   if (!emp || !emp.employeeCode) return null;
   const empCodeNorm = normEmpCode(emp.employeeCode);
-  const monthPad = String(targetMonth).padStart(2, '0');
-  const ymPeriodId = `${targetYear}-${monthPad}`;
   const daysInMonth = getShamsiMonthDaysHelper(targetYear, targetMonth);
-  const isSessionUnlocked = Boolean(unlockedMonthsMap && unlockedMonthsMap[`${targetYear}-${targetMonth}`]);
+  const registeredOnly = Boolean(options?.registeredOnly);
+  const isSessionUnlocked = !registeredOnly && Boolean(unlockedMonthsMap && unlockedMonthsMap[`${targetYear}-${targetMonth}`]);
 
   // Check if this month is the employee's departure / settlement end month (strictly that month only)
   const treatEndAsDeparture = options?.treatEndAsDeparture !== false;
@@ -1831,27 +1791,25 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   const effectiveContract =
     contract || findMatchingContractForYearMonth(db.personnelContracts || [], emp.employeeCode, targetYear, targetMonth, activePeriodId);
 
-  // 1. Registered / Locked Payroll Item lookup (skipped if month is actively unlocked in session)
-  const matchingItems = !isSessionUnlocked
-    ? (db.payrollItems || []).filter(
+  // 1. Registered / Locked Payroll Item lookup — strictly scoped to activePeriodId
+  const lockedItem: PayrollItem | undefined = !isSessionUnlocked
+    ? (db.payrollItems || []).find(
         pi =>
+          pi.periodId === activePeriodId &&
           normEmpCode(pi.employeeCode) === empCodeNorm &&
           Number(pi.year) === Number(targetYear) &&
           Number(pi.month) === Number(targetMonth)
       )
-    : [];
-  const lockedItem: PayrollItem | undefined =
-    matchingItems.find(pi => pi.periodId === activePeriodId) ||
-    matchingItems.find(pi => pi.periodId === ymPeriodId) ||
-    matchingItems[0];
+    : undefined;
 
-  const matchingPeriods = !isSessionUnlocked
-    ? (db.payrollPeriods || []).filter(
-        pp => Number(pp.year) === Number(targetYear) && Number(pp.month) === Number(targetMonth)
+  const lockedPeriod = !isSessionUnlocked
+    ? (db.payrollPeriods || []).find(
+        pp =>
+          pp.periodId === activePeriodId &&
+          Number(pp.year) === Number(targetYear) &&
+          Number(pp.month) === Number(targetMonth)
       )
-    : [];
-  const lockedPeriod =
-    matchingPeriods.find(pp => pp.periodId === (lockedItem?.periodId || activePeriodId)) || matchingPeriods[0];
+    : undefined;
   const lockedSnapRow = lockedPeriod?.attendancePerformanceSnapshot?.find(
     (s: any) =>
       s?.employee?.id === emp.id || (empCodeNorm && normEmpCode(s?.employee?.employeeCode) === empCodeNorm)
@@ -1967,6 +1925,11 @@ export function computeMonthlyPayrollSnapshotForEmployee(
     };
   }
 
+  // Strictly return null in registeredOnly mode when no registered payroll item exists in activePeriodId
+  if (registeredOnly) {
+    return null;
+  }
+
   // 2. Live Attendance & Payroll Rules Calculation (mirrors PayrollManagement detailed table 1:1)
   const perf = computeAttendancePerfForMonth(
     db,
@@ -1981,13 +1944,8 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   );
 
   const overrideKey = `${activePeriodId}_${targetYear}_${targetMonth}`;
-  const ymOverrideKey = `${ymPeriodId}_${targetYear}_${targetMonth}`;
-  const manualWorkDays =
-    db.payrollManualOverrides?.[overrideKey]?.workDays?.[emp.employeeCode] ??
-    db.payrollManualOverrides?.[ymOverrideKey]?.workDays?.[emp.employeeCode];
-  const manualInsDays =
-    db.payrollManualOverrides?.[overrideKey]?.insuranceDays?.[emp.employeeCode] ??
-    db.payrollManualOverrides?.[ymOverrideKey]?.insuranceDays?.[emp.employeeCode];
+  const manualWorkDays = db.payrollManualOverrides?.[overrideKey]?.workDays?.[emp.employeeCode];
+  const manualInsDays = db.payrollManualOverrides?.[overrideKey]?.insuranceDays?.[emp.employeeCode];
 
   if (!perf.hasRecords && manualWorkDays === undefined) {
     return null;
@@ -2311,7 +2269,8 @@ export function getEmployeeTreasuryPaidInPeriod(
   db: AppDatabase,
   emp: Personnel | undefined,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
+  activePeriodId?: string
 ): { totalPaid: number; advancesTotal: number; salaryPaidTotal: number; count: number } {
   if (!emp) return { totalPaid: 0, advancesTotal: 0, salaryPaidTotal: 0, count: 0 };
 
@@ -2326,6 +2285,7 @@ export function getEmployeeTreasuryPaidInPeriod(
   let count = 0;
 
   (db.treasuryPayments || []).forEach(tp => {
+    if (activePeriodId && tp.periodId !== activePeriodId) return;
     if (tp.status === 'cancelled' || tp.beneficiaryType !== 'personnel') return;
     const matchId = tp.beneficiaryId && (tp.beneficiaryId === emp.id || normEmpCode(tp.beneficiaryId) === empCodeNorm);
     const matchName = empName && tp.beneficiaryName && tp.beneficiaryName.trim() === empName;
@@ -2351,7 +2311,8 @@ export function getEmployeeTreasuryPaidInPeriod(
 }
 
 /**
- * Summarizes registered `db.payrollItems` net payable amounts within `[startDate..endDate]`.
+ * Summarizes registered `db.payrollItems` net payable amounts within `[startDate..endDate]`
+ * strictly scoped to `activePeriodId` when provided.
  */
 export function getEmployeeRegisteredPayrollsSummary(
   db: AppDatabase,
@@ -2371,6 +2332,7 @@ export function getEmployeeRegisteredPayrollsSummary(
   const byYM = new Map<string, { year: number; month: number; payableAmount: number }>();
 
   (db.payrollItems || []).forEach(pi => {
+    if (activePeriodId && pi.periodId !== activePeriodId) return;
     if (normEmpCode(pi.employeeCode) !== empCodeNorm) return;
     const y = Number(pi.year || 0);
     const m = Number(pi.month || 0);
@@ -2380,7 +2342,7 @@ export function getEmployeeRegisteredPayrollsSummary(
     if (endYM && (y > endYM.year || (y === endYM.year && m > endYM.month))) return;
 
     const key = `${y}-${String(m).padStart(2, '0')}`;
-    if (!byYM.has(key) || pi.periodId === activePeriodId) {
+    if (!byYM.has(key)) {
       byYM.set(key, { year: y, month: m, payableAmount: Number(pi.payableAmount || 0) });
     }
   });

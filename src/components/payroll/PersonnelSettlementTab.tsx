@@ -49,7 +49,6 @@ import {
   getMonthlyLeaveMinutesForYearMonth,
   getPriorWithoutDepartureSettlements,
   getSettlementReasonLabel,
-  isPayrollMonthLocked,
   mapPersianReasonToSettlementReason,
   ProvisionalSettlementPreview
 } from '../../utils/payrollSettlementSync';
@@ -299,14 +298,188 @@ export default function PersonnelSettlementTab({
 
   // Print modal state
   const [printingSettlement, setPrintingSettlement] = useState<PersonnelSettlement | null>(null);
+  const [formErrorMessage, setFormErrorMessage] = useState<string>('');
+  const [listNotice, setListNotice] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null);
+
+  const activePeriod = useMemo(
+    () => (db.periods || []).find(p => p.id === activePeriodId),
+    [db.periods, activePeriodId]
+  );
 
   const currentYear = useMemo(() => {
+    const fy = getFiscalYearFromPeriod(activePeriod, activePeriodId);
+    if (fy && fy >= 1300 && fy <= 1500) return fy;
     const pidMatch = toEnglishDigits(String(activePeriodId || '')).match(/^(\d{4})/);
     if (pidMatch) return parseInt(pidMatch[1], 10);
     const today = parseJalali(getTodayJalali());
     if (today?.y) return today.y;
     return 1404;
-  }, [activePeriodId]);
+  }, [activePeriod, activePeriodId]);
+
+  const activePeriodLabel = useMemo(
+    () => activePeriod?.name || `سال مالی ${toPersianDigits(currentYear)}`,
+    [activePeriod, currentYear]
+  );
+
+  const activePeriodStartDate = useMemo(() => {
+    const raw = activePeriod?.startDate ? normalizeJalaliDate(toEnglishDigits(activePeriod.startDate)) : '';
+    if (raw && parseJalali(raw)) return raw;
+    return `${currentYear}/01/01`;
+  }, [activePeriod, currentYear]);
+
+  const activePeriodEndDate = useMemo(() => {
+    const raw = activePeriod?.endDate ? normalizeJalaliDate(toEnglishDigits(activePeriod.endDate)) : '';
+    if (raw && parseJalali(raw)) return raw;
+    return `${currentYear}/12/${String(getShamsiMonthDays(currentYear, 12)).padStart(2, '0')}`;
+  }, [activePeriod, currentYear]);
+
+  // تاریخ ترک کار یک روز پس از آخرین روز کاری ثبت می‌شود؛ بنابراین برای ترک کار پایان سال، یک روز پس از پایان دوره مالی مجاز است.
+  const maxDepartureEndDate = useMemo(
+    () => addDaysToJalali(activePeriodEndDate, 1),
+    [activePeriodEndDate]
+  );
+
+  const getDefaultSettlementDateInActivePeriod = (): string => {
+    const today = normalizeJalaliDate(toEnglishDigits(getTodayJalali())) || getTodayJalali();
+    if (today >= activePeriodStartDate && today <= activePeriodEndDate) return today;
+    if (today < activePeriodStartDate) return activePeriodStartDate;
+    return activePeriodEndDate;
+  };
+
+  const validateSettlementDatesInActivePeriod = (
+    startStr: string,
+    endStr: string,
+    settlementDateStr: string,
+    settlementType: SettlementType
+  ): {
+    ok: boolean;
+    start: string;
+    end: string;
+    settlementDate: string;
+    effectiveWorkEnd: string;
+    message: string;
+  } => {
+    const normStart = normalizeJalaliDate(toEnglishDigits(startStr || ''));
+    const normEnd = normalizeJalaliDate(toEnglishDigits(endStr || ''));
+    const normSettlement = normalizeJalaliDate(toEnglishDigits(settlementDateStr || ''));
+
+    if (!normStart || !parseJalali(normStart)) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd: '',
+        message: 'تاریخ شروع کارکرد معتبر نیست. لطفاً تاریخ را به صورت صحیح (مثلاً ۱۴۰۴/۰۱/۰۱) وارد کنید.'
+      };
+    }
+    if (!normEnd || !parseJalali(normEnd)) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd: '',
+        message:
+          settlementType === 'with_departure'
+            ? 'تاریخ ترک کار معتبر نیست. لطفاً تاریخ را به صورت صحیح وارد کنید.'
+            : 'تاریخ پایان قرارداد مورد تسویه معتبر نیست. لطفاً تاریخ را به صورت صحیح وارد کنید.'
+      };
+    }
+    if (normStart < activePeriodStartDate || normStart > activePeriodEndDate) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd: '',
+        message: `تاریخ شروع تسویه (${toPersianDigits(normStart)}) باید در محدوده دوره مالی فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) باشد.`
+      };
+    }
+
+    const maxAllowedEnd = settlementType === 'with_departure' ? maxDepartureEndDate : activePeriodEndDate;
+    if (normEnd < activePeriodStartDate || normEnd > maxAllowedEnd) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd: '',
+        message:
+          settlementType === 'with_departure'
+            ? `تاریخ ترک کار (${toPersianDigits(normEnd)}) خارج از محدوده مجاز دوره مالی فعال است. بازه مجاز: ${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(maxDepartureEndDate)} (حداکثر یک روز پس از پایان سال مالی).`
+            : `تاریخ پایان تسویه (${toPersianDigits(normEnd)}) باید در محدوده دوره مالی فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) باشد.`
+      };
+    }
+
+    if (normEnd < normStart) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd: '',
+        message: 'تاریخ پایان/ترک کار نمی‌تواند قبل از تاریخ شروع کارکرد باشد.'
+      };
+    }
+
+    const effectiveWorkEnd =
+      settlementType === 'with_departure' && normEnd > normStart
+        ? addDaysToJalali(normEnd, -1)
+        : normEnd;
+
+    if (effectiveWorkEnd < activePeriodStartDate || effectiveWorkEnd > activePeriodEndDate) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd,
+        message: `آخرین روز کارکرد موثر (${toPersianDigits(effectiveWorkEnd)}) باید در محدوده دوره مالی فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) باشد.`
+      };
+    }
+
+    if (!normSettlement || !parseJalali(normSettlement)) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd,
+        message: 'تاریخ صدور برگه تسویه معتبر نیست.'
+      };
+    }
+
+    const maxAllowedSettlementDate = settlementType === 'with_departure' ? maxDepartureEndDate : activePeriodEndDate;
+    if (normSettlement < activePeriodStartDate || normSettlement > maxAllowedSettlementDate) {
+      return {
+        ok: false,
+        start: normStart,
+        end: normEnd,
+        settlementDate: normSettlement,
+        effectiveWorkEnd,
+        message: `تاریخ صدور برگه تسویه (${toPersianDigits(normSettlement)}) باید در محدوده دوره مالی فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(maxAllowedSettlementDate)}) باشد.`
+      };
+    }
+
+    return {
+      ok: true,
+      start: normStart,
+      end: normEnd,
+      settlementDate: normSettlement,
+      effectiveWorkEnd,
+      message: ''
+    };
+  };
+
+  // Period-scoped DB view for salary base rate helpers so rates NEVER leak across fiscal periods
+  const activePeriodDb = useMemo(
+    () => ({
+      ...db,
+      salaryBaseRates: (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId)
+    }),
+    [db, activePeriodId]
+  );
 
   // Form Fields
   const [formEmployeeCode, setFormEmployeeCode] = useState('');
@@ -315,7 +488,7 @@ export default function PersonnelSettlementTab({
   const [formReason, setFormReason] = useState<SettlementReason>('contract_end');
   const [formStartDate, setFormStartDate] = useState('');
   const [formEndDate, setFormEndDate] = useState('');
-  const [formSettlementDate, setFormSettlementDate] = useState(getTodayJalali());
+  const [formSettlementDate, setFormSettlementDate] = useState(() => getDefaultSettlementDateInActivePeriod());
   
   // Custom monthly details list
   const [formMonthlyDetails, setFormMonthlyDetails] = useState<SettlementMonthlyDetail[]>([]);
@@ -427,10 +600,10 @@ export default function PersonnelSettlementTab({
     return employeeContracts.find(c => c.id === formContractId);
   }, [employeeContracts, formContractId]);
 
-  // Find rate for a specific year (optionally prioritizing contract's explicit rateId or date range)
+  // Find rate strictly within the active fiscal period (never falls back to other periods)
   const getSalaryRateForYear = (yearNum: number, targetDate?: string, preferredRateId?: string): SalaryBaseRate => {
     const yearStr = String(yearNum);
-    const rates = db.salaryBaseRates || [];
+    const rates = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const normalizeYMD = (d?: string) => {
       if (!d) return '';
       const p = parseJalali(d);
@@ -453,8 +626,7 @@ export default function PersonnelSettlementTab({
       }
     }
     if (!found) {
-      found = rates.find(r => String(r.year).trim() === yearStr.trim() && r.periodId === activePeriodId)
-        || rates.find(r => String(r.year).trim() === yearStr.trim());
+      found = rates.find(r => String(r.year).trim() === yearStr.trim()) || rates[0];
     }
     
     if (found) {
@@ -544,7 +716,7 @@ export default function PersonnelSettlementTab({
     return Math.round(hourlyWage8h * 1.4);
   }, [settlementSalaryRate]);
 
-  // نرخ پایه حقوق و ثوابت متناظر با سال قرارداد
+  // نرخ پایه حقوق و ثوابت متناظر با سال قرارداد (منحصراً از دوره مالی فعال)
   const contractSalaryRate = useMemo(() => {
     const matched = getSalaryBaseRateForContract(
       selectedContract ? {
@@ -556,12 +728,12 @@ export default function PersonnelSettlementTab({
         contractEndDate: formEndDate
       },
       selectedPersonnel,
-      db,
+      activePeriodDb,
       activePeriodId
     );
     if (matched) return matched;
     return getSalaryRateForYear(contractYear);
-  }, [selectedContract, formStartDate, formEndDate, selectedPersonnel, db, activePeriodId, contractYear]);
+  }, [selectedContract, formStartDate, formEndDate, selectedPersonnel, activePeriodDb, activePeriodId, contractYear]);
 
   // Helper to re-calculate a single month based on laws & inputs
   const calculateMonthDetail = (
@@ -581,7 +753,7 @@ export default function PersonnelSettlementTab({
     const parsedEnd = parseJalali(contractEndDateStr);
     const resolvedContractYear = parsedStart?.y || parsedEnd?.y || current.year;
 
-    // نرخ مصوب قوانین و ثوابت متناظر با سال قرارداد:
+    // نرخ مصوب قوانین و ثوابت متناظر با سال قرارداد (منحصراً دوره مالی فعال):
     const resolvedContractRate = getSalaryBaseRateForContract(
       effectiveContract ? {
         ...effectiveContract,
@@ -592,7 +764,7 @@ export default function PersonnelSettlementTab({
         contractEndDate: contractEndDateStr
       },
       emp,
-      db,
+      activePeriodDb,
       activePeriodId
     ) || getSalaryRateForYear(resolvedContractYear);
 
@@ -824,34 +996,13 @@ export default function PersonnelSettlementTab({
     };
   };
 
-  // Check if departure month's payroll document is locked (accounting for +1 day departure offset)
-  const isSettlementEndDateLocked = (
-    endDateStr?: string,
-    settlementType: SettlementType = 'with_departure'
-  ): boolean => {
-    if (!endDateStr) return false;
-    if (settlementType === 'with_departure') {
-      const eff = parseEffectiveDepartureLastWorkYM(endDateStr);
-      if (!eff) return false;
-      return isPayrollMonthLocked(db, activePeriodId, eff.year, eff.month, unlockedMonthsMap);
-    }
-    const parsed = parseJalali(endDateStr);
-    if (!parsed) return false;
-    return isPayrollMonthLocked(db, activePeriodId, parsed.y, parsed.m, unlockedMonthsMap);
+  // Settlements require registered monthly payroll lists in the active fiscal period,
+  // so registering payroll must NOT lock the settlement form or block creating/editing settlements.
+  const isSettlementRecordLocked = (_s: Pick<PersonnelSettlement, 'endDate' | 'settlementType'>): boolean => {
+    return false;
   };
 
-  const isSettlementRecordLocked = (s: Pick<PersonnelSettlement, 'endDate' | 'settlementType'>): boolean => {
-    const sType: SettlementType = s.settlementType || 'with_departure';
-    if (sType === 'without_departure') return false;
-    return isSettlementEndDateLocked(s.endDate, sType);
-  };
-
-  const isDepartureMonthPayrollLocked = useMemo(() => {
-    if (formSettlementType === 'without_departure') return false;
-    return isSettlementEndDateLocked(formEndDate, formSettlementType);
-  }, [formEndDate, formSettlementType, db.payrollPeriods, activePeriodId, unlockedMonthsMap]);
-
-  const isModalReadOnly = Boolean(forceReadOnlyView || isDepartureMonthPayrollLocked);
+  const isModalReadOnly = Boolean(forceReadOnlyView);
 
   const priorWithoutDepartureForForm = useMemo(() => {
     return getPriorWithoutDepartureSettlements(
@@ -975,21 +1126,42 @@ export default function PersonnelSettlementTab({
       preferredMonth
     );
     const suggestedDepartureDate = detectedLastAttendance ? addDaysToJalali(detectedLastAttendance, 1) : '';
-    const endDate =
+    const defaultPeriodDate = getDefaultSettlementDateInActivePeriod();
+    const rawEndDate =
       settlementType === 'without_departure'
-        ? (contract?.contractEndDate || detectedLastAttendance || emp?.contractEndDate || getTodayJalali())
+        ? (contract?.contractEndDate || detectedLastAttendance || emp?.contractEndDate || defaultPeriodDate)
         : (suggestedDepartureDate ||
           (emp?.departureDate && String(emp.departureDate).trim()) ||
           contract?.contractEndDate ||
           emp?.contractEndDate ||
-          getTodayJalali());
-    const startDate = isCurrentYearMode
+          defaultPeriodDate);
+    const maxAllowedEnd = settlementType === 'with_departure' ? maxDepartureEndDate : activePeriodEndDate;
+    const normRawEnd = normalizeJalaliDate(toEnglishDigits(rawEndDate)) || defaultPeriodDate;
+    const endDate =
+      normRawEnd < activePeriodStartDate
+        ? activePeriodStartDate
+        : normRawEnd > maxAllowedEnd
+        ? maxAllowedEnd
+        : normRawEnd;
+
+    const rawStartDate = isCurrentYearMode
       ? resolveStartDateForCurrentYear(emp, empContracts, targetYearForStart, excludeSettlementId, endDate)
-      : (contract?.contractStartDate || emp?.contractStartDate || emp?.entryDate || `${targetYearForStart}/01/01`);
+      : (contract?.contractStartDate || emp?.contractStartDate || emp?.entryDate || activePeriodStartDate);
+    const normRawStart = normalizeJalaliDate(toEnglishDigits(rawStartDate)) || activePeriodStartDate;
+    let startDate =
+      normRawStart < activePeriodStartDate
+        ? activePeriodStartDate
+        : normRawStart > activePeriodEndDate
+        ? activePeriodEndDate
+        : normRawStart;
+    if (startDate > endDate) {
+      startDate = endDate <= activePeriodEndDate ? endDate : activePeriodEndDate;
+    }
+
     return { reason: resolvedReason, startDate, endDate, detectedLastAttendance };
   };
 
-  // Generate months breakdown automatically strictly between [startDate .. effectiveWorkEnd] (never inserting post-departure months)
+  // Generate months breakdown strictly within active fiscal period and strictly from registered payroll lists
   const generateMonthsList = (
     startDateStr: string,
     endDateStr: string,
@@ -1010,10 +1182,11 @@ export default function PersonnelSettlementTab({
 
     const start = parseJalali(normStart);
     const end = parseJalali(effectiveWorkEndStr);
+    const periodStartParsed = parseJalali(activePeriodStartDate);
+    const periodEndParsed = parseJalali(activePeriodEndDate);
     if (!start || !end) return [];
 
     const effectiveExcludeId = excludeSettlementIdOverride !== undefined ? excludeSettlementIdOverride : editingId;
-    const empContractsForEmp = emp ? allContracts.filter(c => c.employeeCode === emp.employeeCode) : [];
     const priors = emp
       ? getPriorWithoutDepartureSettlements(emp.employeeCode, db.personnelSettlements, activePeriodId, effectiveExcludeId)
       : [];
@@ -1023,7 +1196,17 @@ export default function PersonnelSettlementTab({
     let curMLoop = start.m;
     let safety = 0;
     while ((curYLoop < end.y || (curYLoop === end.y && curMLoop <= end.m)) && safety < 36) {
-      ymPairs.push({ y: curYLoop, m: curMLoop });
+      const withinPeriodStart =
+        !periodStartParsed ||
+        curYLoop > periodStartParsed.y ||
+        (curYLoop === periodStartParsed.y && curMLoop >= periodStartParsed.m);
+      const withinPeriodEnd =
+        !periodEndParsed ||
+        curYLoop < periodEndParsed.y ||
+        (curYLoop === periodEndParsed.y && curMLoop <= periodEndParsed.m);
+      if (withinPeriodStart && withinPeriodEnd) {
+        ymPairs.push({ y: curYLoop, m: curMLoop });
+      }
       curMLoop++;
       if (curMLoop > 12) {
         curMLoop = 1;
@@ -1034,7 +1217,6 @@ export default function PersonnelSettlementTab({
 
     const months: SettlementMonthlyDetail[] = [];
     let index = 1;
-    const targetSettlementYear = end.y;
 
     for (let i = 0; i < ymPairs.length; i++) {
       const { y: curY, m: curM } = ymPairs[i];
@@ -1070,7 +1252,8 @@ export default function PersonnelSettlementTab({
             unlockedMonthsMap,
             {
               treatEndAsDeparture: effectiveSettlementType === 'with_departure',
-              provisionalDeparture: effectiveProvisional
+              provisionalDeparture: effectiveProvisional,
+              registeredOnly: true
             }
           )
         : null;
@@ -1120,38 +1303,14 @@ export default function PersonnelSettlementTab({
           priorSettlementNo: matchingPrior?.settlementNo
         }));
       } else {
-        let workedDays = daysInMonth;
-
-        if (curY === start.y && curM === start.m) {
-          workedDays = daysInMonth - start.d + 1;
-        }
-        if (curY === end.y && curM === end.m) {
-          if (curY === start.y && curM === start.m) {
-            workedDays = end.d - start.d + 1;
-          } else {
-            workedDays = end.d;
-          }
-        }
-
-        workedDays = Math.max(0, Math.min(daysInMonth, workedDays));
-
-        const monthStartStr = `${curY}/${String(curM).padStart(2, '0')}/01`;
-        const monthEndStr = `${curY}/${String(curM).padStart(2, '0')}/${String(daysInMonth).padStart(2, '0')}`;
-        const monthContract = isCurrentYearMode
-          ? (empContractsForEmp.find(c => {
-              const cs = normalizeJalaliDate(c.contractStartDate || '');
-              const ce = c.contractEndDate ? normalizeJalaliDate(c.contractEndDate) : '9999/99/99';
-              return Boolean(cs && cs <= monthEndStr && ce >= monthStartStr);
-            }) || empContractsForEmp[0])
-          : contract;
-
-        const rawDetail: SettlementMonthlyDetail = {
+        // Month has NO registered payroll list in activePeriodId -> do NOT fabricate amounts; mark as unregistered (0)
+        months.push({
           monthIndex: index++,
           year: curY,
           month: curM,
           monthName: `${JALALI_MONTH_NAMES[curM - 1]} ${toPersianDigits(curY)}`,
           totalDaysInMonth: daysInMonth,
-          workedDays,
+          workedDays: 0,
           overtimeHours: 0,
           holidayWorkHours: 0,
           fridayWorkHours: 0,
@@ -1172,20 +1331,14 @@ export default function PersonnelSettlementTab({
           holidayWorkAmount: 0,
           fridayWorkAmount: 0,
           grossSalary: 0,
+          insurableGross: 0,
           workerInsuranceShare: 0,
           payrollTax: 0,
           supplementaryInsurance: 0,
           deductionsAmount: 0,
           netSalaryPayable: 0,
           syncedFromPayroll: false,
-          payrollSourceType: 'manual_contract'
-        };
-
-        const calculated = calculateMonthDetail(rawDetail, emp, monthContract, targetSettlementYear);
-        months.push({
-          ...calculated,
-          syncedFromPayroll: false,
-          payrollSourceType: 'manual_contract',
+          payrollSourceType: 'unregistered_payroll',
           alreadySettledInPrior: Boolean(matchingPrior),
           priorSettlementNo: matchingPrior?.settlementNo
         });
@@ -1566,11 +1719,8 @@ export default function PersonnelSettlementTab({
     // نرخ هر ساعت بازخرید = جمع مبلغ ماهانه (مبنای ۳۰ روز) آیتم‌های مشمول محاسبه بازخرید مرخصی ÷ ۲۲۰ ساعت
     const monthlyLeaveMinutes = getMonthlyLeaveMinutesForYearMonth(db, contractEndYear, activePeriodId);
 
-    // یافتن آخرین قرارداد پرسنل برای خواندن اقلام مبنای ۳۰ روزه
-    const allContractsForEmployee = (employeeContracts.length > 0
-      ? employeeContracts
-      : (db.personnelContracts || []).filter(c => c.employeeCode === selectedPersonnel?.employeeCode)
-    ).slice().sort((a, b) => {
+    // یافتن آخرین قرارداد پرسنل منحصراً در دوره مالی فعال برای خواندن اقلام مبنای ۳۰ روزه
+    const allContractsForEmployee = employeeContracts.slice().sort((a, b) => {
       const aDate = normalizeJalaliDate(toEnglishDigits(a.contractStartDate || ''));
       const bDate = normalizeJalaliDate(toEnglishDigits(b.contractStartDate || ''));
       if (bDate !== aDate) return bDate.localeCompare(aDate);
@@ -1586,7 +1736,7 @@ export default function PersonnelSettlementTab({
       monthDate: buyoutLookupDate
     };
     const buyoutContractRate =
-      getSalaryBaseRateForContract(buyoutLookupContract, selectedPersonnel, db, activePeriodId) || endYearRate;
+      getSalaryBaseRateForContract(buyoutLookupContract, selectedPersonnel, activePeriodDb, activePeriodId) || endYearRate;
 
     const { items: configuredBuyoutItems, isConfigured: isLeaveBuyoutCustomConfigured } =
       getLeaveBuyoutSalaryItemsForContract(buyoutLookupContract, selectedPersonnel, db, activePeriodId);
@@ -1684,7 +1834,11 @@ export default function PersonnelSettlementTab({
                 if (!p) return '';
                 return `${String(p.y).padStart(4, '0')}/${String(p.m).padStart(2, '0')}/${String(p.d).padStart(2, '0')}`;
               };
-              const matchingYears = (db.seniorityRateRules || []).filter(r => r.seniorityYears === completedYears);
+              const matchingYears = (db.seniorityRateRules || []).filter(
+                r =>
+                  r.seniorityYears === completedYears &&
+                  (!r.periodId || r.periodId === activePeriodId)
+              );
               const rule = matchingYears.find(r => {
                 const s = normRuleDate(r.startDate);
                 const e = normRuleDate(r.endDate);
@@ -1940,12 +2094,14 @@ export default function PersonnelSettlementTab({
     [formSettlementType, formStartDate, formEndDate, formMonthlyDetails]
   );
 
-  // Payroll, Treasury & Sync summary insights for the currently selected personnel & date range
+  // Payroll, Treasury & Sync summary insights strictly scoped to activePeriodId
   const payrollIntegrationInsights = useMemo(() => {
-    const syncedMonthsCount = formMonthlyDetails.filter(m => m.syncedFromPayroll).length;
-    const lockedMonthsCount = formMonthlyDetails.filter(m => m.payrollSourceType === 'locked_payroll').length;
-    const liveMonthsCount = formMonthlyDetails.filter(m => m.payrollSourceType === 'live_attendance').length;
-    const treasurySummary = getEmployeeTreasuryPaidInPeriod(db, selectedPersonnel, formStartDate, formEndDate);
+    const unsettledMonths = formMonthlyDetails.filter(m => !m.alreadySettledInPrior);
+    const syncedMonthsCount = unsettledMonths.filter(m => m.syncedFromPayroll).length;
+    const lockedMonthsCount = unsettledMonths.filter(m => m.payrollSourceType === 'locked_payroll').length;
+    const liveMonthsCount = unsettledMonths.filter(m => m.payrollSourceType === 'live_attendance').length;
+    const unregisteredMonths = unsettledMonths.filter(m => !m.syncedFromPayroll);
+    const treasurySummary = getEmployeeTreasuryPaidInPeriod(db, selectedPersonnel, formStartDate, formEndDate, activePeriodId);
     const normStartForReg = formStartDate ? normalizeJalaliDate(toEnglishDigits(formStartDate)) : '';
     const normEndForReg = formEndDate ? normalizeJalaliDate(toEnglishDigits(formEndDate)) : '';
     const effectiveEndForReg =
@@ -1958,16 +2114,39 @@ export default function PersonnelSettlementTab({
       syncedMonthsCount,
       lockedMonthsCount,
       liveMonthsCount,
+      unregisteredMonths,
+      registeredMonthsCount: syncedMonthsCount,
       treasurySummary,
       registeredPayrollsSummary
     };
   }, [formMonthlyDetails, db, selectedPersonnel, formStartDate, formEndDate, formSettlementType, activePeriodId]);
+
+  const formDateValidation = useMemo(
+    () =>
+      validateSettlementDatesInActivePeriod(
+        formStartDate,
+        formEndDate,
+        formSettlementDate,
+        formSettlementType
+      ),
+    [
+      formStartDate,
+      formEndDate,
+      formSettlementDate,
+      formSettlementType,
+      activePeriodStartDate,
+      activePeriodEndDate,
+      maxDepartureEndDate
+    ]
+  );
 
   // Open Add Modal
   const handleOpenAdd = (
     preselectEmpCode?: string,
     ctx?: { year: number; month: number; readOnly?: boolean }
   ) => {
+    setFormErrorMessage('');
+    setListNotice(null);
     setEditingId(null);
     setForceReadOnlyView(Boolean(ctx?.readOnly));
     const initialType: SettlementType = 'with_departure';
@@ -1977,7 +2156,7 @@ export default function PersonnelSettlementTab({
       : personnelList[0];
     const empCode = targetEmp?.employeeCode || preselectEmpCode || '';
     setFormEmployeeCode(empCode);
-    setFormSettlementDate(getTodayJalali());
+    setFormSettlementDate(getDefaultSettlementDateInActivePeriod());
     setFormPurchasesAmount('۰');
     setFormOtherDeductionsAmount('۰');
     setFormOtherDeductionsDescription('');
@@ -2031,8 +2210,10 @@ export default function PersonnelSettlementTab({
     explicitReadOnly?: boolean,
     ctx?: { year: number; month: number; readOnly?: boolean }
   ) => {
+    setFormErrorMessage('');
+    setListNotice(null);
     const resolvedType: SettlementType = settlement.settlementType || 'with_departure';
-    const locked = Boolean(explicitReadOnly) || isSettlementRecordLocked({ endDate: settlement.endDate, settlementType: resolvedType });
+    const locked = Boolean(explicitReadOnly);
     setForceReadOnlyView(locked);
     setEditingId(settlement.id);
     setFormSettlementType(resolvedType);
@@ -2162,37 +2343,62 @@ export default function PersonnelSettlementTab({
 
   // Save Settlement
   const handleSaveSettlement = () => {
+    setFormErrorMessage('');
     if (isModalReadOnly) {
-      alert('سند حقوق و دستمزد ماه ترک کار قفل است و امکان ویرایش یا ثبت برگه تسویه حساب وجود ندارد.');
+      setFormErrorMessage('این برگه تسویه حساب در حالت فقط مشاهده است و امکان ویرایش آن وجود ندارد.');
       return;
     }
     if (!formEmployeeCode) {
-      alert('لطفا پرسنل را انتخاب نمایید.');
+      setFormErrorMessage('لطفاً پرسنل مورد نظر را انتخاب نمایید.');
       return;
     }
     if (!formStartDate || !formEndDate) {
-      alert('لطفا تاریخ شروع و پایان تسویه حساب را مشخص کنید.');
-      return;
-    }
-    if (formMonthlyDetails.length === 0) {
-      alert('هیچ ماهی برای این بازه کارکرد استخراج نشده است.');
+      setFormErrorMessage('لطفاً تاریخ شروع و پایان تسویه حساب را مشخص کنید.');
       return;
     }
 
-    const currentList = db.personnelSettlements || [];
-    const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
-    const cleanSettlementDate = normalizeJalaliDate(toEnglishDigits(formSettlementDate)) || toEnglishDigits(formSettlementDate) || getTodayJalali();
-    const yearPrefix = cleanSettlementDate.split('/')[0] || String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId));
-    const periodSettlementCount = currentList.filter(s => s.periodId === activePeriodId).length;
-    const autoNumber = `SET-${yearPrefix}-${String(periodSettlementCount + 1).padStart(3, '0')}`;
-    const normalizedStartDate = normalizeJalaliDate(toEnglishDigits(formStartDate)) || toEnglishDigits(formStartDate);
     const rawNormalizedEndDate = normalizeJalaliDate(toEnglishDigits(formEndDate)) || toEnglishDigits(formEndDate);
-    const normalizedEndDate =
+    const candidateEndDate =
       formSettlementType === 'with_departure' &&
       lastDetectedAttendanceDate &&
       rawNormalizedEndDate === lastDetectedAttendanceDate
         ? addDaysToJalali(lastDetectedAttendanceDate, 1)
         : rawNormalizedEndDate;
+
+    const dateCheck = validateSettlementDatesInActivePeriod(
+      formStartDate,
+      candidateEndDate,
+      formSettlementDate || getDefaultSettlementDateInActivePeriod(),
+      formSettlementType
+    );
+    if (!dateCheck.ok) {
+      setFormErrorMessage(dateCheck.message);
+      return;
+    }
+
+    if (formMonthlyDetails.length === 0) {
+      setFormErrorMessage('هیچ ماهی در محدوده دوره مالی فعال برای این بازه کارکرد استخراج نشده است.');
+      return;
+    }
+
+    if (payrollIntegrationInsights.registeredMonthsCount === 0) {
+      const missingNames = payrollIntegrationInsights.unregisteredMonths.map(m => m.monthName).join('، ');
+      setFormErrorMessage(
+        `هیچ لیست حقوق ثبت‌شده‌ای برای این پرسنل در بازه انتخابی دوره مالی «${activePeriodLabel}» یافت نشد${
+          missingNames ? ` (${missingNames})` : ''
+        }. تسویه حساب منحصراً بر اساس لیست‌های حقوق ثبت‌شده دوره مالی محاسبه می‌شود؛ لطفاً ابتدا لیست حقوق ماه‌های مربوطه را ثبت نمایید.`
+      );
+      return;
+    }
+
+    const currentList = db.personnelSettlements || [];
+    const activePeriodObj = (db.periods || []).find(p => p.id === activePeriodId);
+    const cleanSettlementDate = dateCheck.settlementDate;
+    const yearPrefix = cleanSettlementDate.split('/')[0] || String(getFiscalYearFromPeriod(activePeriodObj, activePeriodId));
+    const periodSettlementCount = currentList.filter(s => s.periodId === activePeriodId).length;
+    const autoNumber = `SET-${yearPrefix}-${String(periodSettlementCount + 1).padStart(3, '0')}`;
+    const normalizedStartDate = dateCheck.start;
+    const normalizedEndDate = dateCheck.end;
     const effectiveReason: SettlementReason = formSettlementType === 'without_departure' ? 'contract_end' : formReason;
 
     const newRecord: PersonnelSettlement = {
@@ -2285,11 +2491,13 @@ export default function PersonnelSettlementTab({
 
     setShowModal(false);
     onSettlementCloseOrCancel?.();
-    alert(
-      formSettlementType === 'with_departure'
-        ? 'سند تسویه حساب پرسنل با موفقیت ثبت گردید و تاریخ و علت ترک کار در پرونده پرسنل درج شد.'
-        : 'سند تسویه حساب قرارداد (بدون ترک کار) با موفقیت ثبت شد و پرسنل همچنان در وضعیت فعال باقی ماند.'
-    );
+    setListNotice({
+      type: 'success',
+      text:
+        formSettlementType === 'with_departure'
+          ? 'سند تسویه حساب پرسنل با موفقیت در دوره مالی فعال ثبت گردید و تاریخ و علت ترک کار در پرونده پرسنل درج شد.'
+          : 'سند تسویه حساب قرارداد (بدون ترک کار) با موفقیت در دوره مالی فعال ثبت شد و پرسنل همچنان فعال باقی ماند.'
+    });
   };
 
   // Delete Settlement
@@ -2558,17 +2766,25 @@ export default function PersonnelSettlementTab({
     try {
       const rows = await readSpreadsheetRows(file);
       if (rows.length === 0) {
-        alert('فایل انتخابی خالی است یا ردیف معتبری ندارد.');
+        setListNotice({ type: 'error', text: 'فایل انتخابی خالی است یا ردیف معتبری ندارد.' });
         return;
       }
       const existing = [...(db.personnelSettlements || [])];
       let added = 0;
+      let skippedOutOfPeriod = 0;
+      const defaultPeriodDate = getDefaultSettlementDateInActivePeriod();
       rows.forEach(row => {
         const empCode = toEnglishDigits(pickRowField(row, ['کد پرسنلی', 'employeeCode', 'کد'])).trim();
         if (!empCode) return;
         const emp = personnelList.find(p => p.employeeCode === empCode);
-        const startDate = toEnglishDigits(pickRowField(row, ['تاریخ شروع', 'startDate'])) || getTodayJalali();
-        const endDate = toEnglishDigits(pickRowField(row, ['تاریخ پایان', 'endDate'])) || getTodayJalali();
+        const startDate = toEnglishDigits(pickRowField(row, ['تاریخ شروع', 'startDate'])) || activePeriodStartDate;
+        const endDate = toEnglishDigits(pickRowField(row, ['تاریخ پایان', 'endDate'])) || defaultPeriodDate;
+        const settlementDateRaw = toEnglishDigits(pickRowField(row, ['تاریخ صدور', 'settlementDate'])) || defaultPeriodDate;
+        const dateCheck = validateSettlementDatesInActivePeriod(startDate, endDate, settlementDateRaw, 'with_departure');
+        if (!dateCheck.ok) {
+          skippedOutOfPeriod++;
+          return;
+        }
         const reasonStr = pickRowField(row, ['علت قطع همکاری', 'علت', 'reason']);
         const reason: SettlementReason = mapPersianReasonToSettlementReason(reasonStr) || 'contract_end';
         const statusStr = pickRowField(row, ['وضعیت', 'status']);
@@ -2584,9 +2800,9 @@ export default function PersonnelSettlementTab({
           settlementNo,
           employeeCode: empCode,
           employeeName: emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim()) : empCode,
-          settlementDate: getTodayJalali(),
-          startDate,
-          endDate,
+          settlementDate: dateCheck.settlementDate,
+          startDate: dateCheck.start,
+          endDate: dateCheck.end,
           reason,
           settlementType: 'with_departure',
           status,
@@ -2612,14 +2828,26 @@ export default function PersonnelSettlementTab({
       });
 
       if (added === 0) {
-        alert('هیچ سند تسویه معتبری در فایل یافت نشد.');
+        setListNotice({
+          type: 'error',
+          text:
+            skippedOutOfPeriod > 0
+              ? `هیچ سند تسویه‌ای ثبت نشد؛ ${toPersianDigits(skippedOutOfPeriod)} ردیف به دلیل تاریخ خارج از محدوده دوره مالی فعال (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(maxDepartureEndDate)}) رد شد.`
+              : 'هیچ سند تسویه معتبری در فایل یافت نشد.'
+        });
         return;
       }
       onUpdateDb({ ...db, personnelSettlements: existing });
-      alert(`${toPersianDigits(added)} سند تسویه حساب با موفقیت از فایل وارد شد.`);
+      setListNotice({
+        type: skippedOutOfPeriod > 0 ? 'warning' : 'success',
+        text:
+          skippedOutOfPeriod > 0
+            ? `${toPersianDigits(added)} سند تسویه حساب در دوره مالی فعال وارد شد و ${toPersianDigits(skippedOutOfPeriod)} ردیف با تاریخ خارج از دوره مالی رد گردید.`
+            : `${toPersianDigits(added)} سند تسویه حساب با موفقیت در دوره مالی فعال وارد شد.`
+      });
     } catch (err) {
       console.error(err);
-      alert('خطا در خواندن فایل اکسل تسویه حساب.');
+      setListNotice({ type: 'error', text: 'خطا در خواندن فایل اکسل تسویه حساب.' });
     }
   };
 
@@ -2666,6 +2894,34 @@ export default function PersonnelSettlementTab({
 
       {!showModal && (
         <>
+      {listNotice && (
+        <div
+          className={`flex items-center justify-between gap-3 px-4 py-3 rounded-2xl border text-xs font-bold ${
+            listNotice.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+              : listNotice.type === 'warning'
+              ? 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+              : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {listNotice.type === 'success' ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="h-4 w-4 shrink-0" />
+            )}
+            <span>{listNotice.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setListNotice(null)}
+            className="p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Stats Cards matching CustomerManagement */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
         <div className="bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800/80">
@@ -3002,14 +3258,14 @@ export default function PersonnelSettlementTab({
                     </span>
                     {isModalReadOnly && (
                       <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                        سند حقوق ماه ترک کار قفل است
+                        فقط مشاهده
                       </span>
                     )}
                   </h3>
                   <p className="text-xs text-slate-300 mt-1">
                     {formSettlementType === 'without_departure'
-                      ? 'تسویه کامل یک قرارداد بدون قطع همکاری (پرسنل فعال باقی می‌ماند و مانده مرخصی و سنوات تا پایان این قرارداد تسویه می‌شود).'
-                      : 'اطلاعات حقوق و دستمزد ماه‌ها مستقیماً مطابق لیست‌های حقوق محاسبه می‌شود؛ در ماه ترک کار مانده مرخصی و اضافه‌کار صرفاً در تسویه حساب اعمال می‌گردد.'}
+                      ? `تسویه کامل قرارداد در دوره مالی «${activePeriodLabel}» بدون قطع همکاری (بر اساس لیست‌های حقوق ثبت‌شده همین دوره مالی).`
+                      : `تسویه حساب پرسنل در دوره مالی «${activePeriodLabel}» منحصراً بر اساس لیست‌های حقوق ثبت‌شده همین دوره مالی محاسبه می‌شود.`}
                   </p>
                 </div>
               </div>
@@ -3029,7 +3285,7 @@ export default function PersonnelSettlementTab({
                 <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl p-3.5 flex items-center gap-2.5 text-amber-200 text-xs font-bold">
                   <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
                   <span>
-                    سند حقوق و دستمزد ماه ترک کار قفل شده است؛ این برگه تسویه حساب در حالت «فقط مشاهده» باز شده و امکان ویرایش یا تغییر اطلاعات آن وجود ندارد.
+                    این برگه تسویه حساب در حالت «فقط مشاهده» باز شده و امکان ویرایش یا تغییر اطلاعات آن وجود ندارد.
                   </span>
                 </div>
               )}
@@ -3230,6 +3486,25 @@ export default function PersonnelSettlementTab({
                   </div>
                 </div>
 
+                {/* Active Fiscal Period Scope Banner */}
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/80 border border-slate-800 rounded-xl px-3.5 py-2 text-[11px] text-slate-300">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                    <span>
+                      محدوده مجاز دوره مالی فعال (<strong className="text-white">{activePeriodLabel}</strong>):{' '}
+                      <strong className="font-mono text-sky-300">{toPersianDigits(activePeriodStartDate)}</strong> تا{' '}
+                      <strong className="font-mono text-sky-300">{toPersianDigits(activePeriodEndDate)}</strong>
+                    </span>
+                  </div>
+                  {formSettlementType === 'with_departure' && (
+                    <span className="text-[10.5px] text-slate-400">
+                      برای ترک کار پایان سال تا{' '}
+                      <strong className="font-mono text-emerald-300">{toPersianDigits(maxDepartureEndDate)}</strong>{' '}
+                      مجاز است.
+                    </span>
+                  )}
+                </div>
+
                 {/* Dates Row */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-slate-850">
                   <div>
@@ -3241,8 +3516,11 @@ export default function PersonnelSettlementTab({
                       dir="ltr"
                       disabled={isModalReadOnly}
                       value={toPersianDigits(formStartDate)}
-                      onChange={e => handleDateChangeAndRecalculate(toEnglishDigits(e.target.value), formEndDate)}
-                      placeholder="۱۴۰۴/۰۱/۰۱"
+                      onChange={e => {
+                        setFormErrorMessage('');
+                        handleDateChangeAndRecalculate(toEnglishDigits(e.target.value), formEndDate);
+                      }}
+                      placeholder={toPersianDigits(activePeriodStartDate)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60"
                     />
                   </div>
@@ -3258,8 +3536,11 @@ export default function PersonnelSettlementTab({
                       dir="ltr"
                       disabled={isModalReadOnly}
                       value={toPersianDigits(formEndDate)}
-                      onChange={e => handleDateChangeAndRecalculate(formStartDate, toEnglishDigits(e.target.value))}
-                      placeholder="۱۴۰۴/۱۲/۲۹"
+                      onChange={e => {
+                        setFormErrorMessage('');
+                        handleDateChangeAndRecalculate(formStartDate, toEnglishDigits(e.target.value));
+                      }}
+                      placeholder={toPersianDigits(formSettlementType === 'with_departure' ? maxDepartureEndDate : activePeriodEndDate)}
                       className={`w-full bg-slate-950 border rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60 ${
                         lastDetectedAttendanceDate ? 'border-emerald-500/50 bg-emerald-950/15' : 'border-amber-500/60 bg-amber-950/20'
                       }`}
@@ -3287,7 +3568,7 @@ export default function PersonnelSettlementTab({
                       <span className="text-[10px] text-amber-400 mt-1 block">
                         {formSettlementType === 'without_departure'
                           ? 'تاریخ دقیق پایان قرارداد مورد تسویه را وارد کنید.'
-                          : 'تردد ثبت‌شده‌ای یافت نشد؛ تاریخ ترک کار (یک روز پس از آخرین روز حضور) را وارد کنید.'}
+                          : 'تردد ثبت‌شده‌ای در این دوره یافت نشد؛ تاریخ ترک کار (یک روز پس از آخرین روز حضور) را وارد کنید.'}
                       </span>
                     )}
                   </div>
@@ -3299,12 +3580,22 @@ export default function PersonnelSettlementTab({
                       dir="ltr"
                       disabled={isModalReadOnly}
                       value={toPersianDigits(formSettlementDate)}
-                      onChange={e => setFormSettlementDate(toEnglishDigits(e.target.value))}
-                      placeholder={toPersianDigits(getTodayJalali())}
+                      onChange={e => {
+                        setFormErrorMessage('');
+                        setFormSettlementDate(toEnglishDigits(e.target.value));
+                      }}
+                      placeholder={toPersianDigits(getDefaultSettlementDateInActivePeriod())}
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-center text-white font-mono disabled:opacity-60"
                     />
                   </div>
                 </div>
+
+                {formStartDate && formEndDate && !formDateValidation.ok && (
+                  <div className="bg-rose-950/40 border border-rose-500/45 rounded-xl px-3.5 py-2.5 flex items-center gap-2 text-rose-200 text-[11px] font-bold">
+                    <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+                    <span>{formDateValidation.message}</span>
+                  </div>
+                )}
 
                 {/* Profile Snapshot Banner */}
                 {selectedPersonnel && (
@@ -3408,17 +3699,20 @@ export default function PersonnelSettlementTab({
                   <div>
                     <h4 className="font-extrabold text-white text-sm flex items-center gap-2 flex-wrap">
                       <Calendar className="h-4 w-4 text-emerald-400" />
-                      <span>مرحله ۲: اقلام حقوق و دستمزد ماه به ماه (مطابق با لیست‌های حقوق)</span>
+                      <span>مرحله ۲: اقلام حقوق و دستمزد ماه به ماه (منحصراً از لیست‌های حقوق ثبت‌شده دوره مالی)</span>
                       {payrollIntegrationInsights.syncedMonthsCount > 0 && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          {toPersianDigits(payrollIntegrationInsights.syncedMonthsCount)} ماه همگام‌سازی‌شده
-                          {payrollIntegrationInsights.lockedMonthsCount > 0 && ` (${toPersianDigits(payrollIntegrationInsights.lockedMonthsCount)} ثبت‌شده)`}
-                          {payrollIntegrationInsights.liveMonthsCount > 0 && ` (${toPersianDigits(payrollIntegrationInsights.liveMonthsCount)} تردد زنده)`}
+                          {toPersianDigits(payrollIntegrationInsights.syncedMonthsCount)} ماه ثبت‌شده
+                        </span>
+                      )}
+                      {payrollIntegrationInsights.unregisteredMonths.length > 0 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          {toPersianDigits(payrollIntegrationInsights.unregisteredMonths.length)} ماه بدون لیست حقوق
                         </span>
                       )}
                     </h4>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      اطلاعات حقوق و دستمزد ماه‌های مختلف مطابق با لیست‌های حقوق و تردد نمایش داده می‌شود؛ مبالغ عیدی و حق سنوات پایان خدمت از ناخالص و خالص ماهانه کسر شده و به صورت تفکیکی در بخش مزایای پایان خدمت محاسبه می‌گردد.
+                      اطلاعات حقوق و دستمزد ماه‌های مختلف منحصراً از لیست‌های حقوق ثبت‌شده دوره مالی «{activePeriodLabel}» خوانده می‌شود؛ مبالغ عیدی و حق سنوات پایان خدمت به صورت تفکیکی در بخش مزایای پایان خدمت محاسبه می‌گردد.
                     </p>
                   </div>
 
@@ -3428,14 +3722,32 @@ export default function PersonnelSettlementTab({
                         type="button"
                         onClick={handleSyncFromPayroll}
                         className="px-3 py-1.5 bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1.5 border border-emerald-500/40"
-                        title="به‌روزرسانی کارکرد، حقوق، کسورات و مانده مرخصی از لیست‌های حقوق و تردد"
+                        title="به‌روزرسانی ارقام از لیست‌های حقوق ثبت‌شده دوره مالی فعال"
                       >
                         <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-                        همگام‌سازی از حقوق و دستمزد
+                        به‌روزرسانی از لیست‌های حقوق ثبت‌شده
                       </button>
                     </div>
                   )}
                 </div>
+
+                {payrollIntegrationInsights.unregisteredMonths.length > 0 && (
+                  <div className="bg-amber-950/35 border border-amber-500/45 rounded-xl p-3.5 flex items-start gap-2.5 text-amber-200 text-[11px]">
+                    <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="font-extrabold text-amber-300">
+                        هشدار: لیست حقوق برخی ماه‌ها در دوره مالی فعال ثبت نشده است
+                      </div>
+                      <p className="leading-relaxed">
+                        برای ماه‌های{' '}
+                        <strong className="text-white">
+                          {payrollIntegrationInsights.unregisteredMonths.map(m => m.monthName).join('، ')}
+                        </strong>{' '}
+                        در دوره مالی «{activePeriodLabel}» لیست حقوق ثبت‌شده‌ای وجود ندارد و مقدار آن‌ها در جدول صفر لحاظ شده است. لطفاً جهت محاسبه دقیق تسویه حساب، ابتدا لیست حقوق این ماه‌ها را در بخش حقوق و دستمزد ثبت نمایید.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="overflow-x-auto border border-slate-800 rounded-xl">
                   <table className="w-full text-right text-[11px] border-collapse">
@@ -3488,19 +3800,19 @@ export default function PersonnelSettlementTab({
                                   className={`inline-block mt-0.5 px-1.5 py-0.2 rounded text-[8.5px] font-bold border ${
                                     m.payrollSourceType === 'locked_payroll'
                                       ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                      : m.payrollSourceType === 'unregistered_payroll' || !m.syncedFromPayroll
+                                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/35'
                                       : m.payrollSourceType === 'live_attendance'
                                       ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
-                                      : m.workedDays === 0
-                                      ? 'bg-slate-900 text-slate-500 border-slate-800'
                                       : 'bg-slate-800 text-slate-400 border-slate-700'
                                   }`}
                                 >
                                   {m.payrollSourceType === 'locked_payroll'
                                     ? 'حقوق ثبت‌شده'
+                                    : m.payrollSourceType === 'unregistered_payroll' || !m.syncedFromPayroll
+                                    ? 'لیست حقوق ثبت نشده'
                                     : m.payrollSourceType === 'live_attendance'
                                     ? 'کارکرد تردد'
-                                    : m.workedDays === 0
-                                    ? 'بدون کارکرد'
                                     : 'قرارداد'}
                                 </span>
                               )}
@@ -4176,36 +4488,54 @@ export default function PersonnelSettlementTab({
             </div>
 
             {/* Form Footer */}
-            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={handleCloseModal}
-                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-slate-200 rounded-xl transition-colors cursor-pointer border border-slate-700"
-              >
-                {isModalReadOnly ? 'بازگشت به لیست' : 'انصراف و بازگشت'}
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handlePreviewCurrentDraft}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-sky-400 hover:text-sky-300 rounded-xl transition-all border border-slate-700 flex items-center gap-1.5 cursor-pointer shadow-sm"
-                  title="مشاهده پیش‌نمایش برگه چاپی رسمی با ارقام فعلی"
-                >
-                  <Eye className="h-4 w-4" />
-                  پیش‌نمایش فرم چاپی
-                </button>
-
-                {!isModalReadOnly && (
+            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-900/80 space-y-3">
+              {formErrorMessage && (
+                <div className="bg-rose-950/50 border border-rose-500/50 rounded-xl px-4 py-3 flex items-center justify-between gap-2 text-rose-200 text-xs font-bold">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+                    <span>{formErrorMessage}</span>
+                  </div>
                   <button
                     type="button"
-                    onClick={handleSaveSettlement}
-                    className="px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer border border-rose-500/40"
+                    onClick={() => setFormErrorMessage('')}
+                    className="p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
                   >
-                    <Check className="h-4 w-4" />
-                    ثبت و ذخیره سند تسویه حساب
+                    <X className="h-3.5 w-3.5" />
                   </button>
-                )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={handleCloseModal}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-slate-200 rounded-xl transition-colors cursor-pointer border border-slate-700"
+                >
+                  {isModalReadOnly ? 'بازگشت به لیست' : 'انصراف و بازگشت'}
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePreviewCurrentDraft}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-xs font-bold text-sky-400 hover:text-sky-300 rounded-xl transition-all border border-slate-700 flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    title="مشاهده پیش‌نمایش برگه چاپی رسمی با ارقام فعلی"
+                  >
+                    <Eye className="h-4 w-4" />
+                    پیش‌نمایش فرم چاپی
+                  </button>
+
+                  {!isModalReadOnly && (
+                    <button
+                      type="button"
+                      onClick={handleSaveSettlement}
+                      className="px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-xs font-black text-white rounded-xl transition-all shadow-lg shadow-rose-600/30 flex items-center gap-2 cursor-pointer border border-rose-500/40"
+                    >
+                      <Check className="h-4 w-4" />
+                      ثبت و ذخیره سند تسویه حساب
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
         </div>

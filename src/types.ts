@@ -1471,7 +1471,7 @@ export interface SettlementMonthlyDetail {
   deductionsAmount?: number; // جمع کل کسورات ماه
   netSalaryPayable: number; // مبلغ حقوق قابل پرداخت ماه
   syncedFromPayroll?: boolean; // آیا این ماه از اطلاعات حقوق و دستمزد تکمیل شده است
-  payrollSourceType?: 'locked_payroll' | 'live_attendance' | 'manual_contract'; // منبع محاسبه ماه
+  payrollSourceType?: 'locked_payroll' | 'live_attendance' | 'manual_contract' | 'unregistered_payroll'; // منبع محاسبه ماه
   payrollItemPayable?: number; // مبلغ خالص فیش حقوق ثبت‌شده در سیستم حقوق و دستمزد
   payrollLeaveRemainingMinutes?: number; // مانده مرخصی تجمعی تا پایان این ماه (دقیقه) طبق سیستم حقوق و حضور غیاب
   alreadySettledInPrior?: boolean; // آیا این ماه قبلاً در سند تسویه حساب بدون ترک کار تسویه شده است
