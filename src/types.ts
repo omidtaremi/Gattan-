@@ -281,6 +281,7 @@ export interface Personnel {
   complementaryInsurance?: boolean;
   yearsBase?: number;
   entryDate?: string;
+  seniorityBaseStartDate?: string; // تاریخ شروع محاسبه پایه سنوات (پیش‌فرض برابر با تاریخ ورود پرسنل)
   insuranceDate?: string;
   dailyYearsDifference?: number;
   bankName?: string;

@@ -8968,6 +8968,18 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [conIsActive, setConIsActive] = useState<boolean>(true);
   const [viewBasisDays, setViewBasisDays] = useState<number>(30);
 
+  // تعیین تاریخ مبنای محاسبه پایه سنوات پرسنل: تاریخ شروع پایه سنوات -> تاریخ ورود پرسنل -> تاریخ شروع بیمه
+  const resolvePersonnelSeniorityStartDate = (emp: Personnel | null | undefined, fallbackDate: string = ''): string => {
+    if (!emp) return fallbackDate;
+    const sDate = (emp.seniorityBaseStartDate || (emp as any).personnel?.seniorityBaseStartDate || '').trim();
+    if (sDate) return sDate;
+    const eDate = (emp.entryDate || (emp as any).personnel?.entryDate || '').trim();
+    if (eDate) return eDate;
+    const iDate = (emp.insuranceDate || (emp as any).personnel?.insuranceDate || '').trim();
+    if (iDate) return iDate;
+    return fallbackDate;
+  };
+
   // محاسبه خودکار فوق‌العاده شغلی بر اساس مبلغ خالص پرداختی توافقی (مبنای ۱ روزه با معادل ۲۶ روز کارکرد، ۳۰ روزه یا ۳۱ روزه - تطبیق با بند ۱۴)
   const agreedMonthlyNetSolverResult = useMemo(() => {
     if (!conHasAgreedMonthlyNet) return null;
@@ -9008,8 +9020,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const calMonthlyEidi = Math.round((dispBaseSalary * 2) / 12);
 
     const tStartDate = conStartDate || emp.contractStartDate || emp.entryDate || '';
-    const insuranceStartDate = emp.insuranceDate || emp.entryDate || tStartDate;
-    const tDiff = getJalaliDateDifference(insuranceStartDate, tStartDate);
+    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp, tStartDate);
+    const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
     let tempSeniorityYears = 0;
     if (tDiff) {
       const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -9265,6 +9277,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [address, setAddress] = useState('');
   const [emergencyMobile, setEmergencyMobile] = useState('');
   const [entryDate, setEntryDate] = useState('');
+  const [seniorityBaseStartDate, setSeniorityBaseStartDate] = useState('');
+  const handleEntryDateChange = (nextDate: string) => {
+    const prevEntry = entryDate.trim();
+    setEntryDate(nextDate);
+    if (!seniorityBaseStartDate.trim() || seniorityBaseStartDate.trim() === prevEntry) {
+      setSeniorityBaseStartDate(nextDate);
+    }
+  };
   const [isDailyWage, setIsDailyWage] = useState(false);
   const [jobAllowance, setJobAllowance] = useState<number | string>('');
   
@@ -9510,8 +9530,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const calMonthlyEidi = Math.round((baseVal * 2) / 12);
 
     const tStartDate = startDateStr || emp.contractStartDate || emp.entryDate || '';
-    const insuranceStartDate = emp.insuranceDate || emp.entryDate || tStartDate;
-    const tDiff = getJalaliDateDifference(insuranceStartDate, tStartDate);
+    const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(emp, tStartDate);
+    const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
     let tempSeniorityYears = 0;
     if (tDiff) {
       const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -9859,10 +9879,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const calculateDynamicSeniorityBase = (emp: Personnel | null, conStart: string): number => {
     if (!emp) return 0;
-    const insDate = emp.insuranceDate;
-    if (!insDate || !conStart) return 0;
+    const senStartDate = resolvePersonnelSeniorityStartDate(emp, '');
+    if (!senStartDate || !conStart) return 0;
 
-    const insGregorian = parseJalaliToGregorianDate(insDate);
+    const insGregorian = parseJalaliToGregorianDate(senStartDate);
     const conStartGregorian = parseJalaliToGregorianDate(conStart);
     if (!insGregorian || !conStartGregorian) return 0;
 
@@ -10692,6 +10712,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setAddress('');
     setEmergencyMobile('');
     setEntryDate('');
+    setSeniorityBaseStartDate('');
     setInsuranceDate('');
     setInsuranceHistoryDays(0);
     setPersonnelCategoryId('');
@@ -10822,6 +10843,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       address: address.trim(),
       emergencyMobile: emergencyMobile.trim(),
       entryDate: entryDate.trim(),
+      seniorityBaseStartDate: (seniorityBaseStartDate.trim() || entryDate.trim()),
       insuranceDate: insuranceDate.trim(),
       insuranceHistoryDays: Number(insuranceHistoryDays) || 0,
       personnelCategoryId: personnelCategoryId,
@@ -11057,6 +11079,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setAddress(emp.address || '');
     setEmergencyMobile(emp.emergencyMobile || '');
     setEntryDate(emp.entryDate || '');
+    setSeniorityBaseStartDate(emp.seniorityBaseStartDate || emp.entryDate || '');
     setInsuranceDate(emp.insuranceDate || '');
     setInsuranceHistoryDays(emp.insuranceHistoryDays || 0);
     setPersonnelCategoryId(emp.personnelCategoryId || '');
@@ -11129,6 +11152,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       address: address.trim(),
       emergencyMobile: emergencyMobile.trim(),
       entryDate: entryDate.trim(),
+      seniorityBaseStartDate: (seniorityBaseStartDate.trim() || entryDate.trim()),
       insuranceDate: insuranceDate.trim(),
       insuranceHistoryDays: Number(insuranceHistoryDays) || 0,
       personnelCategoryId: personnelCategoryId,
@@ -13363,30 +13387,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </button>
                 </div>
 
-                <form onSubmit={handleSaveEmployee} className="space-y-6 text-right font-sans" dir="rtl">
-                  {/* Status toggle at the top for prominent management */}
-                  <div className="bg-slate-900 p-5 rounded-xl border border-slate-805 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <span className="text-xs font-black text-slate-200 flex flex-wrap items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${isActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
-                      وضعیت کنونی فعالیت پرسنل در خط تولید کارگاه:
+                <form onSubmit={handleSaveEmployee} className="space-y-5 text-right font-sans" dir="rtl">
+                  {/* نوار بالای فرم: وضعیت همکاری و خلاصه پرونده */}
+                  <div className="bg-slate-900/90 px-4 py-3.5 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                      <span className="text-xs font-black text-slate-100">
+                        وضعیت فعالیت پرسنل در مجموعه:
+                      </span>
                       {departureDate && (
-                        <span className="text-[10px] font-extrabold bg-rose-950 text-rose-300 border border-rose-800 px-2.5 py-0.5 rounded-full mr-1.5 flex items-center gap-1">
+                        <span className="text-[10px] font-extrabold bg-rose-950/90 text-rose-300 border border-rose-800/80 px-2.5 py-0.5 rounded-lg flex items-center gap-1">
                           <UserMinus className="h-3 w-3" />
                           ترک کار: {toPersianDigits(departureDate)} ({departureReason || 'استعفا'})
                         </span>
                       )}
-                    </span>
-                    <div className="flex gap-2">
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
                       <button
                         type="button"
                         onClick={() => {
                           setIsActive(true);
                           setDepartureDate('');
                         }}
-                        className={`px-4 py-2 rounded-lg text-xs font-black flex items-center gap-2 transition-all cursor-pointer ${
+                        className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
                           isActive
-                            ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/15'
-                            : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-750'
+                            ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm shadow-emerald-600/20'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
                         }`}
                       >
                         شاغل فعال
@@ -13394,10 +13420,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       <button
                         type="button"
                         onClick={() => setIsActive(false)}
-                        className={`px-4 py-2 rounded-lg text-xs font-black flex items-center gap-2 transition-all cursor-pointer ${
+                        className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
                           !isActive
-                            ? 'bg-rose-600 text-white shadow-md shadow-rose-600/15'
-                            : 'bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-750'
+                            ? 'bg-rose-600 text-white border-rose-500 shadow-sm shadow-rose-600/20'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
                         }`}
                       >
                         {departureDate ? 'غیرفعال (ترک کار)' : 'غیرفعال / پایان همکاری'}
@@ -13405,29 +13431,34 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                    
-                    {/* Right Column: Most Important Core HR & Wage Information */}
-                    <div className="space-y-6">
-                      
-                      {/* === ۱. اطلاعات شناسایی و هویتی پایه === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <span className="block text-xs font-black text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-2">
-                          <Users className="h-4.5 w-4.5 text-rose-500" />
-                          ۱. اطلاعات شناسایی و هویتی پایه
-                        </span>
+                  {/* چیدمان متوازن ۲ ستونه (دسکتاپ) و ۱ ستونه (موبایل) */}
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
 
-                        {/* Spacious Name & Family inputs */}
-                        <div className="grid grid-cols-2 gap-4 pb-3.5 border-b border-slate-800">
+                    {/* ==================== ستون راست: هویت و تماس، شغلی و تاریخ‌های مبنا، بیمه‌ها ==================== */}
+                    <div className="space-y-5">
+
+                      {/* === ۱. اطلاعات هویتی، تماس و نشانی === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۱</span>
+                            <Users className="h-4 w-4 text-rose-400" />
+                            اطلاعات هویتی، تماس و نشانی
+                          </h4>
+                          <span className="text-[10px] text-slate-400 font-bold">فیلدهای ستاره‌دار (*) الزامی</span>
+                        </div>
+
+                        {/* نام و نام خانوادگی */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                           <div>
-                            <label htmlFor="first-name-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="first-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
                               نام *
                             </label>
                             <input
                               id="first-name-inp"
                               type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all placeholder:text-slate-500 placeholder:text-xs"
+                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="مثلاً: احمد"
                               value={firstName}
                               onChange={(e) => setFirstName(e.target.value)}
@@ -13436,14 +13467,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             />
                           </div>
                           <div>
-                            <label htmlFor="last-name-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="last-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
                               نام خانوادگی *
                             </label>
                             <input
                               id="last-name-inp"
                               type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all placeholder:text-slate-500 placeholder:text-xs"
+                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="مثلاً: رضایی"
                               value={lastName}
                               onChange={(e) => setLastName(e.target.value)}
@@ -13453,17 +13484,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </div>
                         </div>
 
-                        {/* Code and Attendance Code */}
-                        <div className="grid grid-cols-2 gap-4">
+                        {/* کد پرسنلی و کد حضور و غیاب */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                           <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label htmlFor="emp-code" className="block text-[11px] font-extrabold text-slate-200 flex items-center gap-1.5 px-0.5">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <label htmlFor="emp-code" className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                                کد پرسنلی (کلید اصلی) *
+                                کد پرسنلی *
                               </label>
                               {editingEmp ? (
-                                <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
-                                  قابلیت اصلاح کد
+                                <span className="text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/25">
+                                  قابل اصلاح و همگام‌سازی
                                 </span>
                               ) : (
                                 <button
@@ -13471,34 +13502,34 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   onClick={handleSuggestNextCode}
                                   className="text-[10px] text-rose-400 hover:text-rose-300 font-bold underline cursor-pointer"
                                 >
-                                  پیشنهاد کد جدید
+                                  پیشنهاد کد خودکار
                                 </button>
                               )}
                             </div>
                             <input
                               id="emp-code"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="مثلاً: 1001 یا کد دلخواه"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="مثلاً: 1001"
                               value={newCode}
                               onChange={(e) => setNewCode(e.target.value)}
                               required
                               onFocus={handleFocus}
                             />
                             {editingEmp && (
-                              <p className="text-[9.5px] text-slate-400 mt-1 leading-tight">
-                                در صورت تغییر کد پرسنلی، تمام سوابق در قراردادها، ترددها و فیش‌های حقوقی به طور خودکار اصلاح و همگام‌سازی خواهند شد.
+                              <p className="text-[9.5px] text-slate-400 mt-1 leading-relaxed">
+                                در صورت تغییر کد پرسنلی، تمام قراردادها، ترددها و فیش‌ها خودکار همگام‌سازی می‌شوند.
                               </p>
                             )}
                           </div>
                           <div>
-                            <label htmlFor="attendance-code-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              کد پرسنلی حضور و غیاب
+                            <label htmlFor="attendance-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              کد دستگاه حضور و غیاب
                             </label>
                             <input
                               id="attendance-code-inp"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="مثلاً: 254"
                               value={attendanceCode}
                               onChange={(e) => setAttendanceCode(e.target.value)}
@@ -13507,17 +13538,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </div>
                         </div>
 
-                        {/* National ID, Birth Certificate No, Accounting Code & Father Name */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {/* کد ملی، شناسنامه، نام پدر و کد حسابداری */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                           <div>
-                            <label htmlFor="national-id-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="national-id-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              کد ملی استاندارد *
+                              کد ملی *
                             </label>
                             <input
                               id="national-id-inp"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-805 rounded-xl text-xs bg-slate-950 font-mono text-white font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="۱۰ رقم مانند 0012345678"
                               value={nationalId}
                               onChange={(e) => setNationalId(e.target.value)}
@@ -13525,129 +13556,145 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             />
                           </div>
                           <div>
-                            <label htmlFor="birth-certificate-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="birth-certificate-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
                               شماره شناسنامه
                             </label>
                             <input
                               id="birth-certificate-inp"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="شماره شناسنامه (عددی)"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="شماره شناسنامه"
                               value={birthCertificateNumber}
                               onChange={(e) => setBirthCertificateNumber(e.target.value)}
                               onFocus={handleFocus}
                             />
                           </div>
                           <div>
-                            <label htmlFor="account-code-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              کد حسابداری معین
-                            </label>
-                            <input
-                              id="account-code-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="مثلاً: ACC-1001"
-                              value={accountCode}
-                              onChange={(e) => setAccountCode(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="father-name-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="father-name-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
                               نام پدر
                             </label>
                             <input
                               id="father-name-inp"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="نام پدر"
                               value={fatherName}
                               onChange={(e) => setFatherName(e.target.value)}
                               onFocus={handleFocus}
                             />
                           </div>
-                        </div>
-
-                        {/* Birthdate Picker */}
-                        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl shadow-inner">
-                          {renderShamsiDatePicker('birth-date', 'تاریخ تولد پرسنل (انتخابگر شمسی)', birthDate, setBirthDate)}
-                        </div>
-
-                        {/* Gender, Marital Status & Military Status Row */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                          
-                          {/* Gender */}
                           <div>
-                            <label className="block text-[10.5px] font-extrabold text-slate-200 mb-1 px-1">جنسیت</label>
-                            <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800 justify-around shadow-inner">
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="gender"
-                                  value="مرد"
-                                  checked={gender === 'مرد'}
-                                  onChange={() => setGender('مرد')}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
-                                مرد
-                              </label>
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="gender"
-                                  value="زن"
-                                  checked={gender === 'زن'}
-                                  onChange={() => setGender('زن')}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
-                                زن
-                              </label>
+                            <label htmlFor="account-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              کد حسابداری معین
+                            </label>
+                            <input
+                              id="account-code-inp"
+                              type="text"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="مثلاً: ACC-1001"
+                              value={accountCode}
+                              onChange={(e) => setAccountCode(e.target.value)}
+                              onFocus={handleFocus}
+                            />
+                          </div>
+                        </div>
+
+                        {/* اطلاعات تماس */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-3 border-t border-slate-800/80">
+                          <div>
+                            <label htmlFor="emp-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                              تلفن همراه *
+                            </label>
+                            <input
+                              id="emp-mobile"
+                              type="text"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                              value={newMobile}
+                              onChange={(e) => setNewMobile(e.target.value)}
+                              onFocus={handleFocus}
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor="emergency-mobile" className="block text-[11px] font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                              تلفن همراه اضطراری *
+                            </label>
+                            <input
+                              id="emergency-mobile"
+                              type="text"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="۰۹#########"
+                              value={emergencyMobile}
+                              onChange={(e) => setEmergencyMobile(e.target.value)}
+                              onFocus={handleFocus}
+                            />
+                          </div>
+                        </div>
+
+                        {/* تاریخ تولد */}
+                        <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl">
+                          {renderShamsiDatePicker('birth-date', 'تاریخ تولد پرسنل (شمسی)', birthDate, setBirthDate)}
+                        </div>
+
+                        {/* جنسیت، وضعیت تاهل و نظام وظیفه */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1.5">جنسیت</label>
+                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
+                              {(['مرد', 'زن'] as const).map((g) => (
+                                <button
+                                  key={g}
+                                  type="button"
+                                  onClick={() => setGender(g)}
+                                  className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                    gender === g ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                  }`}
+                                >
+                                  {g}
+                                </button>
+                              ))}
                             </div>
                           </div>
 
-                          {/* Marital Status */}
                           <div>
-                            <label className="block text-[10.5px] font-extrabold text-slate-200 mb-1 px-1">وضعیت تاهل</label>
-                            <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800 justify-around shadow-inner">
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="maritalStatus"
-                                  value="مجرد"
-                                  checked={maritalStatus === 'مجرد'}
-                                  onChange={() => {
-                                    setMaritalStatus('مجرد');
-                                    setHasChildren(false);
-                                    setChildrenList([]);
-                                  }}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1.5">وضعیت تاهل</label>
+                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMaritalStatus('مجرد');
+                                  setHasChildren(false);
+                                  setChildrenList([]);
+                                }}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  maritalStatus === 'مجرد' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 مجرد
-                              </label>
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="maritalStatus"
-                                  value="متاهل"
-                                  checked={maritalStatus === 'متاهل'}
-                                  onChange={() => setMaritalStatus('متاهل')}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setMaritalStatus('متاهل')}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  maritalStatus === 'متاهل' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 متاهل
-                              </label>
+                              </button>
                             </div>
                           </div>
 
-                          {/* Military Service Status */}
                           <div>
-                            <label htmlFor="military-status-select" className="block text-[10.5px] font-extrabold text-slate-200 mb-1 px-1">وضعیت نظام وظیفه</label>
+                            <label htmlFor="military-status-select" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">نظام وظیفه</label>
                             <select
                               id="military-status-select"
-                              className="w-full p-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner cursor-pointer transition-colors"
+                              className="w-full px-2.5 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
                               value={militaryStatus}
                               onChange={(e) => setMilitaryStatus(e.target.value as any)}
                             >
-                              <option value="">نامشخص / معاف زن</option>
+                              <option value="">نامشخص / معاف بانوان</option>
                               <option value="اتمام">اتمام خدمت</option>
                               <option value="معافیت">معافیت قانونی</option>
                               <option value="غیبت">غیبت / مشمول</option>
@@ -13655,56 +13702,59 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           </div>
                         </div>
 
-                        {/* Address & Postal Code block */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3.5 border-t border-slate-800">
+                        {/* نشانی و کد پستی */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-3 border-t border-slate-800/80">
                           <div className="sm:col-span-2">
-                            <label htmlFor="address-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              آدرس محل سکونت پرسنل
+                            <label htmlFor="address-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              آدرس محل سکونت
                             </label>
                             <input
                               id="address-inp"
                               type="text"
-                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all placeholder:text-slate-500"
-                              placeholder="نشانی محل سکونت فعلی پرسنل را وارد نمایید..."
+                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="نشانی کامل محل سکونت..."
                               value={address}
                               onChange={(e) => setAddress(e.target.value)}
                               onFocus={handleFocus}
                             />
                           </div>
                           <div>
-                            <label htmlFor="postal-code-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              کد پستی محل سکونت
+                            <label htmlFor="postal-code-inp" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              کد پستی
                             </label>
                             <input
                               id="postal-code-inp"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="۱۰ رقم بدون خط تیره"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
+                              placeholder="۱۰ رقم"
                               value={postalCode}
                               onChange={(e) => setPostalCode(e.target.value)}
                               onFocus={handleFocus}
                             />
                           </div>
                         </div>
-                      </div>
+                      </section>
 
-                      {/* === ۲. انتسابات سازمانی و حقوق پایه === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner animate-none">
-                        <span className="block text-xs font-black text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-2">
-                          <Briefcase className="h-4.5 w-4.5 text-rose-500" />
-                          ۲. انتسابات سازمانی و حقوق مبنا
-                        </span>
+                      {/* === ۲. اطلاعات شغلی، شیفت و تاریخ‌های مبنا === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۲</span>
+                            <Briefcase className="h-4 w-4 text-rose-400" />
+                            اطلاعات شغلی، شیفت و تاریخ‌های مبنا
+                          </h4>
+                        </div>
 
-                        {/* Title and Department */}
-                        <div className="grid grid-cols-2 gap-4">
+                        {/* سمت و دپارتمان */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                           <div>
-                            <label htmlFor="emp-role" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              سمت / شغل کارگاهی
+                            <label htmlFor="emp-role" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              سمت / عنوان شغلی
                             </label>
                             <input
                               id="emp-role"
                               type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
+                              className="w-full px-3.5 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-500"
                               placeholder="مانند: سرپرست تولید"
                               value={newRole}
                               onChange={(e) => setNewRole(e.target.value)}
@@ -13712,30 +13762,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             />
                           </div>
                           <div>
-                            <label htmlFor="emp-dept" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              دپارتمان تولیدی کارگاه
+                            <label htmlFor="emp-dept" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              دپارتمان تولیدی / بخش
                             </label>
                             <select
                               id="emp-dept"
-                              className="w-full p-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner cursor-pointer transition-colors"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
                               value={newDeptId}
                               onChange={(e) => setNewDeptId(e.target.value)}
                             >
                               <option value="cat-4">کادر مشترک / سربار کارگاه (خدماتی-مدیریتی)</option>
-                              {categories.filter(c => !isSharedDeptCat(c.id)).map(c => <option key={c.id} value={c.id}>دپارتمان خط تولید {c.name}</option>)}
+                              {categories.filter(c => !isSharedDeptCat(c.id)).map(c => (
+                                <option key={c.id} value={c.id}>دپارتمان خط تولید {c.name}</option>
+                              ))}
                             </select>
                           </div>
                         </div>
 
-                        {/* Category & Salary Type */}
-                        <div className="grid grid-cols-2 gap-4">
+                        {/* دسته‌بندی و نوع محاسبات دستمزد */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                           <div>
-                            <label htmlFor="pers-cat-select" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
+                            <label htmlFor="pers-cat-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
                               دسته‌بندی پرسنل
                             </label>
                             <select
                               id="pers-cat-select"
-                              className="w-full p-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-505 shadow-inner cursor-pointer transition-colors"
+                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
                               value={personnelCategoryId}
                               onChange={(e) => setPersonnelCategoryId(e.target.value)}
                             >
@@ -13746,74 +13798,66 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             </select>
                           </div>
                           <div>
-                            <label className="block text-[11px] font-extrabold text-slate-200 mb-1 px-1">نوع محاسبات دستمزد</label>
-                            <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800 justify-around shadow-inner">
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="isDailyWage"
-                                  value="contract"
-                                  checked={!isDailyWage}
-                                  onChange={() => setIsDailyWage(false)}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                            <label className="block text-[11px] font-bold text-slate-300 mb-1.5">نوع محاسبات دستمزد</label>
+                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => setIsDailyWage(false)}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  !isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 ثابت / ماهانه
-                              </label>
-                              <label className="flex items-center gap-1 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="isDailyWage"
-                                  value="daily"
-                                  checked={isDailyWage}
-                                  onChange={() => setIsDailyWage(true)}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setIsDailyWage(true)}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  isDailyWage ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 روزمزد کارگاهی
-                              </label>
+                              </button>
                             </div>
                           </div>
                         </div>
 
-                        {/* Shift Configuration (تعیین نوع شیفت‌بندی ثابت یا چرخشی و شیفت اختصاصی) */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-slate-950/80 rounded-xl border border-slate-800">
+                        {/* شیفت‌بندی و فوق‌العاده شغلی */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 bg-slate-950/75 rounded-xl border border-slate-800">
                           <div>
-                            <label className="block text-[11px] font-extrabold text-slate-200 mb-1 px-1">
+                            <label className="block text-[11px] font-bold text-slate-300 mb-1.5">
                               نوع شیفت‌بندی پرسنل *
                             </label>
-                            <div className="flex gap-2 p-1 bg-slate-900 rounded-xl border border-slate-800 justify-around shadow-inner">
-                              <label className="flex items-center gap-1.5 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="shiftScheduleType"
-                                  value="rotating"
-                                  checked={shiftScheduleType === 'rotating'}
-                                  onChange={() => setShiftScheduleType('rotating')}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => setShiftScheduleType('rotating')}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  shiftScheduleType === 'rotating' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 چرخشی (هفتگی)
-                              </label>
-                              <label className="flex items-center gap-1.5 text-xs text-slate-300 font-bold cursor-pointer select-none py-1">
-                                <input
-                                  type="radio"
-                                  name="shiftScheduleType"
-                                  value="fixed"
-                                  checked={shiftScheduleType === 'fixed'}
-                                  onChange={() => setShiftScheduleType('fixed')}
-                                  className="text-rose-600 focus:ring-rose-500 h-3.5 w-3.5"
-                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShiftScheduleType('fixed')}
+                                className={`py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                                  shiftScheduleType === 'fixed' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
                                 شیفت ثابت
-                              </label>
+                              </button>
                             </div>
                           </div>
 
                           <div>
-                            <label htmlFor="fixed-shift-select" className="block text-[11px] font-extrabold text-slate-200 mb-1 px-1">
-                              شیفت اختصاصی پرسنل (در صورت شیفت ثابت)
+                            <label htmlFor="fixed-shift-select" className="block text-[11px] font-bold text-slate-300 mb-1.5">
+                              شیفت اختصاصی (در حالت شیفت ثابت)
                             </label>
                             <select
                               id="fixed-shift-select"
-                              className={`w-full p-2 border rounded-xl text-xs bg-slate-950 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner cursor-pointer transition-colors ${
-                                shiftScheduleType === 'fixed' ? 'border-rose-500/40' : 'border-slate-800 opacity-60'
+                              className={`w-full px-3 py-2 border rounded-xl text-xs bg-slate-900 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer transition-colors ${
+                                shiftScheduleType === 'fixed' ? 'border-rose-500/40' : 'border-slate-800 opacity-50 cursor-not-allowed'
                               }`}
                               value={fixedShiftId}
                               onChange={(e) => setFixedShiftId(e.target.value)}
@@ -13839,52 +13883,68 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   ))}
                               </optgroup>
                             </select>
-                            <p className="text-[9px] text-slate-400 mt-1 px-0.5">
-                              {shiftScheduleType === 'fixed' 
-                                ? 'این شیفت به عنوان شیفت مبنای روزانه این پرسنل جهت محاسبات حقوق و حضور منظور می‌گردد.'
-                                : 'برای شیفت چرخشی، شیفت‌ها از جدول شیفت‌بندی روزهای هفته پرسنل فراخوانی می‌شوند.'}
+                            <p className="text-[9.5px] text-slate-400 mt-1">
+                              {shiftScheduleType === 'fixed'
+                                ? 'مبنای محاسبات حقوق و حضور روزانه این پرسنل خواهد بود.'
+                                : 'شیفت‌ها از جدول هفتگی شیفت‌بندی فراخوانی می‌شوند.'}
                             </p>
                           </div>
                         </div>
 
-                        {/* Salary and Allowance */}
-                        <div className="pt-1">
-                          <div>
-                            <label htmlFor="job-allowance-inp" className="block text-[11px] font-black text-emerald-400 mb-1 px-0.5 flex items-center gap-1">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                              فوق‌العاده شغلی ماهانه (ریال)
-                            </label>
-                            <input
-                              id="job-allowance-inp"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-emerald-950/60 rounded-xl text-xs bg-emerald-950/25 font-mono text-emerald-400 font-extrabold text-center focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 shadow-inner transition-all"
-                              placeholder="0"
-                              value={jobAllowance}
-                              onChange={(e) => handleRateInputChange(e.target.value, setJobAllowance)}
-                              onFocus={handleFocus}
-                            />
+                        <div>
+                          <label htmlFor="job-allowance-inp" className="block text-[11px] font-black text-emerald-400 mb-1.5 flex items-center gap-1.5">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                            فوق‌العاده شغلی ماهانه (ریال)
+                          </label>
+                          <input
+                            id="job-allowance-inp"
+                            type="text"
+                            className="w-full px-3 py-2.5 border border-emerald-500/30 rounded-xl text-xs bg-emerald-950/20 font-mono text-emerald-300 font-extrabold text-center focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                            placeholder="0"
+                            value={jobAllowance}
+                            onChange={(e) => handleRateInputChange(e.target.value, setJobAllowance)}
+                            onFocus={handleFocus}
+                          />
+                        </div>
+
+                        {/* تاریخ ورود به کار و تاریخ شروع پایه سنوات */}
+                        <div className="space-y-3 pt-2 border-t border-slate-800/80">
+                          <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl">
+                            {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (شمسی)', entryDate, handleEntryDateChange)}
+                          </div>
+
+                          <div className="bg-indigo-950/20 border border-indigo-500/30 p-3.5 rounded-xl space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-[10px] font-bold text-indigo-300">
+                                مبنای محاسبه پایه سنوات (در قراردادها و تسویه حساب)
+                              </span>
+                              {entryDate && seniorityBaseStartDate !== entryDate && (
+                                <button
+                                  type="button"
+                                  onClick={() => setSeniorityBaseStartDate(entryDate)}
+                                  className="text-[9.5px] font-bold text-indigo-300 hover:text-white bg-indigo-500/15 hover:bg-indigo-500/30 border border-indigo-500/30 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
+                                >
+                                  همگام‌سازی با تاریخ ورود ({toPersianDigits(entryDate)})
+                                </button>
+                              )}
+                            </div>
+                            {renderShamsiDatePicker('seniority-base-start-date', 'تاریخ شروع پایه سنوات (پیش‌فرض برابر با تاریخ ورود)', seniorityBaseStartDate, setSeniorityBaseStartDate)}
+                            <p className="text-[9.5px] text-slate-400 leading-relaxed">
+                              به صورت پیش‌فرض همگام با تاریخ ورود پرسنل تنظیم می‌شود؛ در صورت نیاز می‌توانید تاریخ متفاوتی برای شروع سابقه پایه سنوات ثبت نمایید.
+                            </p>
                           </div>
                         </div>
+                      </section>
 
-                        {/* Entry Date Picker */}
-                        <div className="bg-slate-950 border border-slate-800 p-3.5 rounded-xl shadow-inner text-slate-200">
-                          {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (انتخابگر شمسی)', entryDate, setEntryDate)}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Left Column (Sections 3, 4, 5, 6, 7) */}
-                    <div className="space-y-6">
-                      
-                      {/* === ۳. پوشش بیمه و ثبت ورود === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                          <span className="block text-xs font-black text-slate-100 flex items-center gap-2">
-                            <ShieldCheck className="h-4.5 w-4.5 text-rose-500" />
-                            ۳. پوشش بیمه و تاریخ ورود کارگاهی
-                          </span>
-                          
-                          <label className="flex items-center gap-1.5 text-[10.5px] font-black text-slate-200 cursor-pointer bg-slate-900 px-2 py-1 rounded-xl border border-slate-800 shadow-inner select-none hover:bg-slate-800">
+                      {/* === ۳. بیمه تأمین اجتماعی و بیمه تکمیلی درمان === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۳</span>
+                            <ShieldCheck className="h-4 w-4 text-rose-400" />
+                            بیمه تأمین اجتماعی و بیمه تکمیلی
+                          </h4>
+                          <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
                             <input
                               type="checkbox"
                               checked={hasInsurance}
@@ -13897,139 +13957,149 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   setBaseSalaryInsurance(pBaseSalary || 130000000);
                                 }
                               }}
-                              className="rounded text-rose-600 border-slate-700 bg-slate-950 focus:ring-rose-500 h-3.5 w-3.5"
+                              className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
                             />
-                            پوشش بیمه تامین اجتماعی فعال
+                            بیمه تأمین اجتماعی فعال
                           </label>
                         </div>
 
-                        {/* Contact details: phone and emergency */}
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label htmlFor="emp-mobile" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              تلفن همراه *
-                            </label>
-                            <input
-                              id="emp-mobile"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-                              value={newMobile}
-                              onChange={(e) => setNewMobile(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor="emergency-mobile" className="block text-[11px] font-extrabold text-slate-200 mb-1 flex items-center gap-1.5 px-0.5">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                              تلفن همراه اضطراری *
-                            </label>
-                            <input
-                              id="emergency-mobile"
-                              type="text"
-                              className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white font-bold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all"
-                              placeholder="۰۹#########"
-                              value={emergencyMobile}
-                              onChange={(e) => setEmergencyMobile(e.target.value)}
-                              onFocus={handleFocus}
-                            />
-                          </div>
-                        </div>
-
                         {hasInsurance ? (
-                          <div className="space-y-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800 shadow-inner animate-fade-in text-[11px]">
-                            <div>
-                              <label htmlFor="insurance-code-inp" className="block text-[10px] font-extrabold text-[#94a3b8] mb-1">کد بیمه تامین اجتماعی</label>
-                              <input
-                                id="insurance-code-inp"
-                                type="text"
-                                className="w-full px-2.5 py-1.5 border border-slate-800 rounded-lg text-xs bg-slate-900 font-mono text-white focus:outline-none focus:ring-1 focus:ring-rose-500"
-                                placeholder="مثلاً: 12345678"
-                                value={insuranceCode}
-                                onChange={(e) => setInsuranceCode(e.target.value)}
-                                onFocus={handleFocus}
-                              />
-                            </div>
-
-                            <div className="space-y-3">
-                              <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl shadow-inner text-slate-200">
-                                {renderShamsiDatePicker('insurance-date', 'تاریخ شروع بیمه تامین اجتماعی (انتخابگر شمسی)', insuranceDate, setInsuranceDate)}
+                          <div className="space-y-3.5 bg-slate-950/75 p-4 rounded-xl border border-slate-800">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                              <div>
+                                <label htmlFor="insurance-code-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
+                                  کد بیمه تأمین اجتماعی
+                                </label>
+                                <input
+                                  id="insurance-code-inp"
+                                  type="text"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold text-center focus:outline-none focus:border-rose-500"
+                                  placeholder="مثلاً: 12345678"
+                                  value={insuranceCode}
+                                  onChange={(e) => setInsuranceCode(e.target.value)}
+                                  onFocus={handleFocus}
+                                />
                               </div>
                               <div>
-                                <label htmlFor="ins-history-days-inp" className="block text-[11px] font-extrabold text-slate-200 mb-1">سابقه بیمه خارج از این کارگاه (روز)</label>
+                                <label htmlFor="ins-history-days-inp" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
+                                  سابقه بیمه خارج از کارگاه (روز)
+                                </label>
                                 <input
                                   id="ins-history-days-inp"
                                   type="number"
-                                  className="w-full px-3 py-2.5 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-white focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 shadow-inner transition-all font-bold text-center"
-                                  placeholder="مثلاً: 120"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold text-center focus:outline-none focus:border-rose-500"
+                                  placeholder="مثلاً: 730"
                                   value={insuranceHistoryDays || ''}
                                   onChange={(e) => setInsuranceHistoryDays(Number(e.target.value) || 0)}
                                 />
                               </div>
                             </div>
 
-                            {/* Breakdown premium scopes checkboxes */}
-                            <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 space-y-1.5 text-[10.5px]">
-                              <span className="block font-bold text-slate-200 mb-1">تعهدات پرداخت بیمه طرفین:</span>
-                              <div className="grid grid-cols-1 gap-1">
-                                <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-300 font-bold">
+                            <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl">
+                              {renderShamsiDatePicker('insurance-date', 'تاریخ شروع بیمه تأمین اجتماعی (شمسی)', insuranceDate, setInsuranceDate)}
+                            </div>
+
+                            <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 space-y-2">
+                              <span className="block text-[10.5px] font-bold text-slate-300">تعهدات پرداخت بیمه طرفین:</span>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10.5px]">
+                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
                                   <input
                                     type="checkbox"
                                     checked={isSubjectToEmployerPremium}
                                     onChange={(e) => setIsSubjectToEmployerPremium(e.target.checked)}
-                                    className="rounded text-rose-600 border-slate-755 bg-slate-950 focus:ring-rose-500 h-3.5 w-3.5"
+                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
                                   />
-                                  مشمول بیمه کارفرما (۲۳ درصد سهم کارگاه)
+                                  سهم کارفرما (۲۳٪)
                                 </label>
-                                <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-300 font-bold">
+                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
                                   <input
                                     type="checkbox"
                                     checked={isSubjectToUnemploymentPremium}
                                     onChange={(e) => setIsSubjectToUnemploymentPremium(e.target.checked)}
-                                    className="rounded text-rose-600 border-slate-755 bg-slate-950 focus:ring-rose-500 h-3.5 w-3.5"
+                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
                                   />
-                                  مشمول بیمه بیکاری (۳ درصد سهم کارفرما)
+                                  بیمه بیکاری (۳٪)
                                 </label>
-                                <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-300 font-bold">
+                                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-200 font-bold bg-slate-950/70 px-2.5 py-2 rounded-lg border border-slate-800/80">
                                   <input
                                     type="checkbox"
                                     checked={isSubjectToWorkerPremium}
                                     onChange={(e) => setIsSubjectToWorkerPremium(e.target.checked)}
-                                    className="rounded text-rose-600 border-slate-755 bg-slate-950 focus:ring-rose-500 h-3.5 w-3.5"
+                                    className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
                                   />
-                                  مشمول بیمه سهم کارگر (۷ درصد)
+                                  سهم کارگر (۷٪)
                                 </label>
                               </div>
                             </div>
                           </div>
-                        ) : null}
-                      </div>
+                        ) : (
+                          <div className="bg-slate-950/50 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
+                            پوشش بیمه تأمین اجتماعی برای این پرسنل غیرفعال است.
+                          </div>
+                        )}
 
-                      {/* === ۴. اطلاعات عائله‌مندی و اولاد === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <span className="block text-xs font-black text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-2">
-                          <Users className="h-4.5 w-4.5 text-rose-500" />
-                          ۴. اطلاعات عائله‌مندی و اولاد
-                        </span>
+                        {/* بخش بیمه تکمیلی درمان در همان کارت بیمه‌ها */}
+                        <div className="pt-3 border-t border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-black text-slate-200">پوشش بیمه تکمیلی درمان</span>
+                            <label className="flex items-center gap-2 text-[10.5px] font-bold text-slate-200 cursor-pointer bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 select-none hover:border-slate-700 transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={hasSupplementaryInsurance}
+                                onChange={(e) => setHasSupplementaryInsurance(e.target.checked)}
+                                className="rounded accent-rose-600 h-3.5 w-3.5 cursor-pointer"
+                              />
+                              بیمه تکمیلی فعال است
+                            </label>
+                          </div>
 
-                        {/* Question Gate: Has Children? */}
-                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800 shadow-inner">
-                          <span className="text-xs font-extrabold text-slate-200 flex items-center gap-1.5">
-                            <span className="h-1.5 w-1.5 rounded-full bg-slate-500"></span>
-                            پرسنل فرزند دارد؟
-                          </span>
-                          <div className="flex gap-1.5">
+                          {hasSupplementaryInsurance ? (
+                            <div className="space-y-3 bg-slate-950/75 p-3.5 rounded-xl border border-slate-800">
+                              <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl">
+                                {renderShamsiDatePicker('supp-ins-date', 'تاریخ شروع یا تمدید بیمه تکمیلی (شمسی)', supplementaryInsuranceDate, setSupplementaryInsuranceDate)}
+                              </div>
+                              <div>
+                                <label htmlFor="supp-premium" className="block text-[10.5px] font-bold text-slate-300 mb-1.5">
+                                  مبلغ کسر حق بیمه تکمیلی ماهانه (ریال)
+                                </label>
+                                <input
+                                  id="supp-premium"
+                                  type="text"
+                                  className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-teal-300 font-extrabold text-center focus:outline-none focus:border-rose-500"
+                                  value={supplementaryInsurancePremium}
+                                  onChange={(e) => setSupplementaryInsurancePremium(formatWithCommas(parseNumber(e.target.value)))}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="bg-slate-950/40 text-slate-400 rounded-xl p-3 text-[11px] text-center border border-dashed border-slate-800">
+                              بیمه تکمیلی درمان برای این پرسنل فعال نشده است.
+                            </div>
+                          )}
+                        </div>
+                      </section>
+                    </div>
+
+                    {/* ==================== ستون چپ: عائله‌مندی، حساب‌های بانکی، مدارک و سفته، ترک کار ==================== */}
+                    <div className="space-y-5">
+
+                      {/* === ۴. عائله‌مندی و اولاد === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۴</span>
+                            <Users className="h-4 w-4 text-rose-400" />
+                            اطلاعات عائله‌مندی و اولاد
+                          </h4>
+                          <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
                             <button
                               type="button"
                               onClick={() => setHasChildren(true)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                hasChildren 
-                                  ? 'bg-rose-600 text-white shadow-sm shadow-rose-600/15' 
-                                  : 'bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-850'
+                              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                                hasChildren ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
                               }`}
                             >
-                              بله (دارد)
+                              فرزند دارد
                             </button>
                             <button
                               type="button"
@@ -14037,51 +14107,44 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 setHasChildren(false);
                                 setChildrenList([]);
                               }}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                !hasChildren 
-                                  ? 'bg-rose-600 text-white shadow-sm shadow-rose-600/15' 
-                                  : 'bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-850'
+                              className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                                !hasChildren ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
                               }`}
                             >
-                              خیر (ندارد)
+                              ندارد
                             </button>
                           </div>
                         </div>
 
-                        {hasChildren && (
-                          <div className="space-y-3 pt-1 animate-fade-in">
+                        {hasChildren ? (
+                          <div className="space-y-3">
                             {childrenList.length > 0 ? (
-                              <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                              <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
                                 {childrenList.map((ch, idx) => {
-                                  // Determine eligibility based on both parent info and child criteria.
                                   const insDaysVal = Number(insuranceHistoryDays) || 0;
                                   const childEligible = ch.gender === 'دختر' || ch.age < 18 || (ch.gender === 'پسر' && ch.age >= 18 && !!ch.isStudent);
-                                  const fullyEligible = insDaysVal >= 730 && childEligible;
-
                                   let statusText = '';
                                   let statusColor = '';
                                   if (insDaysVal < 730) {
                                     statusText = 'غیرمشمول (سابقه بیمه کمتر از ۷۳۰ روز)';
-                                    statusColor = 'text-amber-500';
+                                    statusColor = 'text-amber-400';
                                   } else if (!childEligible) {
-                                    statusText = 'غیرمشمول (سن پسر غیراستاندارد/غیرمحصل)';
+                                    statusText = 'غیرمشمول (شرط سنی/تحصیلی)';
                                     statusColor = 'text-rose-400';
                                   } else {
-                                    statusText = 'مشمول دریافت حق اولاد';
-                                    statusColor = 'text-emerald-500';
+                                    statusText = 'مشمول حق اولاد';
+                                    statusColor = 'text-emerald-400';
                                   }
-
                                   return (
-                                    <div key={idx} className="flex justify-between items-center text-xs bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 shadow-inner font-bold">
-                                      <span className="text-slate-300 font-bold">
-                                        فرزند {idx + 1}: {ch.gender} | {ch.age} ساله | <span className={statusColor}>{statusText}</span>{ch.isStudent ? ' | محصل' : ''}
+                                    <div key={idx} className="flex justify-between items-center text-xs bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 font-bold">
+                                      <span className="text-slate-200">
+                                        فرزند {toPersianDigits(idx + 1)}: {ch.gender} | {toPersianDigits(ch.age)} ساله
+                                        {ch.isStudent ? ' | محصل' : ''} — <span className={statusColor}>{statusText}</span>
                                       </span>
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          setChildrenList(childrenList.filter((_, i) => i !== idx));
-                                        }}
-                                        className="text-rose-500 hover:text-rose-400 font-extrabold transition-colors px-1 text-xs cursor-pointer"
+                                        onClick={() => setChildrenList(childrenList.filter((_, i) => i !== idx))}
+                                        className="text-rose-400 hover:text-rose-300 font-extrabold px-1.5 text-[11px] cursor-pointer"
                                       >
                                         حذف
                                       </button>
@@ -14090,25 +14153,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 })}
                               </div>
                             ) : (
-                              <div className="text-center text-xs font-medium text-slate-400 bg-slate-950/40 py-3.5 rounded-xl border border-dashed border-slate-800 select-none">
-                                فرزندی برای این شخص ثبت نشده است. از بخش زیر اضافه کنید.
+                              <div className="text-center text-[11px] text-slate-400 bg-slate-950/50 py-3 rounded-xl border border-dashed border-slate-800">
+                                فرزندی ثبت نشده است. از فرم زیر اضافه کنید.
                               </div>
                             )}
 
-                            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 shadow-inner space-y-3 text-[11px]">
-                              <span className="block font-black text-slate-200 text-xs shadow-none">الحاق فرزند جدید:</span>
+                            <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                  <label className="block text-[10.5px] font-extrabold text-slate-350 mb-1">جنسیت فرزند</label>
+                                  <label className="block text-[10.5px] font-bold text-slate-300 mb-1">جنسیت فرزند</label>
                                   <select
-                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 cursor-pointer"
+                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
                                     value={childGender}
                                     onChange={(e) => {
                                       const val = e.target.value as 'پسر' | 'دختر';
                                       setChildGender(val);
-                                      if (val !== 'پسر') {
-                                        setChildIsStudent(false);
-                                      }
+                                      if (val !== 'پسر') setChildIsStudent(false);
                                     }}
                                   >
                                     <option value="پسر">پسر</option>
@@ -14116,10 +14176,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   </select>
                                 </div>
                                 <div>
-                                  <label className="block text-[10.5px] font-extrabold text-slate-350 mb-1">سن فرزند (سال)</label>
+                                  <label className="block text-[10.5px] font-bold text-slate-300 mb-1">سن فرزند (سال)</label>
                                   <input
                                     type="number"
-                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl font-mono bg-slate-900 text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500"
+                                    className="w-full text-xs p-2 border border-slate-800 rounded-xl font-mono bg-slate-900 text-white text-center font-bold focus:outline-none focus:border-rose-500"
                                     placeholder="مثلاً: ۵"
                                     value={childAge}
                                     onChange={(e) => setChildAge(e.target.value)}
@@ -14128,16 +14188,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               </div>
 
                               {childGender === 'پسر' && (
-                                <label className="flex items-center gap-2 cursor-pointer text-xs select-none text-slate-300 py-1 font-bold">
+                                <label className="flex items-center gap-2 cursor-pointer text-[11px] select-none text-slate-300 font-bold">
                                   <input
                                     type="checkbox"
                                     checked={childIsStudent}
-                                    onChange={(e) => {
-                                      setChildIsStudent(e.target.checked);
-                                    }}
-                                    className="rounded text-rose-600 border-slate-700 bg-slate-900 focus:ring-rose-500 h-3.5 w-3.5"
+                                    onChange={(e) => setChildIsStudent(e.target.checked)}
+                                    className="rounded accent-rose-600 h-3.5 w-3.5"
                                   />
-                                  فرزند پسر محصل است (مشمول دریافت حق اولاد در صورت انطباق سن)
+                                  فرزند پسر محصل است (مشمول حق اولاد بالای ۱۸ سال)
                                 </label>
                               )}
 
@@ -14160,347 +14218,277 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   setChildAge('');
                                   setChildIsStudent(false);
                                 }}
-                                className="w-full bg-slate-800 hover:bg-slate-750 text-white text-xs py-2 rounded-xl font-black transition-colors cursor-pointer shadow-sm border border-slate-750"
+                                className="w-full bg-slate-800 hover:bg-slate-700 text-white text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
                               >
-                                + الحاق فرزند به لیست
+                                + افزودن فرزند به لیست
                               </button>
                             </div>
                           </div>
+                        ) : (
+                          <div className="text-center text-[11px] text-slate-400 bg-slate-950/40 py-3 rounded-xl border border-dashed border-slate-800">
+                            در صورت داشتن فرزند، گزینه «فرزند دارد» را انتخاب کنید تا حق اولاد محاسبه شود.
+                          </div>
                         )}
-                      </div>
+                      </section>
 
-
-                  {/* ====== ۵. ثبت حساب‌های بانکی تسویه ====== */}
-                  <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                    <span className="block text-xs font-black text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-2">
-                      <CreditCard className="h-4.5 w-4.5 text-rose-500" />
-                      ۵. ثبت حساب‌های بانکی تسویه ({draftBankAccounts.length})
-                    </span>
-
-                    {draftBankAccounts.length > 0 && (
-                      <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
-                        {draftBankAccounts.map((b, idx) => (
-                          <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs relative shadow-inner">
-                            <span className="block font-black text-slate-200">
-                              بانک {b.bankName}
-                            </span>
-                            <div className="font-mono text-slate-400 text-[10.5px] mt-1 space-y-0.5" dir="ltr">
-                              <div>Account: {b.accountNo}</div>
-                              {b.shaba && <div>Shaba: IR{b.shaba.replace(/^IR/i, '')}</div>}
-                              {b.cardNo && <div>Card: {b.cardNo}</div>}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDraftBankAccounts(draftBankAccounts.filter((_, i) => i !== idx));
-                              }}
-                              className="absolute top-2.5 left-2.5 text-rose-500 hover:text-rose-400 font-extrabold text-[11px] transition-colors"
-                            >
-                              حذف
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 shadow-inner space-y-3 text-[11px]">
-                      <div className="grid grid-cols-1 gap-2.5">
-                        
-                        <div>
-                          <label className="block text-[10.5px] font-extrabold text-slate-350 mb-1">انتخاب بانک تسویه</label>
-                          <select
-                            className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 cursor-pointer"
-                            value={bankName}
-                            onChange={(e) => setBankName(e.target.value)}
-                          >
-                            <option value="" className="bg-slate-900">-- انتخاب بانک از لیست --</option>
-                            {activeBanks.map((bName) => (
-                              <option key={bName} value={bName} className="bg-slate-900">{bName}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Custom bank search and inline creation well */}
-                        <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800 text-[10.5px] space-y-2">
-                          <span className="block font-extrabold text-slate-300">افزودن بانک جدید به کارگاه:</span>
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              className="flex-grow text-xs px-2.5 py-1.5 border border-slate-800 rounded-lg bg-slate-950 text-white placeholder:text-slate-500"
-                              placeholder="نام بانک جدید، مثلاً رفاه"
-                              value={newBankNameInput}
-                              onChange={(e) => setNewBankNameInput(e.target.value)}
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                if (!newBankNameInput.trim()) return;
-                                const b = newBankNameInput.trim();
-                                if (activeBanks.includes(b)) {
-                                  alert('این بانک در لیست موجود است.');
-                                  return;
-                                }
-                                onUpdateDb({
-                                  ...db,
-                                  customBanks: [...(db.customBanks || []), b]
-                                });
-                                setBankName(b);
-                                setNewBankNameInput('');
-                              }}
-                              className="bg-slate-800 hover:bg-slate-750 border border-slate-750 text-white text-xs px-3 rounded-lg font-bold cursor-pointer transition-colors"
-                            >
-                              ثبت
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[10.5px] font-extrabold text-slate-355 mb-1 font-mono">شماره حساب</label>
-                          <input
-                            type="text"
-                            className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500"
-                            placeholder="شماره حساب بانکی"
-                            value={accountNo}
-                            onChange={(e) => setAccountNo(e.target.value)}
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[10.5px] font-extrabold text-slate-355 mb-1 font-mono">شماره شبا (IBAN)</label>
-                          <div className="flex rounded-xl shadow-xs overflow-hidden border border-slate-800 bg-slate-900" dir="ltr">
-                            <span className="inline-flex items-center px-3.5 bg-slate-950 text-slate-400 border-r border-slate-800 font-extrabold font-mono text-xs select-none">
-                              IR
-                            </span>
-                            <input
-                              type="text"
-                              className="w-full text-xs px-3 py-2 font-mono text-left bg-slate-900 text-white tracking-wider focus:outline-none font-bold"
-                              placeholder="24 رقمِ شبا بدون IR"
-                              value={shaba.replace(/^IR/i, '')}
-                              maxLength={24}
-                              onChange={(e) => {
-                                const val = e.target.value.replace(/\D/g, ''); // retain only numbers
-                                setShaba(val);
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[10.5px] font-extrabold text-slate-355 mb-1 font-mono">شماره کارت (۱۶ رقمی)</label>
-                          <input
-                            type="text"
-                            maxLength={19}
-                            className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/10"
-                            placeholder="xxxx-xxxx-xxxx-xxxx"
-                            value={cardNo}
-                            onChange={(e) => {
-                              // Auto insert hyphen every 4 digit blocks
-                              let val = e.target.value.replace(/\D/g, '');
-                              if (val.length > 16) val = val.substring(0, 16);
-                              const blocks = val.match(/.{1,4}/g);
-                              setCardNo(blocks ? blocks.join('-') : val);
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={handleAddDraftBankAccount}
-                        className="w-full bg-slate-800 hover:bg-slate-750 text-white text-xs py-2 rounded-xl font-black shadow-sm transition-colors mt-2 cursor-pointer border border-slate-750"
-                      >
-                        + الحاق این حساب به لیست
-                      </button>
-                    </div>
-                  </div>
-
-                      {/* === ۶. وضعیت مدارک پرونده و اطلاعات سفته === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <span className="block text-xs font-black text-slate-100 border-b border-slate-800 pb-2.5 flex items-center gap-2">
-                          <CheckSquare className="h-4.5 w-4.5 text-rose-500" />
-                          ۶. وضعیت مدارک پرونده و اطلاعات سفته
-                        </span>
-
-                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 shadow-inner">
-                          <span className="block font-black text-slate-200 text-[11px]">تحویل مدارک پرسنلی:</span>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasNationalCardCopy}
-                                onChange={(e) => setHasNationalCardCopy(e.target.checked)}
-                                className="rounded text-rose-500 border-slate-800 bg-slate-900 focus:ring-rose-500 h-4 w-4 cursor-pointer"
-                              />
-                              کپی کارت ملی
-                            </label>
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasBirthCertificatePagesCopy}
-                                onChange={(e) => setHasBirthCertificatePagesCopy(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-500 h-4 w-4 cursor-pointer"
-                              />
-                              کپی شناسنامه (صفحه ۱ و ۲)
-                            </label>
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasPhoto}
-                                onChange={(e) => setHasPhoto(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-500 h-4 w-4 cursor-pointer"
-                              />
-                              یک قطعه عکس جدید
-                            </label>
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasSocialSecurityRegistrationForm}
-                                onChange={(e) => setHasSocialSecurityRegistrationForm(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-505 h-4 w-4 cursor-pointer"
-                              />
-                              فرم ثبت‌نام تامین اجتماعی
-                            </label>
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasPromissoryNote}
-                                onChange={(e) => setHasPromissoryNote(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-505 h-4 w-4 cursor-pointer"
-                              />
-                              سفته ضمانت
-                            </label>
-                            <label className="flex items-center gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasHealthCard}
-                                onChange={(e) => setHasHealthCard(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-505 h-4 w-4 cursor-pointer"
-                              />
-                              کارت بهداشت معتبر
-                            </label>
-                            <label className="flex items-center sm:col-span-2 gap-2.5 cursor-pointer select-none text-slate-300 font-bold hover:text-slate-100 transition-colors">
-                              <input
-                                type="checkbox"
-                                checked={hasPreEmploymentExam}
-                                onChange={(e) => setHasPreEmploymentExam(e.target.checked)}
-                                className="rounded text-rose-505 border-slate-800 bg-slate-900 focus:ring-rose-505 h-4 w-4 cursor-pointer"
-                              />
-                              معاینات پزشکی پیش از استخدام طب کار
-                            </label>
-                          </div>
-                        </div>
-
-                        {/* Promissory Note parameters */}
-                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 shadow-inner">
-                          <span className="block font-black text-slate-200 text-[11px] flex items-center justify-between">
-                            <span>مشخصات سفته تحویلی:</span>
-                            {!hasPromissoryNote && <span className="text-[10px] text-amber-500 font-bold">(سفته تحویل داده نشده است)</span>}
+                      {/* === ۵. حساب‌های بانکی تسویه === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۵</span>
+                            <CreditCard className="h-4 w-4 text-rose-400" />
+                            حساب‌های بانکی تسویه
+                          </h4>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-800">
+                            {toPersianDigits(draftBankAccounts.length)} حساب ثبت‌شده
                           </span>
-                          
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        </div>
+
+                        {draftBankAccounts.length > 0 && (
+                          <div className="space-y-2 max-h-36 overflow-y-auto pl-1">
+                            {draftBankAccounts.map((b, idx) => (
+                              <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs flex items-start justify-between gap-2">
+                                <div>
+                                  <span className="block font-black text-slate-100">بانک {b.bankName}</span>
+                                  <div className="font-mono text-slate-400 text-[10.5px] mt-1 space-y-0.5" dir="ltr">
+                                    {b.accountNo && <div>Acc: {b.accountNo}</div>}
+                                    {b.shaba && <div>IR{b.shaba.replace(/^IR/i, '')}</div>}
+                                    {b.cardNo && <div>Card: {b.cardNo}</div>}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setDraftBankAccounts(draftBankAccounts.filter((_, i) => i !== idx))}
+                                  className="text-rose-400 hover:text-rose-300 font-bold text-[11px] px-2 py-1 rounded-lg hover:bg-rose-950/40 transition-colors cursor-pointer"
+                                >
+                                  حذف
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                              <label htmlFor="promissory-no" className="block text-[10px] font-extrabold text-slate-400 mb-1">شماره سفته</label>
+                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">انتخاب بانک</label>
+                              <select
+                                className="w-full text-xs p-2 border border-slate-800 rounded-xl bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
+                                value={bankName}
+                                onChange={(e) => setBankName(e.target.value)}
+                              >
+                                <option value="">-- انتخاب بانک --</option>
+                                {activeBanks.map((bName) => (
+                                  <option key={bName} value={bName}>{bName}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">افزودن بانک جدید</label>
+                              <div className="flex gap-1.5">
+                                <input
+                                  type="text"
+                                  className="flex-1 min-w-0 text-xs px-2.5 py-2 border border-slate-800 rounded-xl bg-slate-900 text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
+                                  placeholder="نام بانک..."
+                                  value={newBankNameInput}
+                                  onChange={(e) => setNewBankNameInput(e.target.value)}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!newBankNameInput.trim()) return;
+                                    const b = newBankNameInput.trim();
+                                    if (activeBanks.includes(b)) {
+                                      alert('این بانک در لیست موجود است.');
+                                      return;
+                                    }
+                                    onUpdateDb({
+                                      ...db,
+                                      customBanks: [...(db.customBanks || []), b]
+                                    });
+                                    setBankName(b);
+                                    setNewBankNameInput('');
+                                  }}
+                                  className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] px-3 rounded-xl font-bold cursor-pointer transition-colors shrink-0"
+                                >
+                                  ثبت
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره حساب</label>
+                              <input
+                                type="text"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:border-rose-500"
+                                placeholder="شماره حساب"
+                                value={accountNo}
+                                onChange={(e) => setAccountNo(e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره کارت (۱۶ رقمی)</label>
+                              <input
+                                type="text"
+                                maxLength={19}
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white text-center font-bold focus:outline-none focus:border-rose-500"
+                                placeholder="xxxx-xxxx-xxxx-xxxx"
+                                value={cardNo}
+                                onChange={(e) => {
+                                  let val = e.target.value.replace(/\D/g, '');
+                                  if (val.length > 16) val = val.substring(0, 16);
+                                  const blocks = val.match(/.{1,4}/g);
+                                  setCardNo(blocks ? blocks.join('-') : val);
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10.5px] font-bold text-slate-300 mb-1">شماره شبا (IBAN)</label>
+                            <div className="flex rounded-xl overflow-hidden border border-slate-800 bg-slate-900 focus-within:border-rose-500" dir="ltr">
+                              <span className="inline-flex items-center px-3 bg-slate-950 text-slate-400 border-r border-slate-800 font-extrabold font-mono text-xs select-none">
+                                IR
+                              </span>
+                              <input
+                                type="text"
+                                className="w-full text-xs px-3 py-2 font-mono text-left bg-slate-900 text-white tracking-wider focus:outline-none font-bold"
+                                placeholder="24 رقم شبا بدون IR"
+                                value={shaba.replace(/^IR/i, '')}
+                                maxLength={24}
+                                onChange={(e) => {
+                                  const val = e.target.value.replace(/\D/g, '');
+                                  setShaba(val);
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={handleAddDraftBankAccount}
+                            className="w-full bg-slate-800 hover:bg-slate-700 text-white text-xs py-2 rounded-xl font-bold transition-colors cursor-pointer border border-slate-700"
+                          >
+                            + افزودن حساب بانکی به پرونده
+                          </button>
+                        </div>
+                      </section>
+
+                      {/* === ۶. وضعیت مدارک پرونده و ضمانت (سفته) === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۶</span>
+                            <CheckSquare className="h-4 w-4 text-rose-400" />
+                            مدارک پرونده و ضمانت (سفته)
+                          </h4>
+                        </div>
+
+                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                          <span className="block font-bold text-slate-300 text-[10.5px]">چک‌لیست مدارک تحویلی:</span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                            {[
+                              { checked: hasNationalCardCopy, setter: setHasNationalCardCopy, label: 'کپی کارت ملی' },
+                              { checked: hasBirthCertificatePagesCopy, setter: setHasBirthCertificatePagesCopy, label: 'کپی شناسنامه (صفحه ۱ و ۲)' },
+                              { checked: hasPhoto, setter: setHasPhoto, label: 'یک قطعه عکس جدید' },
+                              { checked: hasSocialSecurityRegistrationForm, setter: setHasSocialSecurityRegistrationForm, label: 'فرم ثبت‌نام تأمین اجتماعی' },
+                              { checked: hasPromissoryNote, setter: setHasPromissoryNote, label: 'سفته ضمانت' },
+                              { checked: hasHealthCard, setter: setHasHealthCard, label: 'کارت بهداشت معتبر' },
+                              { checked: hasPreEmploymentExam, setter: setHasPreEmploymentExam, label: 'معاینات پزشکی طب کار', full: true }
+                            ].map((doc, idx) => (
+                              <label
+                                key={idx}
+                                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg border cursor-pointer select-none font-bold transition-colors ${
+                                  doc.full ? 'sm:col-span-2' : ''
+                                } ${
+                                  doc.checked
+                                    ? 'bg-emerald-950/25 border-emerald-500/30 text-emerald-200'
+                                    : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={doc.checked}
+                                  onChange={(e) => doc.setter(e.target.checked)}
+                                  className="rounded accent-emerald-500 h-3.5 w-3.5 cursor-pointer"
+                                />
+                                {doc.label}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* مشخصات سفته */}
+                        <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-300 text-[10.5px]">مشخصات سفته ضمانت:</span>
+                            {!hasPromissoryNote && (
+                              <span className="text-[10px] text-amber-400 font-bold">سفته تحویل نشده</span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label htmlFor="promissory-no" className="block text-[10px] font-bold text-slate-400 mb-1">شماره سریال سفته</label>
                               <input
                                 id="promissory-no"
                                 type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 font-bold"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-white font-bold focus:outline-none focus:border-rose-500"
                                 placeholder="کد سریال سفته"
                                 value={promissoryNoteNumber}
                                 onChange={(e) => setPromissoryNoteNumber(e.target.value)}
                               />
                             </div>
                             <div>
-                              <label htmlFor="promissory-issuer" className="block text-[10px] font-extrabold text-slate-400 mb-1">نام صادرکننده سفته</label>
+                              <label htmlFor="promissory-issuer" className="block text-[10px] font-bold text-slate-400 mb-1">صادرکننده سفته</label>
                               <input
                                 id="promissory-issuer"
                                 type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-white focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500 font-bold"
-                                placeholder="نام و نام خانوادگی صادرکننده"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 text-white font-bold focus:outline-none focus:border-rose-500"
+                                placeholder="نام و نام خانوادگی"
                                 value={promissoryNoteIssuerName}
                                 onChange={(e) => setPromissoryNoteIssuerName(e.target.value)}
                               />
                             </div>
                             <div className="sm:col-span-2">
-                              <label htmlFor="promissory-amt" className="block text-[10px] font-extrabold text-slate-400 mb-1">مبلغ وجه ضمانت سفته (ریال)</label>
+                              <label htmlFor="promissory-amt" className="block text-[10px] font-bold text-slate-400 mb-1">مبلغ وجه ضمانت سفته (ریال)</label>
                               <input
                                 id="promissory-amt"
                                 type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-emerald-400 font-extrabold text-right focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-emerald-300 font-extrabold text-center focus:outline-none focus:border-rose-500"
                                 value={promissoryNoteAmount}
                                 onChange={(e) => setPromissoryNoteAmount(formatWithCommas(parseNumber(e.target.value)))}
                               />
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </section>
 
-                      {/* === ۷. جزئیات بیمه تکمیلی === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                          <span className="block text-xs font-black text-slate-100 flex items-center gap-2">
-                            <ShieldCheck className="h-4.5 w-4.5 text-[#e11d48]" />
-                            ۷. پوشش بیمه تکمیلی درمان
-                          </span>
-
-                          <label className="flex items-center gap-1.5 text-[10.5px] font-black text-slate-200 cursor-pointer bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 shadow-inner select-none hover:bg-slate-900 hover:text-white transition-all">
-                            <input
-                              type="checkbox"
-                              checked={hasSupplementaryInsurance}
-                              onChange={(e) => setHasSupplementaryInsurance(e.target.checked)}
-                              className="rounded text-rose-500 border-slate-800 bg-slate-900 focus:ring-rose-500 h-3.5 w-3.5 cursor-pointer"
-                            />
-                            بیمه تکمیلی فعال است
-                          </label>
-                        </div>
-
-                        {hasSupplementaryInsurance ? (
-                          <div className="space-y-3.5 bg-slate-950 p-4 rounded-xl border border-slate-800 shadow-inner animate-fade-in text-[11px]">
-                            <div>
-                              {renderShamsiDatePicker('supp-ins-date', 'تاریخ شروع یا تمدید بیمه تکمیلی (انتخابگر شمسی)', supplementaryInsuranceDate, setSupplementaryInsuranceDate)}
-                            </div>
-                            <div>
-                              <label htmlFor="supp-premium" className="block text-[10px] font-extrabold text-slate-400 mb-1">مبلغ کسر حق بیمه تکمیلی ماهیانه (ریال)</label>
-                              <input
-                                id="supp-premium"
-                                type="text"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-900 font-mono text-teal-400 font-extrabold text-right focus:outline-none focus:ring-2 focus:ring-rose-500/10 focus:border-rose-500"
-                                value={supplementaryInsurancePremium}
-                                onChange={(e) => setSupplementaryInsurancePremium(formatWithCommas(parseNumber(e.target.value)))}
-                              />
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-slate-950/40 text-slate-400 rounded-xl p-3.5 text-xs text-center border border-dashed border-slate-800 select-none">
-                            موردی برای بیمه تکمیلی این شخص فعال نشده است.
-                          </div>
-                        )}
-                      </div>
-
-                      {/* === ۸. ثبت و مدیریت ترک کار پرسنل === */}
-                      <div className="bg-slate-900/60 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-inner">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                          <span className="block text-xs font-black text-slate-100 flex items-center gap-2">
-                            <UserMinus className="h-4.5 w-4.5 text-rose-500" />
-                            ۸. ثبت و مدیریت ترک کار پرسنل
-                          </span>
-
+                      {/* === ۷. مدیریت و ثبت ترک کار پرسنل === */}
+                      <section className="bg-slate-900/75 p-5 rounded-2xl border border-slate-800 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                          <h4 className="text-xs font-black text-slate-100 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center h-6 w-6 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[11px] font-black">۷</span>
+                            <UserMinus className="h-4 w-4 text-rose-400" />
+                            ثبت و مدیریت ترک کار
+                          </h4>
                           {departureDate ? (
-                            <span className="text-[10px] font-black bg-rose-950/80 text-rose-300 border border-rose-800/80 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                              <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-ping"></span>
-                              ترک کار ثبت شده
+                            <span className="text-[10px] font-bold bg-rose-950/90 text-rose-300 border border-rose-800/80 px-2.5 py-0.5 rounded-lg">
+                              ترک کار ثبت‌شده
                             </span>
                           ) : (
-                            <span className="text-[10px] font-black bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 px-2.5 py-0.5 rounded-full">
+                            <span className="text-[10px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800/70 px-2.5 py-0.5 rounded-lg">
                               شاغل فعال
                             </span>
                           )}
                         </div>
 
-                        <div className="space-y-4 text-[11px]">
-                          <div>
+                        <div className="space-y-3.5">
+                          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-xl">
                             {renderShamsiDatePicker(
                               'departure-date',
-                              'تاریخ ترک کار پرسنل (انتخابگر شمسی)',
+                              'تاریخ ترک کار پرسنل (شمسی)',
                               departureDate,
                               (val) => {
                                 setDepartureDate(val);
@@ -14513,15 +14501,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                              <label htmlFor="departure-date-manual" className="block text-[10px] font-extrabold text-slate-400 mb-1">
-                                درج دستی تاریخ ترک کار (YYYY/MM/DD)
+                              <label htmlFor="departure-date-manual" className="block text-[10px] font-bold text-slate-400 mb-1">
+                                درج دستی تاریخ (YYYY/MM/DD)
                               </label>
                               <input
                                 id="departure-date-manual"
                                 type="text"
                                 dir="ltr"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-rose-400 font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all placeholder:text-slate-600"
-                                placeholder="مثلاً: 1405/04/15"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 font-mono text-rose-400 font-bold text-center focus:outline-none focus:border-rose-500 placeholder:text-slate-600"
+                                placeholder="1405/04/15"
                                 value={departureDate}
                                 onChange={(e) => {
                                   const val = e.target.value;
@@ -14532,14 +14520,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 }}
                               />
                             </div>
-
                             <div>
-                              <label htmlFor="departure-reason-sel" className="block text-[10px] font-extrabold text-slate-400 mb-1">
-                                علت / نوع ترک کار
+                              <label htmlFor="departure-reason-sel" className="block text-[10px] font-bold text-slate-400 mb-1">
+                                علت ترک کار
                               </label>
                               <select
                                 id="departure-reason-sel"
-                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-slate-200 font-extrabold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                                className="w-full px-3 py-2 border border-slate-800 rounded-xl text-xs bg-slate-950 text-slate-200 font-bold focus:outline-none focus:border-rose-500"
                                 value={departureReason}
                                 onChange={(e) => setDepartureReason(e.target.value)}
                               >
@@ -14560,7 +14547,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           {departureDate ? (
                             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3 bg-rose-950/40 border border-rose-900/50 rounded-xl">
                               <span className="text-[10.5px] text-rose-200 leading-relaxed">
-                                پرسنل در تاریخ <strong className="font-mono text-rose-400">{toPersianDigits(departureDate)}</strong> ترک کار کرده است. پرونده پرسنل <strong>غیرفعال</strong> شد و از <strong>ماه بعد</strong> از این تاریخ در گردش حقوق و دستمزد و حضور و غیاب نمایش داده نخواهد شد.
+                                پرسنل در تاریخ <strong className="font-mono text-rose-300">{toPersianDigits(departureDate)}</strong> ترک کار کرده و از ماه بعد در لیست حقوق و تردد نمایش داده نمی‌شود.
                               </span>
                               <button
                                 type="button"
@@ -14569,35 +14556,39 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   setDepartureReason('استعفا');
                                   setIsActive(true);
                                 }}
-                                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[10px] font-extrabold shrink-0 transition-colors cursor-pointer"
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 rounded-lg text-[10px] font-bold shrink-0 transition-colors cursor-pointer"
                               >
                                 لغو ترک کار و فعال‌سازی
                               </button>
                             </div>
                           ) : (
-                            <div className="p-3 bg-slate-950/60 border border-dashed border-slate-800 rounded-xl text-[10.5px] text-slate-400 leading-relaxed">
-                              💡 در صورتی که این پرسنل کارگاه را ترک کرده است، تاریخ ترک کار او را ثبت کنید. پرسنل از ماه بعد از این تاریخ در گردش حقوق و دستمزد و حضور و غیاب نمایش داده نمی‌شود. اطلاعات ماه‌های قبلی بدون تغییر حفظ خواهند ماند.
+                            <div className="p-3 bg-slate-950/50 border border-dashed border-slate-800 rounded-xl text-[10.5px] text-slate-400 leading-relaxed">
+                              در صورت ثبت تاریخ ترک کار، پرسنل از ماه بعد در گردش حقوق و تردد لحاظ نمی‌شود و سوابق ماه‌های قبل حفظ می‌گردد.
                             </div>
                           )}
                         </div>
-                      </div>
+                      </section>
+                    </div>
+                  </div>
 
-                    </div> {/* End Left Column */}
-                  </div> {/* End Grid */}
-
-                  <div className="flex gap-2 pt-4 border-t border-slate-155 mt-4">
-                    <button type="submit" className="flex-grow bg-rose-600 hover:bg-rose-700 text-white text-xs font-black py-2.5 rounded-xl transition-all shadow-md shadow-rose-600/10 cursor-pointer">
-                      {editingEmp ? 'ذخیره اصلاحات پرونده پرسنلی' : 'ثبت قطعی پرسنل در آرشیو خط'}
+                  {/* نوار اقدام پایین فرم */}
+                  <div className="flex flex-wrap items-center justify-end gap-3 pt-4 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetForm();
+                        setIsPersonnelFormOpen(false);
+                      }}
+                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      انصراف و بازگشت
                     </button>
-                    {editingEmp && (
-                      <button
-                        type="button"
-                        onClick={() => resetForm()}
-                        className="px-4 border border-slate-350 text-slate-700 rounded-xl text-xs bg-white hover:bg-slate-100 transition-colors font-bold cursor-pointer"
-                      >
-                        لغو اصلاح
-                      </button>
-                    )}
+                    <button
+                      type="submit"
+                      className="flex-1 sm:flex-none sm:min-w-[240px] bg-rose-600 hover:bg-rose-700 text-white text-xs font-black py-2.5 px-6 rounded-xl transition-all shadow-md shadow-rose-600/20 cursor-pointer"
+                    >
+                      {editingEmp ? 'ذخیره اصلاحات پرونده پرسنلی' : 'ثبت قطعی پرونده پرسنل'}
+                    </button>
                   </div>
                 </form>
               </div>
@@ -19590,8 +19581,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     if (!conStartDate || !matchedEmp) return null;
                     const startYear = getJalaliYear(conStartDate);
                     if (!startYear) return null;
-                    const insDate = matchedEmp.insuranceDate || matchedEmp.entryDate || conStartDate;
-                    const diffDate = getJalaliDateDifference(insDate, conStartDate);
+                    const senStartDate = resolvePersonnelSeniorityStartDate(matchedEmp, conStartDate);
+                    const diffDate = getJalaliDateDifference(senStartDate, conStartDate);
                     if (!diffDate) return null;
 
                     let seniorityYearsCount = 0;
@@ -19611,14 +19602,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     
                     return (
                       <div className="col-span-2 bg-[#e11d48]/5 border border-[#e11d48]/20 p-3.5 rounded-xl space-y-1.5 mt-1 text-xs text-right font-sans">
-                        <div className="flex justify-between items-center text-[10.5px] font-black text-rose-450 border-b border-rose-950/20 pb-1.5 mb-1">
+                        <div className="flex justify-between items-center text-[10.5px] font-black text-rose-400 border-b border-rose-950/20 pb-1.5 mb-1">
                           <span>محاسبه سابقه و پایه سنوات قرارداد (زنده):</span>
-                          <span className="font-mono text-[9px] text-slate-400">تاریخ مبنای شروع بیمه: {toPersianDigits(insDate)}</span>
+                          <span className="font-mono text-[9px] text-slate-400">تاریخ شروع پایه سنوات: {toPersianDigits(senStartDate)}</span>
                         </div>
                         <div className="text-slate-300 text-[10.5px] leading-normal">
-                          سابقه پرسنل از شروع بیمه تا قرارداد: <strong className="text-white font-extrabold">{toPersianDigits(formatJalaliDifference(diffDate))}</strong> 
+                          سابقه پرسنل از تاریخ شروع پایه سنوات تا قرارداد: <strong className="text-white font-extrabold">{toPersianDigits(formatJalaliDifference(diffDate))}</strong> 
                           {seniorityYearsCount > 0 ? (
-                            <span> (مشمول <strong className="text-rose-455 font-black">{toPersianDigits(seniorityYearsCount)} سال کامل</strong> پایه سنوات)</span>
+                            <span> (مشمول <strong className="text-rose-400 font-black">{toPersianDigits(seniorityYearsCount)} سال کامل</strong> پایه سنوات)</span>
                           ) : (
                             <span> (فاقد سابقه سال کامل مشمول)</span>
                           )}
@@ -19725,8 +19716,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             return { years: Math.max(0, dy), months: Math.max(0, dm), days: Math.max(0, dd) };
                           };
 
-                          const insuranceStartStr = selectedEmployee?.insuranceDate || selectedEmployee?.entryDate || conStartDate;
-                          const diff = getJalaliDateDifferenceHelperLocal(insuranceStartStr, conStartDate);
+                          const seniorityStartStr = resolvePersonnelSeniorityStartDate(selectedEmployee, conStartDate);
+                          const diff = getJalaliDateDifferenceHelperLocal(seniorityStartStr, conStartDate);
                           let seniorityYears = 0;
                           if (diff) {
                             const isMoreThanOneYear = diff.years > 1 || (diff.years === 1 && (diff.months > 0 || diff.days > 0));
@@ -20211,8 +20202,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                   // Dynamically calculate the seniority base from seniorityRateRules using conStartDate and child's seniority
                   const tStartDate = conStartDate || selectedEmployee.contractStartDate || selectedEmployee.entryDate || '';
-                  const insuranceStartDate = selectedEmployee.insuranceDate || selectedEmployee.entryDate || tStartDate;
-                  const tDiff = getJalaliDateDifference(insuranceStartDate, tStartDate);
+                  const seniorityStartDateRef = resolvePersonnelSeniorityStartDate(selectedEmployee, tStartDate);
+                  const tDiff = getJalaliDateDifference(seniorityStartDateRef, tStartDate);
                   let tempSeniorityYears = 0;
                   if (tDiff) {
                     const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
@@ -21040,9 +21031,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           ? contractModalContractData.calculatedMonthlyEidi
           : Math.round((calBaseSalary * 2) / 12);
 
-        // Dynamic seniority calculation based on work history from insurance start to contract start date
-        const insuranceStartStr = contractModalEmployee.insuranceDate || contractModalEmployee.entryDate || displayStartDate;
-        const diff = getJalaliDateDifference(insuranceStartStr, displayStartDate);
+        // Dynamic seniority calculation based on work history from seniority base start date to contract start date
+        const seniorityStartStr = resolvePersonnelSeniorityStartDate(contractModalEmployee, displayStartDate);
+        const diff = getJalaliDateDifference(seniorityStartStr, displayStartDate);
         
         let seniorityYears = 0;
         if (diff) {
@@ -21507,7 +21498,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             const mainBank = contractModalEmployee.bankAccounts && contractModalEmployee.bankAccounts.length > 0 ? contractModalEmployee.bankAccounts[0] : null;
                             return mainBank ? ` و شماره حساب بانکی تسویه حساب: بانک ${mainBank.bankName} به شماره حساب ${toPersianDigits(mainBank.accountNo)}${mainBank.shaba ? ` و شبا IR${toPersianDigits(mainBank.shaba)}` : ''}` : '';
                           })(),
-                          insuranceHistory: insuranceStartStr ? ` (سابقه کار مسجل بیمه از تاریخ ${toPersianDigits(insuranceStartStr)} لغایت شروع قرارداد: ${toPersianDigits(formatJalaliDifference(diff))})` : '',
+                          insuranceHistory: seniorityStartStr ? ` (سابقه کار مبنای پایه سنوات از تاریخ ${toPersianDigits(seniorityStartStr)} لغایت شروع قرارداد: ${toPersianDigits(formatJalaliDifference(diff))})` : '',
                           maritalStatus: maritalStatusLabel,
                           eligibleChildrenCount: hasChildrenCount,
                           nonEligibleChildrenCount,

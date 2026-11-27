@@ -1653,7 +1653,7 @@ export default function PersonnelSettlementTab({
           if (emp?.yearsBase && emp.yearsBase > 0) {
             return emp.yearsBase > 500000 ? Number(emp.yearsBase) : Math.round(Number(emp.yearsBase) * 30);
           }
-          const insStart = parseJalali(emp?.insuranceDate || emp?.entryDate || '');
+          const insStart = parseJalali(emp?.seniorityBaseStartDate || emp?.entryDate || emp?.insuranceDate || '');
           const refDateParsed = parseJalali(con?.contractStartDate || buyoutLookupDate || '');
           if (insStart && refDateParsed) {
             const totalMonthsDiff = (refDateParsed.y - insStart.y) * 12 + (refDateParsed.m - insStart.m) + (refDateParsed.d >= insStart.d ? 0 : -1);
