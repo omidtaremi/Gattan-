@@ -37,8 +37,10 @@ import {
   isDepartedOrSettlingInMonth,
   normalizeMonthlyLeaveHMInput,
   ProvisionalSettlementPreview,
+  resolveAgreedTargetRegularNetForMonth,
   resolveDepartedMonthAttendancePerf,
-  resolveMonthlyInsuranceEligibility
+  resolveMonthlyInsuranceEligibility,
+  solveMonthlyJobAllowanceForAgreedNet
 } from '../utils/payrollSettlementSync';
 import {
   getPeriodPayrollRules,
@@ -4743,6 +4745,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       return {
         employee: emp,
+        empContract,
         hasContract: Boolean(empContract),
         empContractDailyInsForTax: staticTaxDailyInsRate,
         isTaxingConfigured,
@@ -5070,11 +5073,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const computedSeniorityBase = Math.round((b.contractSeniorityBaseValue / 30) * userWorkDaysCount);
       const monthlyYearsBenefit = Math.round((b.contractBaseMonthlySalary / 365) * userWorkDaysCount);
       const monthlyEidi = Math.round(((b.contractBaseMonthlySalary * 2) / 365) * userWorkDaysCount);
-      const computedJobAllowance = td > 0 ? Math.round((b.calJobAllowance / td) * userWorkDaysCount) : 0;
-
-      const grossBaseSalaryCalculated = monthlyBaseSalaryCalculated + computedFoodAllowance + computedHousingAllowance + childAllowance + marriageAllowance + computedSeniorityBase + monthlyEidi + monthlyYearsBenefit + computedJobAllowance;
-      const totalHolidayWorkPay = holidayWorkPay;
-      const totalGrossWithAdditions = grossBaseSalaryCalculated + overtimePay + fridayWorkPay + totalHolidayWorkPay;
 
       const dailySeniorityRateVal = b.contractSeniorityBaseValue > 0
         ? Math.round(b.contractSeniorityBaseValue / 30)
@@ -5092,16 +5090,73 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const insFoodAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractFoodAllowanceValue / td) * userInsuranceDaysCount) : 0;
       const insChildAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractChildAllowanceValue / td) * userInsuranceDaysCount) : 0;
       const insMarriageAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.contractMarriageAllowanceValue / td) * userInsuranceDaysCount) : 0;
-      const insJobAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.calJobAllowance / td) * userInsuranceDaysCount) : 0;
 
-      let insuranceMonthlyBenefits = 0;
+      let staticInsuranceBenefitsWithoutJob = 0;
       if (hasActiveInsuranceDays) {
-        if (b.insHousingSelected) insuranceMonthlyBenefits += insHousingAllowance;
-        if (b.insFoodSelected) insuranceMonthlyBenefits += insFoodAllowance;
-        if (b.insChildSelected) insuranceMonthlyBenefits += insChildAllowance;
-        if (b.insMarriageSelected) insuranceMonthlyBenefits += insMarriageAllowance;
-        if (b.insJobSelected) insuranceMonthlyBenefits += insJobAllowance;
+        if (b.insHousingSelected) staticInsuranceBenefitsWithoutJob += insHousingAllowance;
+        if (b.insFoodSelected) staticInsuranceBenefitsWithoutJob += insFoodAllowance;
+        if (b.insChildSelected) staticInsuranceBenefitsWithoutJob += insChildAllowance;
+        if (b.insMarriageSelected) staticInsuranceBenefitsWithoutJob += insMarriageAllowance;
       }
+
+      let staticRegularTaxBaseUser = 0;
+      if (b.hasContract) {
+        if (b.taxDailyInsSelected) {
+          staticRegularTaxBaseUser += Math.round(b.empContractDailyInsForTax * userWorkDaysCount);
+        } else if (b.taxDailyBaseSelected) {
+          staticRegularTaxBaseUser += monthlyBaseSalaryCalculated;
+        }
+        if (b.taxHousingSelected) staticRegularTaxBaseUser += computedHousingAllowance;
+        if (b.taxFoodSelected) staticRegularTaxBaseUser += computedFoodAllowance;
+        if (b.taxChildSelected) staticRegularTaxBaseUser += childAllowance;
+        if (b.taxMarriageSelected) staticRegularTaxBaseUser += marriageAllowance;
+        if (b.taxSenioritySelected) staticRegularTaxBaseUser += computedSeniorityBase;
+      }
+
+      // Dynamic jobAllowance solver for agreed-net contracts across pre-insurance, mid-month insurance, and full-insurance months
+      const agreedTarget = resolveAgreedTargetRegularNetForMonth(b.empContract, emp, userWorkDaysCount, td);
+      let computedJobAllowance = td > 0 ? Math.round((b.calJobAllowance / td) * userWorkDaysCount) : 0;
+      let insJobAllowance = (hasActiveInsuranceDays && td > 0) ? Math.round((b.calJobAllowance / td) * userInsuranceDaysCount) : 0;
+
+      if (agreedTarget.hasAgreedTarget) {
+        const staticRegularGross =
+          monthlyBaseSalaryCalculated +
+          computedFoodAllowance +
+          computedHousingAllowance +
+          childAllowance +
+          marriageAllowance +
+          computedSeniorityBase +
+          monthlyEidi +
+          monthlyYearsBenefit;
+        const solvedMonthlyJob = solveMonthlyJobAllowanceForAgreedNet({
+          targetRegularNet: agreedTarget.targetRegularNet,
+          workedDays: userWorkDaysCount,
+          insuranceDays: userInsuranceDaysCount,
+          hasActiveInsuranceDays,
+          isEmpSubjectTo7: b.isEmpSubjectTo7,
+          insJobSelected: b.insJobSelected,
+          staticRegularGross,
+          staticInsuranceBaseWithoutJob: insuranceMonthlyBaseSalary + staticInsuranceBenefitsWithoutJob,
+          taxEnabled: b.isTaxCalculationEnabled && b.hasContract,
+          taxJobSelected: b.taxJobSelected,
+          staticRegularTaxBase: staticRegularTaxBaseUser,
+          monthlyExemption: b.monthlyExemption,
+          yearBrackets: b.yearBrackets,
+          supplementaryInsurance: b.calSupplementaryPremium
+        });
+        computedJobAllowance = solvedMonthlyJob.solvedJobAllowance;
+        insJobAllowance =
+          hasActiveInsuranceDays && userWorkDaysCount > 0
+            ? Math.round((computedJobAllowance / userWorkDaysCount) * userInsuranceDaysCount)
+            : 0;
+      }
+
+      const grossBaseSalaryCalculated = monthlyBaseSalaryCalculated + computedFoodAllowance + computedHousingAllowance + childAllowance + marriageAllowance + computedSeniorityBase + monthlyEidi + monthlyYearsBenefit + computedJobAllowance;
+      const totalHolidayWorkPay = holidayWorkPay;
+      const totalGrossWithAdditions = grossBaseSalaryCalculated + overtimePay + fridayWorkPay + totalHolidayWorkPay;
+
+      const insuranceMonthlyBenefits =
+        staticInsuranceBenefitsWithoutJob + (hasActiveInsuranceDays && b.insJobSelected ? insJobAllowance : 0);
 
       const computedInsBaseUser = hasActiveInsuranceDays ? (insuranceMonthlyBaseSalary + insuranceMonthlyBenefits) : 0;
       const calEmployerInsurance20 = (hasActiveInsuranceDays && b.isEmpSubjectTo20) ? Math.round(computedInsBaseUser * 0.20) : 0;
@@ -5109,21 +5164,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const calWorkerInsurance7 = (hasActiveInsuranceDays && b.isEmpSubjectTo7) ? Math.round(computedInsBaseUser * 0.07) : 0;
       const totalInsurance30 = calEmployerInsurance20 + calUnemploymentInsurance3 + calWorkerInsurance7;
 
-      let computedTaxBaseUser = 0;
-      if (b.hasContract) {
-        if (b.taxDailyInsSelected) {
-          computedTaxBaseUser += Math.round(b.empContractDailyInsForTax * userWorkDaysCount);
-        } else if (b.taxDailyBaseSelected) {
-          computedTaxBaseUser += monthlyBaseSalaryCalculated;
-        }
-        if (b.taxHousingSelected) computedTaxBaseUser += computedHousingAllowance;
-        if (b.taxFoodSelected) computedTaxBaseUser += computedFoodAllowance;
-        if (b.taxChildSelected) computedTaxBaseUser += childAllowance;
-        if (b.taxMarriageSelected) computedTaxBaseUser += marriageAllowance;
-        if (b.taxSenioritySelected) computedTaxBaseUser += computedSeniorityBase;
-        if (b.taxJobSelected) computedTaxBaseUser += computedJobAllowance;
-        computedTaxBaseUser += overtimePay + fridayWorkPay + totalHolidayWorkPay;
-      }
+      const computedTaxBaseUser = b.hasContract
+        ? staticRegularTaxBaseUser +
+          (b.taxJobSelected ? computedJobAllowance : 0) +
+          overtimePay +
+          fridayWorkPay +
+          totalHolidayWorkPay
+        : 0;
 
       const calculatedTaxUser = b.isTaxCalculationEnabled
         ? computeProgressiveTaxHelper(computedTaxBaseUser, b.monthlyExemption, b.yearBrackets)
@@ -5281,6 +5328,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         startsMidMonth: insEligibility.startsMidMonth,
         maxInsurableCalendarDays: insEligibility.maxInsurableCalendarDays,
         insuranceReason: insEligibility.reason,
+        isAgreedJobAllowanceAdjusted: agreedTarget.hasAgreedTarget,
+        agreedTargetRegularNet: agreedTarget.targetRegularNet,
+        agreedFullMonthNet: agreedTarget.fullMonthAgreedNet,
         rawOtHours,
         rawFridayHours: b.rawFridayHours,
         rawHolidayHours
@@ -17754,7 +17804,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               </td>
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5">{formatWithCommas(row.monthlyEidi)}</td>
                               <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5">{formatWithCommas(row.monthlyYearsBenefit)}</td>
-                              <td className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5">{formatWithCommas(row.computedJobAllowance)}</td>
+                              <td
+                                className="px-2 py-3 text-center text-slate-700 font-mono border-l bg-teal-50/5"
+                                title={
+                                  row.isAgreedJobAllowanceAdjusted
+                                    ? `تنظیم خودکار برای تطبیق خالص عادی با مبلغ توافقی (${formatWithCommas(row.agreedTargetRegularNet)} ریال) بر اساس ${toPersianDigits(row.userInsuranceDaysCount)} روز بیمه این ماه`
+                                    : undefined
+                                }
+                              >
+                                {formatWithCommas(row.computedJobAllowance)}
+                                {row.isAgreedJobAllowanceAdjusted && (
+                                  <span className="block text-[9px] font-bold text-emerald-700 mt-0.5 leading-tight">
+                                    تنظیم توافقی
+                                  </span>
+                                )}
+                              </td>
                               
                               {/* جمع حقوق ناخالص */}
                               <td className="px-2 py-3 text-left bg-teal-50/20 text-teal-950 font-mono font-bold border-l text-[12px]">{formatWithCommas(row.grossBaseSalaryCalculated)}</td>
@@ -21220,6 +21284,21 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 : `مبلغ توافقی واردشده (${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.targetAgreedNet))} ریال) کمتر از حداقل خالص پرداختی قانونی با فوق‌العاده شغلی صفر (${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.minNetAtZero))} ریال در مبنای ${toPersianDigits(agreedMonthlyNetSolverResult.basisDays)} روزه) است؛ بنابراین فوق‌العاده شغلی روی صفر تنظیم شد.`}
                             </div>
                           )}
+
+                          {(() => {
+                            const empInsDateNorm = selectedEmployee?.insuranceDate
+                              ? normalizeDateStr(selectedEmployee.insuranceDate)
+                              : '';
+                            const conStartNorm = conStartDate ? normalizeDateStr(conStartDate) : '';
+                            if (selectedEmployee?.hasInsurance !== false && empInsDateNorm && conStartNorm && empInsDateNorm > conStartNorm) {
+                              return (
+                                <div className="bg-sky-950/35 border border-sky-500/35 rounded-xl px-3 py-2 text-[10px] text-sky-200 font-bold leading-relaxed">
+                                  تاریخ شروع بیمه پرسنل ({toPersianDigits(empInsDateNorm)}) پس از تاریخ شروع قرارداد ({toPersianDigits(conStartNorm)}) است؛ در متن قرارداد مبلغ فوق‌العاده شغلی بر مبنای بیمه کامل درج می‌شود، اما هنگام محاسبه لیست حقوق ماهانه (قبل از بیمه، ماه نیمه‌بیمه و پس از بیمه کامل) به صورت خودکار طوری تنظیم می‌گردد که خالص پرداختی دقیقاً برابر مبلغ توافقی باشد.
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </>
                       )}
                     </div>

@@ -243,6 +243,185 @@ export function resolveMonthlyInsuranceEligibility(
   };
 }
 
+export interface AgreedNetJobAllowanceInput {
+  targetRegularNet: number;
+  workedDays: number;
+  insuranceDays: number;
+  hasActiveInsuranceDays: boolean;
+  isEmpSubjectTo7: boolean;
+  insJobSelected: boolean;
+  staticRegularGross: number;
+  staticInsuranceBaseWithoutJob: number;
+  taxEnabled: boolean;
+  taxJobSelected: boolean;
+  staticRegularTaxBase: number;
+  monthlyExemption: number;
+  yearBrackets: { fromAmount: number; toAmount: number; taxRate: number }[];
+  supplementaryInsurance: number;
+}
+
+export interface AgreedNetJobAllowanceResult {
+  solvedJobAllowance: number;
+  minNetAtZero: number;
+  resultingRegularNet: number;
+  isBelowMinimum: boolean;
+}
+
+/**
+ * Resolves the target regular-work net salary for a given month when a contract has an agreed net amount
+ * (`hasAgreedMonthlyNet` + `agreedMonthlyNetAmount`) or daily-wage agreement (`contractDailyWageAmount`).
+ * Full worked month (`workedDays >= totalDaysInMonth`) targets the exact full-month agreed net;
+ * partial months are pro-rated linearly by `workedDays / totalDaysInMonth`.
+ * Overtime, Friday work, and Holiday work are NOT included in this target and are added separately on top.
+ */
+export function resolveAgreedTargetRegularNetForMonth(
+  empContract: PersonnelContract | undefined | null,
+  emp: Pick<Personnel, 'isDailyWage' | 'contractDailyWageAmount'> | undefined | null,
+  workedDays: number,
+  totalDaysInMonth: number
+): { hasAgreedTarget: boolean; targetRegularNet: number; fullMonthAgreedNet: number; basisDays: 1 | 30 | 31 } {
+  if (!empContract) {
+    return { hasAgreedTarget: false, targetRegularNet: 0, fullMonthAgreedNet: 0, basisDays: 30 };
+  }
+
+  const safeWorkedDays = Math.max(0, Number(workedDays) || 0);
+  const td = Number(totalDaysInMonth) > 0 ? Number(totalDaysInMonth) : 30;
+
+  const hasAgreedNetFlag = Boolean(empContract.hasAgreedMonthlyNet || empContract.contract?.hasAgreedMonthlyNet);
+  const rawAgreedAmount = Math.max(
+    0,
+    Math.round(Number(empContract.agreedMonthlyNetAmount ?? empContract.contract?.agreedMonthlyNetAmount ?? 0) || 0)
+  );
+
+  if (hasAgreedNetFlag && rawAgreedAmount > 0) {
+    const rawBasis = Number(empContract.agreedBasisDays ?? empContract.contract?.agreedBasisDays ?? 30);
+    const basisDays: 1 | 30 | 31 = rawBasis === 1 ? 1 : rawBasis === 31 ? 31 : 30;
+    const fullMonthAgreedNet = basisDays === 1 ? Math.round(rawAgreedAmount * 26) : rawAgreedAmount;
+    const targetRegularNet =
+      safeWorkedDays <= 0
+        ? 0
+        : safeWorkedDays >= td
+        ? fullMonthAgreedNet
+        : Math.round((fullMonthAgreedNet / td) * safeWorkedDays);
+    return { hasAgreedTarget: true, targetRegularNet, fullMonthAgreedNet, basisDays };
+  }
+
+  const isDailyWageEmp = Boolean(emp?.isDailyWage || Number(empContract.contractDailyWageAmount || 0) > 0);
+  const dailyWageVal = Math.max(
+    0,
+    Math.round(Number(empContract.contractDailyWageAmount || emp?.contractDailyWageAmount || 0) || 0)
+  );
+  if (isDailyWageEmp && dailyWageVal > 0) {
+    const fullMonthAgreedNet = Math.round(dailyWageVal * 26);
+    const targetRegularNet =
+      safeWorkedDays <= 0
+        ? 0
+        : safeWorkedDays >= td
+        ? fullMonthAgreedNet
+        : Math.round((fullMonthAgreedNet / td) * safeWorkedDays);
+    return { hasAgreedTarget: true, targetRegularNet, fullMonthAgreedNet, basisDays: 1 };
+  }
+
+  return { hasAgreedTarget: false, targetRegularNet: 0, fullMonthAgreedNet: 0, basisDays: 30 };
+}
+
+/**
+ * Dynamically solves `jobAllowance` (فوق‌العاده شغلی) for a specific month so that regular net pay
+ * (gross regular salary minus actual worker 7% insurance for that month's insuranceDays, minus actual tax,
+ * minus supplementary insurance) equals `targetRegularNet` — whether before insurance starts (0 days),
+ * during a mid-month insurance start (partial insurance days), or after full insurance begins.
+ */
+export function solveMonthlyJobAllowanceForAgreedNet(
+  input: AgreedNetJobAllowanceInput
+): AgreedNetJobAllowanceResult {
+  const {
+    targetRegularNet,
+    workedDays,
+    insuranceDays,
+    hasActiveInsuranceDays,
+    isEmpSubjectTo7,
+    insJobSelected,
+    staticRegularGross,
+    staticInsuranceBaseWithoutJob,
+    taxEnabled,
+    taxJobSelected,
+    staticRegularTaxBase,
+    monthlyExemption,
+    yearBrackets,
+    supplementaryInsurance
+  } = input;
+
+  if (workedDays <= 0 || targetRegularNet <= 0) {
+    return {
+      solvedJobAllowance: 0,
+      minNetAtZero: 0,
+      resultingRegularNet: 0,
+      isBelowMinimum: false
+    };
+  }
+
+  const evalRegularNet = (candidateJ: number): number => {
+    const insJob =
+      hasActiveInsuranceDays && workedDays > 0 && insuranceDays > 0
+        ? Math.round((candidateJ / workedDays) * insuranceDays)
+        : 0;
+    const insBase = hasActiveInsuranceDays
+      ? staticInsuranceBaseWithoutJob + (insJobSelected ? insJob : 0)
+      : 0;
+    const workerIns7 = hasActiveInsuranceDays && isEmpSubjectTo7 ? Math.round(insBase * 0.07) : 0;
+    const taxBase = staticRegularTaxBase + (taxJobSelected ? candidateJ : 0);
+    const taxVal = taxEnabled ? computeProgressiveTaxForSync(taxBase, monthlyExemption, yearBrackets) : 0;
+    return Math.max(0, staticRegularGross + candidateJ - workerIns7 - taxVal - supplementaryInsurance);
+  };
+
+  const minNetAtZero = evalRegularNet(0);
+  if (targetRegularNet <= minNetAtZero) {
+    return {
+      solvedJobAllowance: 0,
+      minNetAtZero,
+      resultingRegularNet: minNetAtZero,
+      isBelowMinimum: targetRegularNet < minNetAtZero
+    };
+  }
+
+  let low = 0;
+  let high = Math.max(500000000, Math.ceil((targetRegularNet - minNetAtZero) * 3) + 10000000);
+  let solved = high;
+  for (let iter = 0; iter < 55; iter++) {
+    if (low > high) break;
+    const mid = Math.floor((low + high) / 2);
+    const net = evalRegularNet(mid);
+    if (net >= targetRegularNet) {
+      solved = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+
+  let bestJ = solved;
+  let bestNet = evalRegularNet(solved);
+  let bestDiff = Math.abs(bestNet - targetRegularNet);
+  for (let delta = -2; delta <= 2; delta++) {
+    const cand = solved + delta;
+    if (cand < 0) continue;
+    const candNet = evalRegularNet(cand);
+    const diff = Math.abs(candNet - targetRegularNet);
+    if (diff < bestDiff || (diff === bestDiff && candNet >= targetRegularNet && bestNet < targetRegularNet)) {
+      bestJ = cand;
+      bestNet = candNet;
+      bestDiff = diff;
+    }
+  }
+
+  return {
+    solvedJobAllowance: bestJ,
+    minNetAtZero,
+    resultingRegularNet: bestNet,
+    isBelowMinimum: false
+  };
+}
+
 export function getLeaveBuyoutSalaryItemsForContract(
   c: any,
   emp: any,
@@ -2144,21 +2323,6 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   const seniorityBase = Math.round((contractSeniorityBaseValue / 30) * workedDays);
   const monthlyYearsBenefit = Math.round((contractBaseMonthlySalary / 365) * workedDays);
   const monthlyEidi = Math.round(((contractBaseMonthlySalary * 2) / 365) * workedDays);
-  const jobAllowance = td > 0 ? Math.round((calJobAllowance / td) * workedDays) : 0;
-
-  const grossSalary =
-    baseSalary +
-    foodAllowance +
-    housingAllowance +
-    childAllowance +
-    marriageAllowance +
-    seniorityBase +
-    monthlyEidi +
-    monthlyYearsBenefit +
-    jobAllowance +
-    overtimeAmount +
-    holidayWorkAmount +
-    fridayWorkAmount;
 
   const effectiveDailyIns =
     contractDailyIns > 0
@@ -2179,17 +2343,80 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   const insHousing = hasActiveInsuranceDays && td > 0 ? Math.round((contractHousingVal / td) * insDays) : 0;
   const insChild = hasActiveInsuranceDays && td > 0 ? Math.round((contractChildVal / td) * insDays) : 0;
   const insMarriage = hasActiveInsuranceDays && td > 0 ? Math.round((contractMarriageVal / td) * insDays) : 0;
-  const insJob = hasActiveInsuranceDays && td > 0 ? Math.round((calJobAllowance / td) * insDays) : 0;
 
-  let insBenefits = 0;
+  let staticInsBenefitsWithoutJob = 0;
   if (hasActiveInsuranceDays) {
-    if (insKeySet.has('housingAllowance')) insBenefits += insHousing;
-    if (insKeySet.has('foodAllowance')) insBenefits += insFood;
-    if (insKeySet.has('childAllowance')) insBenefits += insChild;
-    if (insKeySet.has('marriageAllowance')) insBenefits += insMarriage;
-    if (insKeySet.has('jobAllowance')) insBenefits += insJob;
+    if (insKeySet.has('housingAllowance')) staticInsBenefitsWithoutJob += insHousing;
+    if (insKeySet.has('foodAllowance')) staticInsBenefitsWithoutJob += insFood;
+    if (insKeySet.has('childAllowance')) staticInsBenefitsWithoutJob += insChild;
+    if (insKeySet.has('marriageAllowance')) staticInsBenefitsWithoutJob += insMarriage;
   }
 
+  const taxDailyInsSelected = isTaxCfg && isTaxKey('dailyInsuranceSalary');
+  const taxDailyBaseSelected = isTaxKey('dailyBaseSalary') || isTaxKey('baseSalary');
+  let staticRegularTaxBase = 0;
+  if (effectiveContract) {
+    if (taxDailyInsSelected) {
+      staticRegularTaxBase += Math.round((contractDailyIns || 0) * workedDays);
+    } else if (taxDailyBaseSelected) {
+      staticRegularTaxBase += baseSalary;
+    }
+    if (isTaxKey('housingAllowance')) staticRegularTaxBase += housingAllowance;
+    if (isTaxKey('foodAllowance')) staticRegularTaxBase += foodAllowance;
+    if (isTaxKey('childAllowance')) staticRegularTaxBase += childAllowance;
+    if (isTaxKey('marriageAllowance')) staticRegularTaxBase += marriageAllowance;
+    if (isTaxKey('baseYearsRate')) staticRegularTaxBase += seniorityBase;
+  }
+
+  const agreedTarget = resolveAgreedTargetRegularNetForMonth(effectiveContract, emp, workedDays, td);
+  let jobAllowance = td > 0 ? Math.round((calJobAllowance / td) * workedDays) : 0;
+  let insJob = hasActiveInsuranceDays && td > 0 ? Math.round((calJobAllowance / td) * insDays) : 0;
+
+  if (agreedTarget.hasAgreedTarget) {
+    const staticRegularGross =
+      baseSalary +
+      foodAllowance +
+      housingAllowance +
+      childAllowance +
+      marriageAllowance +
+      seniorityBase +
+      monthlyEidi +
+      monthlyYearsBenefit;
+    const solved = solveMonthlyJobAllowanceForAgreedNet({
+      targetRegularNet: agreedTarget.targetRegularNet,
+      workedDays,
+      insuranceDays: insDays,
+      hasActiveInsuranceDays,
+      isEmpSubjectTo7: emp.isSubjectToWorkerPremium !== false,
+      insJobSelected: insKeySet.has('jobAllowance'),
+      staticRegularGross,
+      staticInsuranceBaseWithoutJob: insMonthlyBase + staticInsBenefitsWithoutJob,
+      taxEnabled: isTaxEnabled && Boolean(effectiveContract),
+      taxJobSelected: isTaxKey('jobAllowance'),
+      staticRegularTaxBase,
+      monthlyExemption,
+      yearBrackets,
+      supplementaryInsurance
+    });
+    jobAllowance = solved.solvedJobAllowance;
+    insJob = hasActiveInsuranceDays && workedDays > 0 ? Math.round((jobAllowance / workedDays) * insDays) : 0;
+  }
+
+  const grossSalary =
+    baseSalary +
+    foodAllowance +
+    housingAllowance +
+    childAllowance +
+    marriageAllowance +
+    seniorityBase +
+    monthlyEidi +
+    monthlyYearsBenefit +
+    jobAllowance +
+    overtimeAmount +
+    holidayWorkAmount +
+    fridayWorkAmount;
+
+  const insBenefits = staticInsBenefitsWithoutJob + (hasActiveInsuranceDays && insKeySet.has('jobAllowance') ? insJob : 0);
   const insurableGross = hasActiveInsuranceDays ? (insMonthlyBase + insBenefits) : 0;
   const isInsured = hasActiveInsuranceDays && emp.isSubjectToWorkerPremium !== false;
   const workerInsuranceShare = isInsured ? Math.round(insurableGross * 0.07) : 0;
@@ -2197,23 +2424,12 @@ export function computeMonthlyPayrollSnapshotForEmployee(
   // Tax calculation matching PayrollManagement
   let payrollTax = 0;
   if (isTaxEnabled && effectiveContract) {
-    const taxDailyInsSelected = isTaxCfg && isTaxKey('dailyInsuranceSalary');
-    const taxDailyBaseSelected = isTaxKey('dailyBaseSalary') || isTaxKey('baseSalary');
-
-    let taxBase = 0;
-    if (taxDailyInsSelected) {
-      taxBase += Math.round((contractDailyIns || 0) * workedDays);
-    } else if (taxDailyBaseSelected) {
-      taxBase += baseSalary;
-    }
-    if (isTaxKey('housingAllowance')) taxBase += housingAllowance;
-    if (isTaxKey('foodAllowance')) taxBase += foodAllowance;
-    if (isTaxKey('childAllowance')) taxBase += childAllowance;
-    if (isTaxKey('marriageAllowance')) taxBase += marriageAllowance;
-    if (isTaxKey('baseYearsRate')) taxBase += seniorityBase;
-    if (isTaxKey('jobAllowance')) taxBase += jobAllowance;
-    taxBase += overtimeAmount + fridayWorkAmount + holidayWorkAmount;
-
+    const taxBase =
+      staticRegularTaxBase +
+      (isTaxKey('jobAllowance') ? jobAllowance : 0) +
+      overtimeAmount +
+      fridayWorkAmount +
+      holidayWorkAmount;
     payrollTax = computeProgressiveTaxForSync(taxBase, monthlyExemption, yearBrackets);
   }
 
