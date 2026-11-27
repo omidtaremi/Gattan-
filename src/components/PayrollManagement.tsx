@@ -2794,7 +2794,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [rateHousingAllowance, setRateHousingAllowance] = useState<string>('');
   const [rateFoodAllowance, setRateFoodAllowance] = useState<string>('');
   const [rateChildAllowance, setRateChildAllowance] = useState<string>('');
-  const [rateBaseYearsRate, setRateBaseYearsRate] = useState<string>('');
   const [rateMarriageAllowance, setRateMarriageAllowance] = useState<string>('');
   const [rateTaxableAmount, setRateTaxableAmount] = useState<string>('');
   const [rateOvertimeHourlyRate, setRateOvertimeHourlyRate] = useState<string>('');
@@ -2878,7 +2877,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateHousingAllowance('');
     setRateFoodAllowance('');
     setRateChildAllowance('');
-    setRateBaseYearsRate('');
     setRateMarriageAllowance('');
     setRateTaxableAmount('');
     setRateOvertimeHourlyRate('');
@@ -2965,7 +2963,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       housingAllowance: parseNumber(rateHousingAllowance) || 0,
       foodAllowance: parseNumber(rateFoodAllowance) || 0,
       childAllowance: parseNumber(rateChildAllowance) || 0,
-      baseYearsRate: parseNumber(rateBaseYearsRate) || 0,
       marriageAllowance: parseNumber(rateMarriageAllowance) || 0,
       taxableAmount: parseNumber(rateTaxableAmount) || 0,
       overtimeHourlyRate: resolvedOvertimeWork,
@@ -3249,7 +3246,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setRateHousingAllowance(formatWithCommas(rate.housingAllowance));
     setRateFoodAllowance(formatWithCommas(rate.foodAllowance));
     setRateChildAllowance(formatWithCommas(rate.childAllowance));
-    setRateBaseYearsRate(formatWithCommas(rate.baseYearsRate));
     setRateMarriageAllowance(formatWithCommas(rate.marriageAllowance));
     setRateTaxableAmount(formatWithCommas(rate.taxableAmount || 0));
     const defaultOtHourly733 = Math.round(((rate.dailyBaseSalary || 0) * 1.4) / 7.33);
@@ -8964,10 +8960,284 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [conMonthlyInsuranceSalary, setConMonthlyInsuranceSalary] = useState<string>('');
   const [conSeniorityBase, setConSeniorityBase] = useState<string>('۰');
   const [conJobAllowance, setConJobAllowance] = useState<string>('');
+  const [conHasAgreedMonthlyNet, setConHasAgreedMonthlyNet] = useState<boolean>(false);
+  const [conAgreedMonthlyNetAmount, setConAgreedMonthlyNetAmount] = useState<string>('');
+  const [conAgreedBasisDays, setConAgreedBasisDays] = useState<1 | 30 | 31>(30);
   const [conRole, setConRole] = useState<string>('');
   const [conNotes, setConNotes] = useState<string>('');
   const [conIsActive, setConIsActive] = useState<boolean>(true);
   const [viewBasisDays, setViewBasisDays] = useState<number>(30);
+
+  // محاسبه خودکار فوق‌العاده شغلی بر اساس مبلغ خالص پرداختی توافقی (مبنای ۱ روزه با معادل ۲۶ روز کارکرد، ۳۰ روزه یا ۳۱ روزه - تطبیق با بند ۱۴)
+  const agreedMonthlyNetSolverResult = useMemo(() => {
+    if (!conHasAgreedMonthlyNet) return null;
+    const emp = (db.personnel || []).find(p => p.employeeCode === selContractEmpCode && p.periodId === activePeriodId)
+      || (db.personnel || []).find(p => p.employeeCode === selContractEmpCode)
+      || null;
+    if (!emp) return null;
+
+    const basisMode: 1 | 30 | 31 = conAgreedBasisDays === 1 ? 1 : (conAgreedBasisDays === 31 ? 31 : 30);
+    const basisDays: 30 | 31 = basisMode === 31 ? 31 : 30;
+    const enteredAgreedAmount = Math.max(0, Math.round(parseFloat(toEnglishDigits(conAgreedMonthlyNetAmount).replace(/,/g, '')) || 0));
+    const targetAgreedNet = basisMode === 1 ? Math.round(enteredAgreedAmount * 26) : enteredAgreedAmount;
+    const dailyAgreedRate = basisMode === 1
+      ? enteredAgreedAmount
+      : (enteredAgreedAmount > 0 ? Math.round(enteredAgreedAmount / basisDays) : 0);
+
+    const activeRates = getSalaryBaseRateForContract(
+      { contractStartDate: conStartDate, contractEndDate: conEndDate, salaryBaseRateId: conSalaryBaseRateId || undefined },
+      emp,
+      db,
+      activePeriodId
+    );
+    const parsedDailySalaryNum = parseFloat(toEnglishDigits(conDailySalary).replace(/,/g, '')) || (activeRates ? activeRates.dailyBaseSalary : 4333333);
+    const dispBaseSalary = Math.round(parsedDailySalaryNum * basisDays);
+
+    const calHousingAllowance = activeRates ? activeRates.housingAllowance : 9000000;
+    const calFoodAllowance = activeRates ? activeRates.foodAllowance : 14000000;
+
+    const countChildren = getEligibleChildrenCount(emp.insuranceHistoryDays || 0, emp.childrenList || []);
+    const calChildRate = activeRates ? activeRates.childAllowance : 7166184;
+    const calChildAllowance = countChildren * calChildRate;
+
+    const isMarried = emp.maritalStatus === 'متاهل' || emp.isMarried;
+    const calMarriageRate = activeRates ? activeRates.marriageAllowance : 5000000;
+    const calMarriageAllowance = isMarried ? calMarriageRate : 0;
+
+    const calMonthlyYears = Math.round(dispBaseSalary / 12);
+    const calMonthlyEidi = Math.round((dispBaseSalary * 2) / 12);
+
+    const tStartDate = conStartDate || emp.contractStartDate || emp.entryDate || '';
+    const insuranceStartDate = emp.insuranceDate || emp.entryDate || tStartDate;
+    const tDiff = getJalaliDateDifference(insuranceStartDate, tStartDate);
+    let tempSeniorityYears = 0;
+    if (tDiff) {
+      const isMoreThanOneYear = tDiff.years > 1 || (tDiff.years === 1 && (tDiff.months > 0 || tDiff.days > 0));
+      if (isMoreThanOneYear) {
+        tempSeniorityYears = tDiff.years;
+      }
+    }
+    const startYear = getJalaliYear(tStartDate) || activeFiscalYearStr || '';
+    const foundSeniorityRule = findSeniorityRateRule(
+      db.seniorityRateRules || [],
+      tempSeniorityYears,
+      tStartDate,
+      startYear,
+      activePeriodId
+    );
+    const parsedConSeniority30 = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
+    const calSeniorityBase = parsedConSeniority30 > 0
+      ? Math.round((parsedConSeniority30 / 30) * basisDays)
+      : (foundSeniorityRule ? (foundSeniorityRule.dailyRate * basisDays) : 0);
+
+    // بیمه تأمین اجتماعی سهم کارگر (۷٪)
+    const { items: empInsuredItems } = getInsuredSalaryItemsForContract({ contractStartDate: tStartDate }, emp, db, activePeriodId);
+    const isInsuringConfigured = empInsuredItems.length > 0;
+    const isKeyInsured = (key: string) => {
+      if (!isInsuringConfigured) {
+        return ['dailyBaseSalary', 'dailyInsuranceSalary', 'baseSalary', 'housingAllowance', 'foodAllowance', 'baseYearsRate', 'jobAllowance'].includes(key);
+      }
+      return empInsuredItems.some((item: any) => item.itemKey === key);
+    };
+
+    const parsedDailyInsSalaryNum = parseFloat(toEnglishDigits(conDailyInsuranceSalary).replace(/,/g, '')) || 0;
+    let effDailyInsCard = 0;
+    if (parsedDailyInsSalaryNum > 0) {
+      effDailyInsCard = parsedDailyInsSalaryNum;
+    } else if (isKeyInsured('dailyInsuranceSalary') && activeRates) {
+      effDailyInsCard = activeRates.dailyInsuranceSalary;
+    } else if (isKeyInsured('dailyBaseSalary')) {
+      effDailyInsCard = parsedDailySalaryNum;
+    } else {
+      effDailyInsCard = Math.round(dispBaseSalary / basisDays);
+    }
+    const dailySeniorityRateCard = Math.round(calSeniorityBase / basisDays);
+    const insMonthlyBaseCard = (effDailyInsCard + dailySeniorityRateCard) * basisDays;
+
+    let staticInsBase = insMonthlyBaseCard;
+    if (isKeyInsured('housingAllowance')) staticInsBase += calHousingAllowance;
+    if (isKeyInsured('foodAllowance')) staticInsBase += calFoodAllowance;
+    if (isKeyInsured('childAllowance')) staticInsBase += calChildAllowance;
+    if (isKeyInsured('marriageAllowance')) staticInsBase += calMarriageAllowance;
+    const jobAllowanceIsInsured = isKeyInsured('jobAllowance');
+    const isInsured = emp.hasInsurance !== false;
+
+    const hasComplementary = emp.complementaryInsurance === true;
+    const calSupplementaryPremium = hasComplementary ? (emp.supplementaryInsurancePremium || 0) : 0;
+
+    // مالیات حقوق
+    const { items: empTaxableItems } = getTaxableSalaryItemsForContract({ contractStartDate: tStartDate }, emp, db, activePeriodId);
+    const isTaxingConfigured = empTaxableItems.length > 0;
+    const isKeyTaxable = (key: string) => {
+      if (!isTaxingConfigured) return true;
+      return empTaxableItems.some((item: any) => item.itemKey === key);
+    };
+
+    let staticTaxBase = 0;
+    if (isTaxingConfigured && isKeyTaxable('dailyInsuranceSalary')) {
+      const taxDailyIns = parsedDailyInsSalaryNum || (activeRates ? activeRates.dailyInsuranceSalary : 0);
+      staticTaxBase += Math.round(taxDailyIns * basisDays);
+    } else if (isKeyTaxable('dailyBaseSalary') || isKeyTaxable('baseSalary')) {
+      staticTaxBase += dispBaseSalary;
+    }
+    if (isKeyTaxable('housingAllowance')) staticTaxBase += calHousingAllowance;
+    if (isKeyTaxable('foodAllowance')) staticTaxBase += calFoodAllowance;
+    if (isKeyTaxable('childAllowance')) staticTaxBase += calChildAllowance;
+    if (isKeyTaxable('marriageAllowance')) staticTaxBase += calMarriageAllowance;
+    if (isKeyTaxable('baseYearsRate')) staticTaxBase += calSeniorityBase;
+    if (isKeyTaxable('monthlyEidi')) staticTaxBase += calMonthlyEidi;
+    if (isKeyTaxable('monthlyYearsBenefit')) staticTaxBase += calMonthlyYears;
+    const jobAllowanceIsTaxable = isKeyTaxable('jobAllowance');
+
+    const currentFiscalYear = Number(startYear) || 1403;
+    const monthlyExemption = (activeRates && activeRates.taxableAmount !== undefined && activeRates.taxableAmount !== null && Number(activeRates.taxableAmount) > 0)
+      ? Number(activeRates.taxableAmount)
+      : 120000000;
+
+    const yearBrackets = (db.taxBrackets || [])
+      .filter(b => b.periodId === activePeriodId && Number(b.fiscalYear) === currentFiscalYear)
+      .sort((a, b) => a.fromAmount - b.fromAmount);
+
+    const isTaxCalculationEnabled = periodPayrollRules?.calculatePayrollTax || false;
+
+    const staticGrossWithAccruals = dispBaseSalary + calHousingAllowance + calFoodAllowance + calChildAllowance + calMarriageAllowance + calSeniorityBase + calMonthlyYears + calMonthlyEidi;
+
+    const evalNetWithAccruals = (candidateJ: number): number => {
+      const insBase = staticInsBase + (jobAllowanceIsInsured ? candidateJ : 0);
+      const workerPrem = isInsured ? Math.round(insBase * 0.07) : 0;
+
+      const taxBase = staticTaxBase + (jobAllowanceIsTaxable ? candidateJ : 0);
+      let taxVal = 0;
+      if (isTaxCalculationEnabled && taxBase > monthlyExemption) {
+        if (yearBrackets.length > 0) {
+          let taxSum = 0;
+          yearBrackets.forEach(b => {
+            const from = Number(b.fromAmount);
+            const to = b.toAmount !== null && b.toAmount !== undefined && Number(b.toAmount) > 0 ? Number(b.toAmount) : Infinity;
+            const rate = Number(b.taxRate) / 100;
+            if (taxBase > from) {
+              const portion = Math.min(taxBase, to) - from;
+              if (portion > 0) taxSum += portion * rate;
+            }
+          });
+          taxVal = Math.round(taxSum);
+        } else {
+          let taxSum = 0;
+          const limit1 = monthlyExemption;
+          const limit2 = Math.round(monthlyExemption * 1.375);
+          const limit3 = Math.round(monthlyExemption * 2.25);
+          const limit4 = Math.round(monthlyExemption * 3.3333);
+          if (taxBase > limit1) {
+            const b1 = Math.min(taxBase, limit2) - limit1;
+            if (b1 > 0) taxSum += b1 * 0.10;
+          }
+          if (taxBase > limit2) {
+            const b2 = Math.min(taxBase, limit3) - limit2;
+            if (b2 > 0) taxSum += b2 * 0.15;
+          }
+          if (taxBase > limit3) {
+            const b3 = Math.min(taxBase, limit4) - limit3;
+            if (b3 > 0) taxSum += b3 * 0.20;
+          }
+          if (taxBase > limit4) {
+            const b4 = taxBase - limit4;
+            if (b4 > 0) taxSum += b4 * 0.30;
+          }
+          taxVal = Math.round(taxSum);
+        }
+      }
+
+      return Math.max(0, staticGrossWithAccruals + candidateJ - workerPrem - calSupplementaryPremium - taxVal);
+    };
+
+    const minNetAtZero = evalNetWithAccruals(0);
+
+    if (targetAgreedNet <= 0) {
+      return {
+        solvedJobAllowance: 0,
+        minNetAtZero,
+        isBelowMinimum: false,
+        resultingNet: minNetAtZero,
+        dailyAgreedRate: 0,
+        targetAgreedNet: 0,
+        enteredAgreedAmount: 0,
+        basisDays,
+        basisMode
+      };
+    }
+
+    if (targetAgreedNet < minNetAtZero) {
+      return {
+        solvedJobAllowance: 0,
+        minNetAtZero,
+        isBelowMinimum: true,
+        resultingNet: minNetAtZero,
+        dailyAgreedRate,
+        targetAgreedNet,
+        enteredAgreedAmount,
+        basisDays,
+        basisMode
+      };
+    }
+
+    let low = 0;
+    let high = Math.max(500000000, Math.ceil((targetAgreedNet - minNetAtZero) * 3) + 10000000);
+    let solved = high;
+    for (let iter = 0; iter < 50; iter++) {
+      if (low > high) break;
+      const mid = Math.floor((low + high) / 2);
+      const net = evalNetWithAccruals(mid);
+      if (net >= targetAgreedNet) {
+        solved = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+
+    let bestJobAllowance = solved;
+    let bestNet = evalNetWithAccruals(solved);
+    if (solved > 0) {
+      const prevNet = evalNetWithAccruals(solved - 1);
+      if (Math.abs(prevNet - targetAgreedNet) < Math.abs(bestNet - targetAgreedNet)) {
+        bestJobAllowance = solved - 1;
+        bestNet = prevNet;
+      }
+    }
+
+    return {
+      solvedJobAllowance: bestJobAllowance,
+      minNetAtZero,
+      isBelowMinimum: false,
+      resultingNet: bestNet,
+      dailyAgreedRate,
+      targetAgreedNet,
+      enteredAgreedAmount,
+      basisDays,
+      basisMode
+    };
+  }, [
+    conHasAgreedMonthlyNet,
+    conAgreedMonthlyNetAmount,
+    conAgreedBasisDays,
+    selContractEmpCode,
+    conStartDate,
+    conEndDate,
+    conSalaryBaseRateId,
+    conDailySalary,
+    conDailyInsuranceSalary,
+    conSeniorityBase,
+    db,
+    activePeriodId,
+    periodPayrollRules,
+    activeFiscalYearStr
+  ]);
+
+  useEffect(() => {
+    if (!conHasAgreedMonthlyNet || !agreedMonthlyNetSolverResult) return;
+    const formattedSolved = formatWithCommas(agreedMonthlyNetSolverResult.solvedJobAllowance);
+    setConJobAllowance(prev => (prev === formattedSolved ? prev : formattedSolved));
+  }, [conHasAgreedMonthlyNet, agreedMonthlyNetSolverResult]);
   const [selectedContractYear, setSelectedContractYear] = useState<string>('all');
   const [onlyActiveContractsFilter, setOnlyActiveContractsFilter] = useState<boolean>(false);
   const [searchContractQuery, setSearchContractQuery] = useState<string>('');
@@ -9603,9 +9873,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (diffDays < 365) return 0;
 
     const completedYears = Math.floor(diffDays / 365);
-    const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStart }, emp, db, activePeriodId);
-    const baseYearsRate = contractRates ? contractRates.baseYearsRate : 0;
-    return completedYears * baseYearsRate * 30;
+    const startYear = getJalaliYear(conStart) || activeFiscalYearStr || '';
+    const matchedSeniorityRule = findSeniorityRateRule(
+      db.seniorityRateRules || [],
+      completedYears,
+      conStart,
+      startYear,
+      activePeriodId
+    );
+    return matchedSeniorityRule ? matchedSeniorityRule.dailyRate * 30 : 0;
   };
 
   const handleSaveContract = () => {
@@ -9644,12 +9920,23 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const parsedSeniorityBase = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
     const finalContractSeniorityBase = Math.max(0, parsedSeniorityBase);
 
+    const parsedDailyIns = parseFloat(toEnglishDigits(conDailyInsuranceSalary).replace(/,/g, '')) || 0;
+    const parsedMonthlyIns = parseFloat(toEnglishDigits(conMonthlyInsuranceSalary).replace(/,/g, '')) || (parsedDailyIns * 30);
+    const jobAllowanceNum = parseFloat(toEnglishDigits(conJobAllowance).replace(/,/g, '')) || 0;
+    const contractDailyWageAmountNum = parseFloat(toEnglishDigits(conDailyWageAmount).replace(/,/g, '')) || 0;
+    const agreedMonthlyNetNum = conHasAgreedMonthlyNet
+      ? (Math.round(parseFloat(toEnglishDigits(conAgreedMonthlyNetAmount).replace(/,/g, '')) || 0) || undefined)
+      : undefined;
+    const agreedBasisDaysVal: 1 | 30 | 31 | undefined = conHasAgreedMonthlyNet ? conAgreedBasisDays : undefined;
+
     const calculatedFields = calculateContractFieldsForDb(
       {
         contractStartDate: conStartDate,
         contractEndDate: conEndDate,
         contractDailySalary: finalDailySalaryNum,
+        contractDailyInsuranceSalary: parsedDailyIns,
         contractSeniorityBase: finalContractSeniorityBase,
+        jobAllowance: jobAllowanceNum,
         salaryBaseRateId: resolvedContractRate.id
       },
       emp,
@@ -9658,11 +9945,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       finalDailySalaryNum
     );
 
-    const parsedDailyIns = parseFloat(toEnglishDigits(conDailyInsuranceSalary).replace(/,/g, '')) || 0;
-    const parsedMonthlyIns = parseFloat(toEnglishDigits(conMonthlyInsuranceSalary).replace(/,/g, '')) || (parsedDailyIns * 30);
-    const jobAllowanceNum = parseFloat(toEnglishDigits(conJobAllowance).replace(/,/g, '')) || 0;
-    const contractDailyWageAmountNum = parseFloat(toEnglishDigits(conDailyWageAmount).replace(/,/g, '')) || 0;
-
     const contractObject = {
       contractBaseSalary: baseSalaryNum,
       contractDailySalary: finalDailySalaryNum,
@@ -9670,6 +9952,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       contractDailyInsuranceSalary: parsedDailyIns,
       contractBaseInsuranceSalary: parsedMonthlyIns,
       jobAllowance: jobAllowanceNum,
+      hasAgreedMonthlyNet: conHasAgreedMonthlyNet || undefined,
+      agreedMonthlyNetAmount: agreedMonthlyNetNum,
+      agreedBasisDays: agreedBasisDaysVal,
       salaryBaseRateId: resolvedContractRate.id,
       ...calculatedFields,
       contractSeniorityBase: finalContractSeniorityBase,
@@ -9703,6 +9988,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       contractDailyInsuranceSalary: parsedDailyIns,
       contractBaseInsuranceSalary: parsedMonthlyIns,
       jobAllowance: jobAllowanceNum,
+      hasAgreedMonthlyNet: conHasAgreedMonthlyNet || undefined,
+      agreedMonthlyNetAmount: agreedMonthlyNetNum,
+      agreedBasisDays: agreedBasisDaysVal,
       role: conRole || emp.role || 'کارگر خط تولید',
       notes: conNotes,
       createdAt: new Date().toISOString(),
@@ -9852,6 +10140,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConMonthlyInsuranceSalary('');
     setConSeniorityBase('۰');
     setConJobAllowance('');
+    setConHasAgreedMonthlyNet(false);
+    setConAgreedMonthlyNetAmount('');
+    setConAgreedBasisDays(30);
     setConRole('');
     setConNotes('');
     setIsContractFormOpen(false);
@@ -9908,6 +10199,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const empForContract = db.personnel.find(p => p.employeeCode === c.employeeCode && p.periodId === activePeriodId);
     const contractJobAllowance = c.jobAllowance !== undefined ? c.jobAllowance : (empForContract?.jobAllowance || 0);
     setConJobAllowance(formatWithCommas(contractJobAllowance));
+    const savedHasAgreed = Boolean(c.hasAgreedMonthlyNet || c.contract?.hasAgreedMonthlyNet);
+    const savedAgreedAmount = c.agreedMonthlyNetAmount ?? c.contract?.agreedMonthlyNetAmount ?? 0;
+    const rawSavedBasis = Number(c.agreedBasisDays) || Number(c.contract?.agreedBasisDays);
+    const savedAgreedBasis: 1 | 30 | 31 = rawSavedBasis === 1 ? 1 : (rawSavedBasis === 31 ? 31 : 30);
+    setConHasAgreedMonthlyNet(savedHasAgreed);
+    setConAgreedMonthlyNetAmount(savedAgreedAmount > 0 ? formatWithCommas(savedAgreedAmount) : '');
+    setConAgreedBasisDays(savedAgreedBasis);
+    if (savedHasAgreed) {
+      setViewBasisDays(savedAgreedBasis === 31 ? 31 : 30);
+    }
     setConDailyWageAmount(c.contractDailyWageAmount ? formatWithCommas(c.contractDailyWageAmount) : '');
     setConRole(c.role || '');
     setConNotes(c.notes || '');
@@ -9952,6 +10253,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setConMonthlyInsuranceSalary('');
     setConSeniorityBase('۰');
     setConJobAllowance('');
+    setConHasAgreedMonthlyNet(false);
+    setConAgreedMonthlyNetAmount('');
+    setConAgreedBasisDays(30);
     setConDailyWageAmount('');
     setConRole('');
     setConNotes('');
@@ -11208,7 +11512,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
   const exportSalaryBaseRatesCSV = () => {
     const headers = [
-      'سال مالی', 'عنوان دوره', 'از تاریخ', 'تا تاریخ', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'پایه سنوات روزانه', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
+      'سال مالی', 'عنوان دوره', 'از تاریخ', 'تا تاریخ', 'حقوق پایه روزانه', 'پایه حقوق ساعتی', 'حقوق پایه روزانه بیمه', 'حق مسکن', 'حق بن', 'حق اولاد', 'حق همسر', 'سقف معافیت مالیاتی', 'حق اضافه کاری ساعتی', 'حق جمعه کاری ساعتی', 'مرخصی ساعتی ماهانه'
     ];
     const rates = (db.salaryBaseRates || []).filter(r => r.periodId === activePeriodId);
     const rows = rates.map(r => [
@@ -11222,7 +11526,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       String(r.housingAllowance || 0),
       String(r.foodAllowance || 0),
       String(r.childAllowance || 0),
-      String(r.baseYearsRate || 0),
       String(r.marriageAllowance || 0),
       String(r.taxableAmount || 0),
       String((r.overtimeHourlyRate && r.overtimeHourlyRate > ((r.dailyBaseSalary || 0) * 0.8)) ? Math.round(r.overtimeHourlyRate / 7.33) : (r.overtimeHourlyRate || Math.round(((r.dailyBaseSalary || 0) * 1.4) / 7.33))),
@@ -11267,6 +11570,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
       const headerRow = (rows[0] || []).map(h => String(h || '').trim());
       const hasPeriodCols = headerRow.some(h => h.includes('از تاریخ') || h.includes('عنوان دوره'));
+      const hasLegacySeniorityCol = headerRow.some(h => h.includes('پایه سنوات'));
 
       rows.forEach((row) => {
         if (!row || row.length === 0) return;
@@ -11321,16 +11625,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         let housing = parseNumber(row[baseIdx + 4]);
         let food = parseNumber(row[baseIdx + 5]);
         let child = parseNumber(row[baseIdx + 6]);
-        let seniority = parseNumber(row[baseIdx + 7]);
-        let marriage = parseNumber(row[baseIdx + 8]);
-        let taxLimit = parseNumber(row[baseIdx + 9]);
-        const rawOt = parseNumber(row[baseIdx + 10]);
+        const seniorityShift = hasLegacySeniorityCol ? 1 : 0;
+        let marriage = parseNumber(row[baseIdx + 7 + seniorityShift]);
+        let taxLimit = parseNumber(row[baseIdx + 8 + seniorityShift]);
+        const rawOt = parseNumber(row[baseIdx + 9 + seniorityShift]);
         let overtime = rawOt > (dailyBase * 0.8) ? Math.round(rawOt / 7.33) : rawOt;
-        const rawFri = row[baseIdx + 11] !== undefined ? parseNumber(row[baseIdx + 11]) : Math.round((dailyBase * 0.40) / 7.33);
+        const rawFri = row[baseIdx + 10 + seniorityShift] !== undefined ? parseNumber(row[baseIdx + 10 + seniorityShift]) : Math.round((dailyBase * 0.40) / 7.33);
         let fridayWork = rawFri > (dailyBase * 0.15) ? Math.round(rawFri / 7.33) : rawFri;
-        const rawLeaveVal = row[baseIdx + 13] !== undefined && String(row[baseIdx + 13]).includes(':')
-          ? row[baseIdx + 13]
-          : (row[baseIdx + 12] !== undefined && String(row[baseIdx + 12]).includes(':') ? row[baseIdx + 12] : DEFAULT_MONTHLY_LEAVE_HM);
+        const rawLeaveVal = row[baseIdx + 12 + seniorityShift] !== undefined && String(row[baseIdx + 12 + seniorityShift]).includes(':')
+          ? row[baseIdx + 12 + seniorityShift]
+          : (row[baseIdx + 11 + seniorityShift] !== undefined && String(row[baseIdx + 11 + seniorityShift]).includes(':') ? row[baseIdx + 11 + seniorityShift] : DEFAULT_MONTHLY_LEAVE_HM);
         const monthlyLeaveHoursVal = normalizeMonthlyLeaveHMInput(String(rawLeaveVal || DEFAULT_MONTHLY_LEAVE_HM));
 
         const matchIndex = updatedRates.findIndex(r =>
@@ -11352,7 +11656,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           housingAllowance: housing,
           foodAllowance: food,
           childAllowance: child,
-          baseYearsRate: seniority,
           marriageAllowance: marriage,
           taxableAmount: taxLimit,
           overtimeHourlyRate: overtime,
@@ -17331,24 +17634,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     )}
                   </div>
 
-                  {/* Base Years Rate (حق پایه سنوات ماهانه) */}
-                  <div>
-                    <label className="block text-[10.5px] font-bold text-slate-600 mb-1">پایه سنوات ماهانه (ریال)</label>
-                    <input
-                      type="text"
-                      placeholder="ریال (پیش‌فرض: بر اساس جدول سنوات کارگاه)"
-                      value={rateBaseYearsRate}
-                      onChange={(e) => handleRateInputChange(e.target.value, setRateBaseYearsRate)}
-                      onFocus={handleFocus}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono text-left text-slate-800"
-                    />
-                    {rateBaseYearsRate && (
-                      <span className="block text-[10px] text-slate-400 mt-1 mr-1 text-right font-medium">
-                        {toPersianDigits(formatWithCommas(parseNumber(rateBaseYearsRate) || 0))} ریال
-                      </span>
-                    )}
-                  </div>
-
                    {/* Taxable Amount */}
                   <div>
                     <label className="block text-[10.5px] font-bold text-slate-600 mb-1">سقف معافیت مالیاتی حقوق (ریال)</label>
@@ -17580,11 +17865,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         <div>
                           <span className="text-[10.5px] text-slate-400 block mb-1">حق اولاد (هر فرزند)</span>
                           <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.childAllowance))}</span>
-                          <span className="text-[9px] text-slate-500 mr-1">ریال</span>
-                        </div>
-                        <div>
-                          <span className="text-[10.5px] text-slate-400 block mb-1">پایه سنوات</span>
-                          <span className="font-bold text-white font-mono">{toPersianDigits(formatWithCommas(rate.baseYearsRate))}</span>
                           <span className="text-[9px] text-slate-500 mr-1">ریال</span>
                         </div>
                         <div>
@@ -19626,6 +19906,149 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
                 )}
 
+                {/* بخش تعیین مبلغ خالص توافقی و تنظیم خودکار فوق‌العاده شغلی */}
+                <div className={`rounded-xl border transition-all p-3.5 space-y-3 ${
+                  conHasAgreedMonthlyNet
+                    ? 'bg-emerald-950/20 border-emerald-500/35'
+                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                }`}>
+                  <label className="flex items-center justify-between gap-3 cursor-pointer select-none">
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={conHasAgreedMonthlyNet}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setConHasAgreedMonthlyNet(checked);
+                          if (checked) {
+                            setViewBasisDays(conAgreedBasisDays === 31 ? 31 : 30);
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-emerald-500 cursor-pointer"
+                      />
+                      <div>
+                        <span className="text-[11px] font-black text-white block">
+                          تعیین مبلغ توافقی (محاسبه خودکار فوق‌العاده شغلی)
+                        </span>
+                        <span className="text-[9.5px] text-slate-400 block mt-0.5">
+                          با فعال‌سازی این گزینه، مبلغ فوق‌العاده شغلی طوری تنظیم می‌شود که خالص پرداختی قرارداد (بند ۱۴ با احتساب عیدی و سنوات ماهانه) دقیقاً با مبلغ توافقی منطبق شود.
+                        </span>
+                      </div>
+                    </div>
+                  </label>
+
+                  {conHasAgreedMonthlyNet && (
+                    <div className="space-y-3 pt-2.5 border-t border-emerald-500/20">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-[10.5px] font-bold text-emerald-300 block">
+                            {conAgreedBasisDays === 1
+                              ? 'مبلغ خالص توافقی یک روز کارکرد (ریال):'
+                              : 'مبلغ خالص پرداختی توافقی ماه (ریال):'}
+                          </label>
+                          <input
+                            type="text"
+                            placeholder={conAgreedBasisDays === 1 ? 'مثلاً ۸,۰۰۰,۰۰۰' : 'مثلاً ۲۰۰,۰۰۰,۰۰۰'}
+                            value={conAgreedMonthlyNetAmount}
+                            onChange={(e) => {
+                              const englishDigits = toEnglishDigits(e.target.value);
+                              const cleanVal = englishDigits.replace(/,/g, '');
+                              if (!isNaN(Number(cleanVal)) || cleanVal === '') {
+                                setConAgreedMonthlyNetAmount(cleanVal === '' ? '' : formatWithCommas(cleanVal));
+                              }
+                            }}
+                            className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-xs text-emerald-300 focus:outline-none focus:border-emerald-400 transition-colors font-mono text-center font-black"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10.5px] font-bold text-slate-300 block">
+                            مبنای توافق:
+                          </label>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {([1, 30, 31] as const).map((days) => (
+                              <button
+                                key={days}
+                                type="button"
+                                onClick={() => {
+                                  setConAgreedBasisDays(days);
+                                  setViewBasisDays(days === 31 ? 31 : 30);
+                                }}
+                                className={`py-2 px-2 rounded-xl text-[11px] font-black transition-all cursor-pointer border ${
+                                  conAgreedBasisDays === days
+                                    ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                                    : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
+                                }`}
+                              >
+                                {days === 1 ? '۱ روزه' : `${toPersianDigits(days)} روزه`}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {!selectedEmployee ? (
+                        <div className="text-[10px] text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-xl px-3 py-2 font-bold">
+                          برای محاسبه خودکار فوق‌العاده شغلی، ابتدا پرسنل مورد نظر را انتخاب کنید.
+                        </div>
+                      ) : agreedMonthlyNetSolverResult && (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                            {agreedMonthlyNetSolverResult.basisMode === 1 ? (
+                              <div className="bg-slate-950/90 border border-emerald-500/25 rounded-xl p-2.5 flex flex-col justify-between">
+                                <span className="text-[9.5px] text-slate-400 font-bold">
+                                  معادل خالص ماهانه (۲۶ روز کارکرد)
+                                </span>
+                                <span className="text-xs font-black text-emerald-300 font-mono mt-1 text-left">
+                                  {toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.targetAgreedNet))} ریال
+                                </span>
+                                <span className="text-[8.5px] text-slate-500 font-bold mt-0.5 text-left">
+                                  تطبیق‌شده روی مبنای ۳۰ روزه قرارداد
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="bg-slate-950/90 border border-emerald-500/25 rounded-xl p-2.5 flex flex-col justify-between">
+                                <span className="text-[9.5px] text-slate-400 font-bold">
+                                  مبلغ یک روز کارکرد توافقی ({toPersianDigits(agreedMonthlyNetSolverResult.basisDays)} روزه)
+                                </span>
+                                <span className="text-xs font-black text-emerald-300 font-mono mt-1 text-left">
+                                  {toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.dailyAgreedRate))} ریال
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 flex flex-col justify-between">
+                              <span className="text-[9.5px] text-slate-400 font-bold">
+                                فوق‌العاده شغلی محاسبه‌شده
+                              </span>
+                              <span className="text-xs font-black text-sky-300 font-mono mt-1 text-left">
+                                {toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.solvedJobAllowance))} ریال
+                              </span>
+                            </div>
+
+                            <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 flex flex-col justify-between">
+                              <span className="text-[9.5px] text-slate-400 font-bold">
+                                خالص پرداختی تطبیق‌یافته (بند ۱۴ - {toPersianDigits(agreedMonthlyNetSolverResult.basisDays)} روزه)
+                              </span>
+                              <span className="text-xs font-black text-white font-mono mt-1 text-left">
+                                {toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.resultingNet))} ریال
+                              </span>
+                            </div>
+                          </div>
+
+                          {agreedMonthlyNetSolverResult.isBelowMinimum && (
+                            <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl px-3 py-2 text-[10px] text-amber-200 font-bold leading-relaxed">
+                              {agreedMonthlyNetSolverResult.basisMode === 1
+                                ? `معادل ماهانه مبلغ یک روز توافقی (۲۶ روز کارکرد = ${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.targetAgreedNet))} ریال) کمتر از حداقل خالص پرداختی قانونی با فوق‌العاده شغلی صفر (${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.minNetAtZero))} ریال در مبنای ۳۰ روزه) است؛ بنابراین فوق‌العاده شغلی روی صفر تنظیم شد.`
+                                : `مبلغ توافقی واردشده (${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.targetAgreedNet))} ریال) کمتر از حداقل خالص پرداختی قانونی با فوق‌العاده شغلی صفر (${toPersianDigits(formatWithCommas(agreedMonthlyNetSolverResult.minNetAtZero))} ریال در مبنای ${toPersianDigits(agreedMonthlyNetSolverResult.basisDays)} روزه) است؛ بنابراین فوق‌العاده شغلی روی صفر تنظیم شد.`}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 gap-3.5">
                   <div className="space-y-2">
                     <label className="text-[10.5px] font-bold text-slate-300 block">حقوق پایه روزانه (ریال):</label>
@@ -19724,19 +20147,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">مبلغ فوق‌العاده شغلی (حق مسئولیت - ریال):</label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-bold text-slate-300 block">مبلغ فوق‌العاده شغلی (حق مسئولیت - ریال):</label>
+                      {conHasAgreedMonthlyNet && (
+                        <span className="text-[9px] font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md">
+                          محاسبه خودکار از مبلغ توافقی
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       placeholder="فوق‌العاده شغلی..."
                       value={conJobAllowance}
+                      readOnly={conHasAgreedMonthlyNet}
                       onChange={(e) => {
+                        if (conHasAgreedMonthlyNet) return;
                         const englishDigits = toEnglishDigits(e.target.value);
                         const cleanVal = englishDigits.replace(/,/g, '');
                         if (!isNaN(Number(cleanVal)) || cleanVal === '') {
                           setConJobAllowance(formatWithCommas(cleanVal));
                         }
                       }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors font-mono text-center font-bold text-emerald-400"
+                      className={`w-full border rounded-xl px-3 py-2 text-xs focus:outline-none transition-colors font-mono text-center font-bold ${
+                        conHasAgreedMonthlyNet
+                          ? 'bg-emerald-950/25 border-emerald-500/40 text-emerald-300 cursor-not-allowed'
+                          : 'bg-slate-950 border-slate-800 text-emerald-400 focus:border-rose-600'
+                      }`}
                     />
                   </div>
                 </div>
@@ -19792,10 +20228,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     startYear,
                     activePeriodId
                   );
-                  // Seniority base for viewing is dailyRate * viewBasisDays
-                  const calSeniorityBase = foundSeniorityRule ? (foundSeniorityRule.dailyRate * viewBasisDays) : 0;
+                  // Seniority base for viewing respects manual conSeniorityBase (30-day) if entered, otherwise seniorityRateRules dailyRate * viewBasisDays
+                  const parsedConSeniority30 = parseFloat(toEnglishDigits(conSeniorityBase).replace(/,/g, '')) || 0;
+                  const calSeniorityBase = parsedConSeniority30 > 0
+                    ? Math.round((parsedConSeniority30 / 30) * viewBasisDays)
+                    : (foundSeniorityRule ? (foundSeniorityRule.dailyRate * viewBasisDays) : 0);
 
-                  const calJobAllowance = selectedEmployee.jobAllowance || 0;
+                  const calJobAllowance = parseFloat(toEnglishDigits(conJobAllowance).replace(/,/g, '')) || 0;
 
                   // Social Security calculation based on contract period insured items list
                   const { periodId: cardPeriodId, items: empInsuredItems } = getInsuredSalaryItemsForContract({ contractStartDate: tStartDate }, selectedEmployee, db, activePeriodId);

@@ -868,7 +868,6 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     housingAllowance: r.housingAllowance,
     foodAllowance: r.foodAllowance,
     childAllowance: r.childAllowance,
-    baseYearsRate: r.baseYearsRate,
     marriageAllowance: r.marriageAllowance,
     taxableAmount: r.taxableAmount,
     overtimeHourlyRate: r.overtimeHourlyRate,
@@ -905,6 +904,9 @@ export function exportDatabaseToExcel(db: AppDatabase) {
     promissoryNoteNumber: c.promissoryNoteNumber || '',
     promissoryNoteAmount: c.promissoryNoteAmount || 0,
     jobAllowance: c.jobAllowance || 0,
+    hasAgreedMonthlyNet: c.hasAgreedMonthlyNet ? 'بله' : 'خیر',
+    agreedMonthlyNetAmount: c.agreedMonthlyNetAmount || 0,
+    agreedBasisDays: c.agreedBasisDays || 30,
     contractDailySalary: c.contractDailySalary || 0,
     contractDailyInsuranceSalary: c.contractDailyInsuranceSalary || 0,
     contractBaseInsuranceSalary: c.contractBaseInsuranceSalary || 0,
@@ -2310,7 +2312,6 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         housingAllowance: parseNumber(r.housingAllowance),
         foodAllowance: parseNumber(r.foodAllowance),
         childAllowance: parseNumber(r.childAllowance),
-        baseYearsRate: parseNumber(r.baseYearsRate),
         marriageAllowance: parseNumber(r.marriageAllowance),
         taxableAmount: parseNumber(r.taxableAmount),
         overtimeHourlyRate: parseNumber(r.overtimeHourlyRate),
@@ -2365,6 +2366,14 @@ export function importExcelToDatabase(fileBuffer: ArrayBuffer, currentDb: AppDat
         promissoryNoteNumber: r.promissoryNoteNumber ? String(r.promissoryNoteNumber) : undefined,
         promissoryNoteAmount: r.promissoryNoteAmount !== undefined ? parseNumber(r.promissoryNoteAmount) : undefined,
         jobAllowance: r.jobAllowance !== undefined ? parseNumber(r.jobAllowance) : undefined,
+        hasAgreedMonthlyNet: r.hasAgreedMonthlyNet === true || r.hasAgreedMonthlyNet === 'true' || r.hasAgreedMonthlyNet === 1 || r.hasAgreedMonthlyNet === '1' || r.hasAgreedMonthlyNet === 'بله' || Boolean(contractObj?.hasAgreedMonthlyNet),
+        agreedMonthlyNetAmount: r.agreedMonthlyNetAmount !== undefined && parseNumber(r.agreedMonthlyNetAmount) > 0
+          ? parseNumber(r.agreedMonthlyNetAmount)
+          : (contractObj?.agreedMonthlyNetAmount ? parseNumber(contractObj.agreedMonthlyNetAmount) : undefined),
+        agreedBasisDays: (() => {
+          const rawBasis = Number(r.agreedBasisDays) || Number(contractObj?.agreedBasisDays);
+          return (rawBasis === 1 ? 1 : (rawBasis === 31 ? 31 : 30)) as 1 | 30 | 31;
+        })(),
         contractDailySalary: r.contractDailySalary !== undefined ? parseNumber(r.contractDailySalary) : undefined,
         contractDailyInsuranceSalary: r.contractDailyInsuranceSalary !== undefined ? parseNumber(r.contractDailyInsuranceSalary) : undefined,
         contractBaseInsuranceSalary: r.contractBaseInsuranceSalary !== undefined ? parseNumber(r.contractBaseInsuranceSalary) : undefined,
@@ -3678,7 +3687,6 @@ export function exportSalaryBaseRatesToExcel(rates: any[]) {
     'حق مسکن ماهانه': r.housingAllowance || 0,
     'حق بن کارگری': r.foodAllowance || 0,
     'حق اولاد ماهانه': r.childAllowance || 0,
-    'پایه سنوات روزانه': r.baseYearsRate || 0,
     'حق تاهل ماهانه': r.marriageAllowance || 0,
     'سقف معافیت مالیاتی': r.taxableAmount || 0,
     'حق اضافه کاری ساعتی': (r.overtimeHourlyRate && r.overtimeHourlyRate > ((r.dailyBaseSalary || 0) * 0.8))

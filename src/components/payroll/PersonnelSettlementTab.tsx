@@ -478,7 +478,6 @@ export default function PersonnelSettlementTab({
       housingAllowance: 9000000, // ۹ میلیون ریال
       foodAllowance: 14000000, // ۱۴ میلیون ریال بن
       childAllowance: 7166184, // حق اولاد
-      baseYearsRate: 70000,
       marriageAllowance: 5000000, // ۵ میلیون ریال حق تاهل
       taxableAmount: 120000000,
       overtimeHourlyRate: fallbackOvertime8h,
@@ -697,10 +696,6 @@ export default function PersonnelSettlementTab({
       dailyBaseYears = emp.dailyYearsDifference;
     } else if (emp?.yearsBase && emp.yearsBase > 0) {
       dailyBaseYears = emp.yearsBase > 500000 ? Math.round(emp.yearsBase / 30) : emp.yearsBase;
-    } else if (resolvedContractRate?.baseYearsRate && resolvedContractRate.baseYearsRate > 0) {
-      dailyBaseYears = resolvedContractRate.baseYearsRate > 500000 ? Math.round(resolvedContractRate.baseYearsRate / 30) : resolvedContractRate.baseYearsRate;
-    } else if (rate.baseYearsRate > 0) {
-      dailyBaseYears = rate.baseYearsRate > 500000 ? Math.round(rate.baseYearsRate / 30) : rate.baseYearsRate;
     }
 
     // حق جمعه کاری ساعتی (مبنای ۷.۳۳ ساعت از ثوابت و قوانین دستمزد):

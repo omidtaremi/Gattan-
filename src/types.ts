@@ -386,6 +386,9 @@ export interface PersonnelContract {
   promissoryNoteNumber?: string;
   promissoryNoteAmount?: number;
   jobAllowance?: number;
+  hasAgreedMonthlyNet?: boolean; // آیا مبلغ توافقی فعال است؟
+  agreedMonthlyNetAmount?: number; // مبلغ خالص پرداختی توافقی (ریال - ماهانه یا روزانه بسته به مبنا)
+  agreedBasisDays?: 1 | 30 | 31; // مبنای توافق (۱ روزه با ضریب ۲۶ روز کارکرد، ۳۰ روزه یا ۳۱ روزه)
   contract?: any; // Nested contract object to save salary & wage info
   salaryBaseRateId?: string; // شناسه دوره ثوابت و نرخ پایه دستمزد متناظر قرارداد
   isActive?: boolean; // وضعیت فعال بودن قرارداد (همیشه آخرین قرارداد هر پرسنل فعال است)
@@ -525,7 +528,7 @@ export interface SalaryBaseRate {
   housingAllowance: number; // "حق مسکن"
   foodAllowance: number; // "کمک هزینه اقلام مصرفی (حق بن)"
   childAllowance: number; // "حق اولاد"
-  baseYearsRate: number; // "پایه سنوات"
+  baseYearsRate?: number; // منسوخ - برای سازگاری با بکاپ‌های قدیمی
   marriageAllowance: number; // "حق تاهل"
   taxableAmount: number; // "مبلغ مشمول مالیات"
   overtimeHourlyRate: number; // "مبلغ اضافه کاری ساعتی"

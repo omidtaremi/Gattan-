@@ -560,7 +560,6 @@ export function getInitialDatabase(): AppDatabase {
         housingAllowance: 9000000,
         foodAllowance: 14000000,
         childAllowance: 7000000,
-        baseYearsRate: 2500000,
         marriageAllowance: 5000000,
         taxableAmount: 15000000,
         overtimeHourlyRate: 450000,
