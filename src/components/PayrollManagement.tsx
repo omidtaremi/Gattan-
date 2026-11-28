@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   AppDatabase, Personnel, PersonnelAllocation, PayrollItem, PayrollPeriod, PersonnelBankAccount, ShiftAssignment, SalaryBaseRate, PersonnelChild, PersonnelCategory, SeniorityRateRule, PersonnelContract, ShiftScheme, PayrollCalculationRules, AttendanceRecord, Department 
 } from '../types';
@@ -25,6 +26,7 @@ import {
 import AttendanceForm from './AttendanceForm';
 import AttendanceSettingsForm from './AttendanceSettingsForm';
 import ShamsiDatePicker from './ShamsiDatePicker';
+import SearchableSelect from './SearchableSelect';
 import PersonnelSettlementTab from './payroll/PersonnelSettlementTab';
 import { PersonnelPayslipModal, PayslipItemData } from './payroll/PersonnelPayslipModal';
 import {
@@ -9061,7 +9063,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [empDeptFilter, setEmpDeptFilter] = useState<string>('all');
   const [empInsuranceFilter, setEmpInsuranceFilter] = useState<'all' | 'insured' | 'uninsured'>('all');
   const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'active' | 'departed' | 'inactive'>('all');
-  const [empSortBy, setEmpSortBy] = useState<'code' | 'name' | 'childAllowance' | 'seniorityBase'>('code');
+  const [empSortBy, setEmpSortBy] = useState<'code' | 'attendanceCode' | 'name' | 'childAllowance' | 'seniorityBase'>('code');
   const [empSortOrder, setEmpSortOrder] = useState<'asc' | 'desc'>('asc');
   const [editingEmp, setEditingEmp] = useState<Personnel | null>(null);
   const [isPersonnelFormOpen, setIsPersonnelFormOpen] = useState(false);
@@ -9176,6 +9178,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const dir = empSortOrder === 'asc' ? 1 : -1;
     return [...filtered].sort((a, b) => {
+      if (empSortBy === 'attendanceCode') {
+        const attA = toEnglishDigits(String(a.attendanceCode || '')).trim();
+        const attB = toEnglishDigits(String(b.attendanceCode || '')).trim();
+        if (!attA && !attB) {
+          return a.employeeCode.localeCompare(b.employeeCode, 'en', { numeric: true }) * dir;
+        }
+        if (!attA) return 1;
+        if (!attB) return -1;
+        const primaryA = attA.split(/[,،\s/|-]+/)[0] || attA;
+        const primaryB = attB.split(/[,،\s/|-]+/)[0] || attB;
+        const cmpPrimary = primaryA.localeCompare(primaryB, 'en', { numeric: true });
+        if (cmpPrimary !== 0) return cmpPrimary * dir;
+        const cmpFull = attA.localeCompare(attB, 'en', { numeric: true });
+        if (cmpFull !== 0) return cmpFull * dir;
+        return a.employeeCode.localeCompare(b.employeeCode, 'en', { numeric: true }) * dir;
+      }
       if (empSortBy === 'name') {
         const nameA = a.fullName || `${a.firstName || ''} ${a.lastName || ''}`;
         const nameB = b.fullName || `${b.firstName || ''} ${b.lastName || ''}`;
@@ -9595,12 +9613,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const formattedSolved = formatWithCommas(agreedMonthlyNetSolverResult.solvedJobAllowance);
     setConJobAllowance(prev => (prev === formattedSolved ? prev : formattedSolved));
   }, [conHasAgreedMonthlyNet, agreedMonthlyNetSolverResult]);
-  const [selectedContractYear, setSelectedContractYear] = useState<string>('all');
+  const [contractDepartureFilter, setContractDepartureFilter] = useState<'all' | 'active_only' | 'departed_only'>('all');
   const [onlyActiveContractsFilter, setOnlyActiveContractsFilter] = useState<boolean>(false);
   const [searchContractQuery, setSearchContractQuery] = useState<string>('');
   const [groupByPersonnelContracts, setGroupByPersonnelContracts] = useState<boolean>(false);
   const [contractAgreementFilter, setContractAgreementFilter] = useState<'all' | 'agreed' | 'standard'>('all');
-  const [contractSortBy, setContractSortBy] = useState<'name' | 'employeeCode' | 'startDate' | 'baseSalary' | 'netPayable'>('employeeCode');
+  const [contractSortBy, setContractSortBy] = useState<'name' | 'employeeCode' | 'attendanceCode' | 'startDate' | 'baseSalary' | 'netPayable'>('employeeCode');
   const [contractSortOrder, setContractSortOrder] = useState<'asc' | 'desc'>('asc');
   const [constantsSearchQuery, setConstantsSearchQuery] = useState<string>('');
   const [contractModalEmployee, setContractModalEmployee] = useState<Personnel | null>(null);
@@ -9628,9 +9646,31 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const [isEditingSingleEntryDate, setIsEditingSingleEntryDate] = useState<boolean>(false);
   const [singleEntryDateSuccessMsg, setSingleEntryDateSuccessMsg] = useState<string>('');
 
+  // Uncontracted personnel modal states
+  const [showUncontractedModal, setShowUncontractedModal] = useState<boolean>(false);
+  const [uncontractedSearch, setUncontractedSearch] = useState<string>('');
+  const [selectedUncontractedCodes, setSelectedUncontractedCodes] = useState<string[]>([]);
+  const [uncontractedBatchStart, setUncontractedBatchStart] = useState<string>('');
+  const [uncontractedBatchEnd, setUncontractedBatchEnd] = useState<string>('');
+  const [uncontractedNotice, setUncontractedNotice] = useState<{
+    type: 'error' | 'success';
+    title: string;
+    details: string[];
+  } | null>(null);
+
   useEffect(() => {
     setSelectedContractIds([]);
+    setSelectedUncontractedCodes([]);
   }, [activePeriodId]);
+
+  useEffect(() => {
+    if (!showUncontractedModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowUncontractedModal(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showUncontractedModal]);
 
   // ====== DEMOGRAPHICS & FORM STATES ======
   const [birthCertificateNumber, setBirthCertificateNumber] = useState('');
@@ -10646,14 +10686,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
   const validateContractDateRangeForPersonnel = (
     emp: Personnel | null | undefined,
     rawStart: string,
-    rawEnd: string
-  ): { ok: boolean; start: string; end: string; message: string } => {
+    rawEnd: string,
+    excludeContractId?: string | null
+  ): {
+    ok: boolean;
+    start: string;
+    end: string;
+    message: string;
+    reasonCode?: 'missing_dates' | 'invalid_format' | 'inverted_range' | 'out_of_period' | 'missing_entry' | 'before_entry' | 'departed_before_start' | 'departed_during_range' | 'overlap';
+  } => {
     if (!rawStart.trim() || !rawEnd.trim()) {
       return {
         ok: false,
         start: '',
         end: '',
-        message: 'وارد کردن هر دو تاریخ شروع و پایان قرارداد الزامی است.'
+        message: 'وارد کردن هر دو تاریخ شروع و پایان قرارداد الزامی است.',
+        reasonCode: 'missing_dates'
       };
     }
 
@@ -10664,7 +10712,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         ok: false,
         start: '',
         end: '',
-        message: 'فرمت تاریخ شروع یا پایان قرارداد معتبر نیست (فرمت صحیح: ۱۴۰۵/۰۱/۰۱).'
+        message: 'فرمت تاریخ شروع یا پایان قرارداد معتبر نیست (فرمت صحیح: ۱۴۰۵/۰۱/۰۱).',
+        reasonCode: 'invalid_format'
       };
     }
 
@@ -10673,7 +10722,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         ok: false,
         start: normStart,
         end: normEnd,
-        message: 'تاریخ شروع قرارداد نمی‌تواند بزرگ‌تر از تاریخ پایان قرارداد باشد.'
+        message: 'تاریخ شروع قرارداد نمی‌تواند بزرگ‌تر از تاریخ پایان قرارداد باشد.',
+        reasonCode: 'inverted_range'
       };
     }
 
@@ -10683,8 +10733,36 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         ok: false,
         start: normStart,
         end: normEnd,
-        message: `امکان ثبت قرارداد در تاریخ خارج از دوره مالی فعال «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وجود ندارد.`
+        message: `امکان ثبت قرارداد در تاریخ خارج از دوره مالی فعال «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وجود ندارد.`,
+        reasonCode: 'out_of_period'
       };
+    }
+
+    // Strict departure date check (departed on/before contract start is completely blocked; end must be < departureDate)
+    if (emp) {
+      const rawDep = emp.departureDate || (emp as any).personnel?.departureDate || '';
+      const depYMD = normalizeRateDateYMD(rawDep);
+      if (depYMD) {
+        if (depYMD <= normStart) {
+          return {
+            ok: false,
+            start: normStart,
+            end: normEnd,
+            message: `این پرسنل در تاریخ ${toPersianDigits(depYMD)} ترک کار کرده است و تاریخ ترک کار او پیش از تاریخ شروع قرارداد (${toPersianDigits(normStart)}) می‌باشد؛ بنابراین امکان ثبت قرارداد وجود ندارد.`,
+            reasonCode: 'departed_before_start'
+          };
+        }
+        const dayBeforeDep = shiftJalaliYMD(depYMD, -1);
+        if (normEnd >= depYMD) {
+          return {
+            ok: false,
+            start: normStart,
+            end: normEnd,
+            message: `این پرسنل در تاریخ ${toPersianDigits(depYMD)} ترک کار کرده است. ثبت قرارداد صرفاً تا یک روز قبل از تاریخ ترک کار (حداکثر تا ${toPersianDigits(dayBeforeDep)}) امکان‌پذیر است.`,
+            reasonCode: 'departed_during_range'
+          };
+        }
+      }
     }
 
     // Strict entry date (تاریخ ورود به کار) check
@@ -10696,7 +10774,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           ok: false,
           start: normStart,
           end: normEnd,
-          message: 'تاریخ ورود به کار برای این پرسنل در پرونده ثبت نشده است. لطفاً ابتدا تاریخ ورود به کار را ثبت یا اصلاح کنید.'
+          message: 'تاریخ ورود به کار برای این پرسنل در پرونده ثبت نشده است. لطفاً ابتدا تاریخ ورود به کار را ثبت یا اصلاح کنید.',
+          reasonCode: 'missing_entry'
         };
       }
       if (normStart < entryYMD) {
@@ -10704,23 +10783,30 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           ok: false,
           start: normStart,
           end: normEnd,
-          message: `امکان ثبت قرارداد قبل از تاریخ ورود به کار پرسنل (${toPersianDigits(entryYMD)}) وجود ندارد. تاریخ شروع قرارداد باید برابر یا بعد از ${toPersianDigits(entryYMD)} باشد.`
+          message: `امکان ثبت قرارداد قبل از تاریخ ورود به کار پرسنل (${toPersianDigits(entryYMD)}) وجود ندارد. تاریخ شروع قرارداد باید برابر یا بعد از ${toPersianDigits(entryYMD)} باشد.`,
+          reasonCode: 'before_entry'
         };
       }
     }
 
-    // Strict departure date check (max allowed = 1 day before departureDate)
+    // Strict overlap check (prevent overlapping / shared contract periods for the same employee)
     if (emp) {
-      const rawDep = emp.departureDate || (emp as any).personnel?.departureDate || '';
-      const depYMD = normalizeRateDateYMD(rawDep);
-      if (depYMD) {
-        const dayBeforeDep = shiftJalaliYMD(depYMD, -1);
-        if (normStart >= depYMD || normEnd >= depYMD) {
+      const empCodeTrim = String(emp.employeeCode || '').trim();
+      const existingEmpContracts = (db.personnelContracts || []).filter(c => {
+        if (excludeContractId && c.id === excludeContractId) return false;
+        return String(c.employeeCode || '').trim() === empCodeTrim;
+      });
+      for (const existing of existingEmpContracts) {
+        const exStart = normalizeRateDateYMD(existing.contractStartDate || '');
+        const exEnd = normalizeRateDateYMD(existing.contractEndDate || '');
+        if (!exStart || !exEnd) continue;
+        if (normStart <= exEnd && normEnd >= exStart) {
           return {
             ok: false,
             start: normStart,
             end: normEnd,
-            message: `این پرسنل در تاریخ ${toPersianDigits(depYMD)} ترک کار کرده است. ثبت قرارداد صرفاً تا یک روز قبل از تاریخ ترک کار (حداکثر تا ${toPersianDigits(dayBeforeDep)}) امکان‌پذیر است.`
+            message: `بازه انتخابی (${toPersianDigits(normStart)} تا ${toPersianDigits(normEnd)}) با قرارداد ثبت‌شده قبلی این پرسنل (${toPersianDigits(exStart)} تا ${toPersianDigits(exEnd)}) دارای دوره مشترک (هم‌پوشانی زمانی) است. امکان ثبت قرارداد با بازه تداخلی وجود ندارد.`,
+            reasonCode: 'overlap'
           };
         }
       }
@@ -10745,7 +10831,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
 
-    const dateValidation = validateContractDateRangeForPersonnel(emp, conStartDate, conEndDate);
+    const dateValidation = validateContractDateRangeForPersonnel(emp, conStartDate, conEndDate, editContractId);
     if (!dateValidation.ok) {
       setContractFormValidationError(dateValidation.message);
       return;
@@ -11127,9 +11213,49 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     setSingleEntryDateSuccessMsg('');
   };
 
+  const applySelectedEmployeeToContractForm = (code: string, targetEditId: string | null = editContractId) => {
+    setContractFormValidationError('');
+    setIsEditingSingleEntryDate(false);
+    setSingleEntryDateSuccessMsg('');
+    setSelContractEmpCode(code);
+    setConEmployeeCode(code);
+    setOriginalEmpCode(code);
+    const matchedEmp = (db.personnel || []).find(p => p.periodId === activePeriodId && p.employeeCode === code);
+    if (matchedEmp) {
+      setConRole(matchedEmp.role || '');
+      const suggestion = resolveSuggestedContractDatesForPersonnel(matchedEmp, targetEditId);
+      const conStart = suggestion.suggestedStartDate;
+      const conEnd = suggestion.suggestedEndDate;
+      const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStart }, matchedEmp, db, activePeriodId);
+      const dailyVal = contractRates ? contractRates.dailyBaseSalary : (matchedEmp.contractDailySalary || (matchedEmp.baseSalary ? Math.round(matchedEmp.baseSalary / 30) : 4333333));
+      setConDailySalary(formatWithCommas(dailyVal));
+      setConBaseSalary(formatWithCommas(dailyVal * 30));
+      if (contractRates) {
+        setConSalaryBaseRateId(contractRates.id);
+        setConDailyInsuranceSalary(formatWithCommas(contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary));
+        setConMonthlyInsuranceSalary(formatWithCommas((contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary) * 30));
+      }
+      setConStartDate(conStart ? toPersianDigits(conStart) : '');
+      setConEndDate(conEnd ? toPersianDigits(conEnd) : '');
+      const autoDur = (conStart && conEnd && conStart <= conEnd) ? calculateJalaliContractMonths(conStart, conEnd) : 0;
+      setConDurationMonths(autoDur > 0 ? String(autoDur) : '');
+      const autoSen = computeAutoSeniorityForContract(matchedEmp, conStart);
+      setConSeniorityBase(formatWithCommas(autoSen.monthly30));
+      setConSeniorityManuallyEdited(false);
+    }
+  };
+
   const handleNewContract = () => {
     resetContractFormFields();
     setIsContractFormOpen(true);
+  };
+
+  const handleNewContractForEmployee = (employeeCode: string) => {
+    resetContractFormFields();
+    setShowBatchContractForm(false);
+    setShowUncontractedModal(false);
+    setIsContractFormOpen(true);
+    applySelectedEmployeeToContractForm(employeeCode, null);
   };
 
   const handleToggleContractActive = (id: string) => {
@@ -11195,7 +11321,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     );
   };
 
-  const buildBatchContractPlan = (rawStart: string, rawEnd: string) => {
+  const buildBatchContractPlan = (rawStart: string, rawEnd: string, onlyEmpCodes?: Set<string>) => {
     const batchRangeValidation = validateContractDateRangeForPersonnel(null, rawStart, rawEnd);
     if (!batchRangeValidation.ok) {
       return {
@@ -11221,6 +11347,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         }>,
         adjustedToEntryDateDetails: [] as string[],
         skippedAlreadyCovered: [] as string[],
+        skippedOverlapping: [] as string[],
         skippedDeparted: [] as string[],
         skippedInvalidRange: [] as string[],
         cappedDepartedDetails: [] as string[]
@@ -11229,16 +11356,23 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     const batchStartNorm = batchRangeValidation.start;
     const batchEndNorm = batchRangeValidation.end;
-    const activeEmps = (db.personnel || []).filter(p => p.periodId === activePeriodId);
+    const activeEmps = (db.personnel || []).filter(p => {
+      if (p.periodId !== activePeriodId) return false;
+      if (onlyEmpCodes && !onlyEmpCodes.has(p.employeeCode.trim())) return false;
+      return true;
+    });
     if (activeEmps.length === 0) {
       return {
         ok: false as const,
-        errorTitle: 'پرسنلی در این دوره یافت نشد',
-        errorMessage: 'هیچ پرسنلی در این دوره جهت صدور قرارداد دسته‌جمعی ثبت نشده است.',
+        errorTitle: 'پرسنلی جهت صدور قرارداد یافت نشد',
+        errorMessage: onlyEmpCodes
+          ? 'هیچ پرسنلی برای صدور دسته‌جمعی انتخاب نشده است.'
+          : 'هیچ پرسنلی در این دوره جهت صدور قرارداد دسته‌جمعی ثبت نشده است.',
         eligibleList: [],
         skippedMissingEntryDate: [],
         adjustedToEntryDateDetails: [],
         skippedAlreadyCovered: [],
+        skippedOverlapping: [],
         skippedDeparted: [],
         skippedInvalidRange: [],
         cappedDepartedDetails: []
@@ -11258,6 +11392,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         skippedMissingEntryDate: [],
         adjustedToEntryDateDetails: [],
         skippedAlreadyCovered: [],
+        skippedOverlapping: [],
         skippedDeparted: [],
         skippedInvalidRange: [],
         cappedDepartedDetails: []
@@ -11271,6 +11406,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     }> = [];
     const adjustedToEntryDateDetails: string[] = [];
     const skippedAlreadyCovered: string[] = [];
+    const skippedOverlapping: string[] = [];
     const skippedDeparted: string[] = [];
     const skippedInvalidRange: string[] = [];
     const cappedDepartedDetails: string[] = [];
@@ -11289,6 +11425,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
     activeEmps.forEach(p => {
       const pName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode;
+      const rawDepYMD = normalizeRateDateYMD(p.departureDate || (p as any).personnel?.departureDate || '');
+      // Exclude departed personnel whose departure date is on or before the contract start date BEFORE any other check
+      if (rawDepYMD && (rawDepYMD <= batchStartNorm || rawDepYMD <= activePeriodStartDate)) {
+        skippedDeparted.push(`${pName} (تاریخ ترک کار: ${toPersianDigits(rawDepYMD)} — پیش از تاریخ شروع قرارداد)`);
+        return;
+      }
+
       const suggestion = resolveSuggestedContractDatesForPersonnel(p, null);
 
       if (suggestion.hasMissingEntryDate) {
@@ -11317,8 +11460,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       let empEndNorm = batchEndNorm;
 
       if (suggestion.hasDepartureRestriction) {
-        if (!suggestion.dayBeforeDeparture || suggestion.dayBeforeDeparture < activePeriodStartDate) {
-          skippedDeparted.push(`${pName} (تاریخ ترک کار: ${toPersianDigits(suggestion.departureDate)} — پیش از شروع دوره)`);
+        if (!suggestion.dayBeforeDeparture || suggestion.dayBeforeDeparture < activePeriodStartDate || suggestion.departureDate <= empStartNorm) {
+          skippedDeparted.push(`${pName} (تاریخ ترک کار: ${toPersianDigits(suggestion.departureDate)} — پیش از شروع قرارداد)`);
           return;
         }
         if (empStartNorm > suggestion.maxAllowedEndDate) {
@@ -11342,9 +11485,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         return;
       }
 
-      const finalCheck = validateContractDateRangeForPersonnel(p, empStartNorm, empEndNorm);
+      const finalCheck = validateContractDateRangeForPersonnel(p, empStartNorm, empEndNorm, null);
       if (!finalCheck.ok) {
-        skippedInvalidRange.push(`${pName}: ${finalCheck.message}`);
+        if (finalCheck.reasonCode === 'overlap') {
+          skippedOverlapping.push(`${pName}: ${finalCheck.message}`);
+        } else if (finalCheck.reasonCode === 'departed_before_start' || finalCheck.reasonCode === 'departed_during_range') {
+          skippedDeparted.push(`${pName}: ${finalCheck.message}`);
+        } else {
+          skippedInvalidRange.push(`${pName}: ${finalCheck.message}`);
+        }
         return;
       }
 
@@ -11378,16 +11527,24 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       skippedMissingEntryDate,
       adjustedToEntryDateDetails,
       skippedAlreadyCovered,
+      skippedOverlapping,
       skippedDeparted,
       skippedInvalidRange,
       cappedDepartedDetails
     };
   };
 
-  const handleBatchCreateContracts = () => {
-    setBatchContractNotice(null);
-    if (!batchStartDate || !batchEndDate) {
-      setBatchContractNotice({
+  const executeBatchContractCreation = (
+    rawStart: string,
+    rawEnd: string,
+    onlyEmpCodes?: Set<string>,
+    source: 'batch' | 'uncontracted' = 'batch'
+  ) => {
+    const setNotice = source === 'uncontracted' ? setUncontractedNotice : setBatchContractNotice;
+    setNotice(null);
+
+    if (!rawStart || !rawEnd) {
+      setNotice({
         type: 'error',
         title: 'تاریخ شروع و پایان قرارداد دسته‌جمعی الزامی است',
         details: [`لطفاً بازه زمانی معتبری در محدوده دوره مالی «${activePeriodLabel}» (${toPersianDigits(activePeriodStartDate)} تا ${toPersianDigits(activePeriodEndDate)}) وارد نمایید.`]
@@ -11395,9 +11552,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       return;
     }
 
-    const planResult = buildBatchContractPlan(batchStartDate, batchEndDate);
+    const planResult = buildBatchContractPlan(rawStart, rawEnd, onlyEmpCodes);
     if (!planResult.ok) {
-      setBatchContractNotice({
+      setNotice({
         type: 'error',
         title: planResult.errorTitle,
         details: [planResult.errorMessage]
@@ -11410,6 +11567,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       skippedMissingEntryDate,
       adjustedToEntryDateDetails,
       skippedAlreadyCovered,
+      skippedOverlapping,
       skippedDeparted,
       skippedInvalidRange,
       cappedDepartedDetails
@@ -11420,6 +11578,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       if (skippedMissingEntryDate.length > 0) {
         details.push(`فاقد تاریخ ورود به کار در پرونده (${toPersianDigits(skippedMissingEntryDate.length)} نفر — لطفاً ابتدا تاریخ ورود آن‌ها را ثبت کنید): ${skippedMissingEntryDate.map(x => x.empName).join('، ')}`);
       }
+      if (skippedOverlapping.length > 0) {
+        details.push(`تداخل بازه با قرارداد قبلی / دوره مشترک (${toPersianDigits(skippedOverlapping.length)} نفر): ${skippedOverlapping.join(' | ')}`);
+      }
       if (skippedAlreadyCovered.length > 0) {
         details.push(`دارای قرارداد تا پایان بازه (${toPersianDigits(skippedAlreadyCovered.length)} نفر): ${skippedAlreadyCovered.join('، ')}`);
       }
@@ -11429,10 +11590,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       if (skippedInvalidRange.length > 0) {
         details.push(`خارج از بازه مجاز (${toPersianDigits(skippedInvalidRange.length)} نفر): ${skippedInvalidRange.join('، ')}`);
       }
-      setBatchContractNotice({
+      setNotice({
         type: 'error',
         title: 'هیچ قرارداد جدیدی برای صدور دسته‌جمعی واجد شرایط نبود',
-        details: details.length > 0 ? details : ['تمام پرسنل این دوره از قبل پوشش قراردادی دارند یا فاقد تاریخ ورود به کار / مشمول محدودیت ترک کار هستند.']
+        details: details.length > 0 ? details : ['تمام پرسنل انتخابی از قبل پوشش قراردادی دارند یا فاقد تاریخ ورود به کار / مشمول محدودیت ترک کار هستند.']
       });
       return;
     }
@@ -11449,7 +11610,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const startDisp = toPersianDigits(plan.startYMD);
         const endDisp = toPersianDigits(plan.endYMD);
 
-        const hasManualOverride = Object.prototype.hasOwnProperty.call(batchSeniorityOverrides, p.employeeCode);
+        const hasManualOverride = source === 'batch' && Object.prototype.hasOwnProperty.call(batchSeniorityOverrides, p.employeeCode);
         const finalContractSeniorityBase = hasManualOverride
           ? Math.max(0, parseFloat(toEnglishDigits(batchSeniorityOverrides[p.employeeCode] || '0').replace(/,/g, '')) || 0)
           : plan.autoSeniorityMonthly30;
@@ -11534,9 +11695,6 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       personnel: updatedPersonnel
     });
 
-    setBatchSeniorityOverrides({});
-    setShowBatchContractForm(false);
-
     const summaryDetails: string[] = [];
     if (adjustedToEntryDateDetails.length > 0) {
       summaryDetails.push(`تنظیم خودکار شروع قرارداد از تاریخ ورود به کار (${toPersianDigits(adjustedToEntryDateDetails.length)} نفر): ${adjustedToEntryDateDetails.join(' | ')}`);
@@ -11547,8 +11705,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     if (skippedMissingEntryDate.length > 0) {
       summaryDetails.push(`عدم صدور به دلیل ثبت نشدن تاریخ ورود به کار (${toPersianDigits(skippedMissingEntryDate.length)} نفر): ${skippedMissingEntryDate.map(x => x.empName).join('، ')}`);
     }
+    if (skippedOverlapping.length > 0) {
+      summaryDetails.push(`عدم صدور به دلیل دوره مشترک با قرارداد قبلی (${toPersianDigits(skippedOverlapping.length)} نفر): ${skippedOverlapping.join(' | ')}`);
+    }
     if (skippedDeparted.length > 0) {
-      summaryDetails.push(`عدم صدور به دلیل تاریخ ترک کار (${toPersianDigits(skippedDeparted.length)} نفر): ${skippedDeparted.join(' | ')}`);
+      summaryDetails.push(`عدم صدور به دلیل تاریخ ترک کار پیش از شروع قرارداد (${toPersianDigits(skippedDeparted.length)} نفر): ${skippedDeparted.join(' | ')}`);
     }
     if (skippedAlreadyCovered.length > 0) {
       summaryDetails.push(`دارای قرارداد تا پایان بازه (${toPersianDigits(skippedAlreadyCovered.length)} نفر): ${skippedAlreadyCovered.join('، ')}`);
@@ -11557,11 +11718,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       summaryDetails.push(`عدم صدور به دلیل بازه تاریخ (${toPersianDigits(skippedInvalidRange.length)} نفر): ${skippedInvalidRange.join(' | ')}`);
     }
 
-    setBatchContractNotice({
-      type: 'success',
+    const successNotice = {
+      type: 'success' as const,
       title: `قرارداد جدید برای ${toPersianDigits(newContracts.length)} پرسنل با موفقیت به صورت دسته‌جمعی صادر شد.`,
       details: summaryDetails
-    });
+    };
+
+    if (source === 'batch') {
+      setBatchSeniorityOverrides({});
+      setShowBatchContractForm(false);
+      setBatchContractNotice(successNotice);
+    } else {
+      setSelectedUncontractedCodes(prev => prev.filter(code => !newEmpCodes.has(code.trim())));
+      setUncontractedNotice(successNotice);
+      setBatchContractNotice(successNotice);
+    }
+  };
+
+  const handleBatchCreateContracts = () => {
+    executeBatchContractCreation(batchStartDate, batchEndDate, undefined, 'batch');
   };
 
   const handleSaveDailyAttendanceCorrection = (dateStr: string, entryTime: string, exitTime: string, emp: Personnel) => {
@@ -14711,6 +14886,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             className="flex-grow px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs font-bold focus:outline-none focus:border-rose-500 cursor-pointer"
                           >
                             <option value="code">کد پرسنلی</option>
+                            <option value="attendanceCode">کد تردد</option>
                             <option value="name">نام پرسنل</option>
                             <option value="childAllowance">مبلغ حق اولاد</option>
                             <option value="seniorityBase">حق پایه سنوات</option>
@@ -14765,7 +14941,24 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             </button>
                           </th>
                           <th className="px-4 py-3.5">کد پرسنلی / حسابداری</th>
-                          <th className="px-4 py-3.5 text-center">کد تردد</th>
+                          <th className="px-4 py-3.5 text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (empSortBy === 'attendanceCode') {
+                                  setEmpSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                                } else {
+                                  setEmpSortBy('attendanceCode');
+                                  setEmpSortOrder('asc');
+                                }
+                              }}
+                              className={`inline-flex items-center gap-1 cursor-pointer hover:text-amber-300 transition-colors ${empSortBy === 'attendanceCode' ? 'text-amber-400' : ''}`}
+                              title="مرتب‌سازی بر اساس کد تردد"
+                            >
+                              <span>کد تردد</span>
+                              <ArrowUpDown className="h-3 w-3 opacity-80" />
+                            </button>
+                          </th>
                           <th className="px-4 py-3.5">نام و فامیل پرسنل</th>
                           <th className="px-4 py-3.5">وضعیت / عائله</th>
                           <th className="px-4 py-3.5">تخصیص دپارتمان</th>
@@ -20673,61 +20866,85 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const selectedEmployee = activeEmployees.find(p => p.employeeCode === selContractEmpCode);
         
         const periodContractsAll = (db.personnelContracts || []).filter(c => c.periodId === activePeriodId);
-        const contractYears = Array.from(new Set([
-          ...(db.salaryBaseRates || []).filter((r: any) => r.periodId === activePeriodId).map((r: any) => toEnglishDigits(String(r.year || ''))),
-          ...periodContractsAll.map((c: any) => toEnglishDigits(String(c.contractStartDate || '')).split('/')[0]),
-          ...periodContractsAll.map((c: any) => toEnglishDigits(String(c.contractEndDate || '')).split('/')[0]),
-          toEnglishDigits(activeFiscalYearStr),
-          '1402',
-          '1403',
-          '1404',
-          '1405'
-        ].map(y => y?.trim()).filter(y => y && y.length === 4))).sort();
 
-        const registeredContracts = periodContractsAll.filter(c => {
-          if (selectedContractYear && selectedContractYear !== 'all') {
-            const cleanTargetYear = toEnglishDigits(selectedContractYear).trim();
-            const startYear = toEnglishDigits(String(c.contractStartDate || '')).split('/')[0]?.trim();
-            const endYear = toEnglishDigits(String(c.contractEndDate || '')).split('/')[0]?.trim();
-            const periodYear = toEnglishDigits(activeFiscalYearStr).trim();
+        const contractedEmpCodeSetInPeriod = new Set(
+          periodContractsAll.map(c => String(c.employeeCode || '').trim())
+        );
 
-            if (startYear === cleanTargetYear || endYear === cleanTargetYear || periodYear === cleanTargetYear) {
-              return true;
-            }
-            if (startYear && endYear && startYear <= cleanTargetYear && endYear >= cleanTargetYear) {
-              return true;
-            }
-            return false;
-          }
+        const uncontractedEligibleEmployees = activeEmployees.filter(p => {
+          const codeTrim = String(p.employeeCode || '').trim();
+          if (contractedEmpCodeSetInPeriod.has(codeTrim)) return false;
+          const depYMD = normalizeRateDateYMD(p.departureDate || '');
+          if (depYMD && depYMD <= activePeriodStartDate) return false;
           return true;
         });
+
+        const getContractEmployee = (c: any) =>
+          db.personnel.find(e => e.employeeCode === c.employeeCode && e.periodId === c.periodId)
+          || db.personnel.find(e => e.employeeCode === c.employeeCode);
+
+        const isContractPersonnelDeparted = (c: any) => {
+          const emp = getContractEmployee(c);
+          return Boolean(normalizeRateDateYMD(emp?.departureDate || ''));
+        };
+
+        const departedContractsCount = periodContractsAll.filter(c => isContractPersonnelDeparted(c)).length;
 
         const getContractNetPayable = (c: any, emp: any) => {
           return getContractNetPayableHelper(c, emp, db, activePeriodId);
         };
 
-        const filteredContracts = registeredContracts.filter(c => {
+        const filteredContracts = periodContractsAll.filter(c => {
           if (onlyActiveContractsFilter) {
             const active = isContractActive(c, periodContractsAll);
             if (!active) return false;
           }
+          const emp = getContractEmployee(c);
+          const hasDeparted = Boolean(normalizeRateDateYMD(emp?.departureDate || ''));
+          if (contractDepartureFilter === 'departed_only' && !hasDeparted) return false;
+          if (contractDepartureFilter === 'active_only' && hasDeparted) return false;
           if (contractAgreementFilter === 'agreed' && !c.hasAgreedMonthlyNet) return false;
           if (contractAgreementFilter === 'standard' && c.hasAgreedMonthlyNet) return false;
-          const emp = db.personnel.find(e => e.employeeCode === c.employeeCode && e.periodId === c.periodId) || db.personnel.find(e => e.employeeCode === c.employeeCode);
           const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : '';
           const matchSearch = matchPersianString(empName, searchContractQuery) || 
                               matchPersianString(c.role, searchContractQuery) || 
-                              matchPersianString(c.employeeCode, searchContractQuery);
+                              matchPersianString(c.employeeCode, searchContractQuery) ||
+                              matchPersianString(emp?.attendanceCode || '', searchContractQuery);
           return matchSearch;
         });
 
+        const compareContractAttCode = (a: any, b: any, dir: number) => {
+          const empA = db.personnel.find(e => e.employeeCode === a.employeeCode && e.periodId === a.periodId) || db.personnel.find(e => e.employeeCode === a.employeeCode);
+          const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && e.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
+          const attA = toEnglishDigits(String(empA?.attendanceCode || '')).trim();
+          const attB = toEnglishDigits(String(empB?.attendanceCode || '')).trim();
+          const codeA = toEnglishDigits(String(a.employeeCode || '')).trim();
+          const codeB = toEnglishDigits(String(b.employeeCode || '')).trim();
+          if (!attA && !attB) {
+            return codeA.localeCompare(codeB, 'en', { numeric: true }) * dir;
+          }
+          if (!attA) return 1;
+          if (!attB) return -1;
+          const primaryA = attA.split(/[,،\s/|-]+/)[0] || attA;
+          const primaryB = attB.split(/[,،\s/|-]+/)[0] || attB;
+          const cmpPrimary = primaryA.localeCompare(primaryB, 'en', { numeric: true });
+          if (cmpPrimary !== 0) return cmpPrimary * dir;
+          const cmpFull = attA.localeCompare(attB, 'en', { numeric: true });
+          if (cmpFull !== 0) return cmpFull * dir;
+          return codeA.localeCompare(codeB, 'en', { numeric: true }) * dir;
+        };
+
         filteredContracts.sort((a, b) => {
+          const dir = contractSortOrder === 'asc' ? 1 : -1;
           if (groupByPersonnelContracts) {
             if (contractSortBy === 'employeeCode') {
               const codeA = toEnglishDigits(String(a.employeeCode || '')).trim();
               const codeB = toEnglishDigits(String(b.employeeCode || '')).trim();
               const codeCmp = codeA.localeCompare(codeB, 'en', { numeric: true });
-              if (codeCmp !== 0) return contractSortOrder === 'asc' ? codeCmp : -codeCmp;
+              if (codeCmp !== 0) return codeCmp * dir;
+            } else if (contractSortBy === 'attendanceCode') {
+              const attCmp = compareContractAttCode(a, b, dir);
+              if (attCmp !== 0) return attCmp;
             } else {
               const empA = db.personnel.find(e => e.employeeCode === a.employeeCode && e.periodId === a.periodId) || db.personnel.find(e => e.employeeCode === a.employeeCode);
               const empB = db.personnel.find(e => e.employeeCode === b.employeeCode && e.periodId === b.periodId) || db.personnel.find(e => e.employeeCode === b.employeeCode);
@@ -20736,6 +20953,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               const cmp = nameA.localeCompare(nameB, 'fa');
               if (cmp !== 0) return cmp;
             }
+          }
+          if (contractSortBy === 'attendanceCode') {
+            return compareContractAttCode(a, b, dir);
           }
           let cmp = 0;
           if (contractSortBy === 'employeeCode') {
@@ -20757,7 +20977,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           } else {
             cmp = normalizeDateStr(a.contractStartDate || '').localeCompare(normalizeDateStr(b.contractStartDate || ''));
           }
-          return contractSortOrder === 'asc' ? cmp : -cmp;
+          return cmp * dir;
         });
 
         const activeContractsCount = periodContractsAll.filter(c => isContractActive(c, periodContractsAll)).length;
@@ -20788,18 +21008,18 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <UnifiedToolbar
                   searchValue={searchContractQuery}
                   onSearchChange={setSearchContractQuery}
-                  searchPlaceholder="جستجو در نام پرسنل، کد پرسنلی یا سمت شغلی..."
+                  searchPlaceholder="جستجو در نام پرسنل، کد پرسنلی، کد تردد یا سمت شغلی..."
                   hasActiveFilters={Boolean(
                     searchContractQuery ||
                     onlyActiveContractsFilter ||
-                    selectedContractYear !== 'all' ||
+                    contractDepartureFilter !== 'all' ||
                     contractAgreementFilter !== 'all' ||
                     groupByPersonnelContracts
                   )}
                   onClearFilters={() => {
                     setSearchContractQuery('');
                     setOnlyActiveContractsFilter(false);
-                    setSelectedContractYear('all');
+                    setContractDepartureFilter('all');
                     setContractAgreementFilter('all');
                     setGroupByPersonnelContracts(false);
                   }}
@@ -20811,14 +21031,32 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       alert('هیچ قراردادی برای خروجی اکسل یافت نشد.');
                       return;
                     }
-                    const filterTitle = selectedContractYear === 'all'
-                      ? (onlyActiveContractsFilter ? 'قراردادهای_فعال' : 'کلیه_قراردادها')
-                      : `سال_${selectedContractYear}${onlyActiveContractsFilter ? '_فعال' : ''}`;
+                    const depTag = contractDepartureFilter === 'departed_only'
+                      ? '_ترک_کار_کرده'
+                      : contractDepartureFilter === 'active_only'
+                        ? '_شاغل'
+                        : '';
+                    const filterTitle = `${onlyActiveContractsFilter ? 'قراردادهای_فعال' : 'کلیه_قراردادها'}${depTag}`;
                     exportPersonnelContractsToExcel(filteredContracts, filterTitle);
                   }}
                   onPrint={() => printElement('contracts-printable-section', 'فهرست قراردادهای پرسنلی')}
                   extraSecondaryActions={
                     <>
+                      <ErpButton
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setUncontractedSearch('');
+                          setUncontractedNotice(null);
+                          if (!uncontractedBatchStart) setUncontractedBatchStart(toPersianDigits(activePeriodStartDate));
+                          if (!uncontractedBatchEnd) setUncontractedBatchEnd(toPersianDigits(activePeriodEndDate));
+                          setSelectedUncontractedCodes(uncontractedEligibleEmployees.map(e => e.employeeCode));
+                          setShowUncontractedModal(true);
+                        }}
+                        icon={<Users className="h-3.5 w-3.5 text-cyan-400" />}
+                      >
+                        پرسنل بدون قرارداد ({toPersianDigits(uncontractedEligibleEmployees.length)})
+                      </ErpButton>
                       <ErpButton
                         variant="secondary"
                         size="sm"
@@ -20867,16 +21105,15 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   </div>
 
                   <div>
-                    <label className={UNIFIED_FILTER_LABEL_CLASS}>سال مالی</label>
+                    <label className={UNIFIED_FILTER_LABEL_CLASS}>وضعیت ترک کار پرسنل</label>
                     <select
-                      value={selectedContractYear}
-                      onChange={(e) => setSelectedContractYear(e.target.value)}
+                      value={contractDepartureFilter}
+                      onChange={(e) => setContractDepartureFilter(e.target.value as 'all' | 'active_only' | 'departed_only')}
                       className={UNIFIED_FILTER_SELECT_CLASS}
                     >
-                      <option value="all">همه سال‌ها</option>
-                      {contractYears.map(y => (
-                        <option key={y} value={y}>سال {toPersianDigits(y)}</option>
-                      ))}
+                      <option value="all">همه پرسنل ({toPersianDigits(periodContractsAll.length)})</option>
+                      <option value="departed_only">فقط قراردادهای ترک کار کرده ({toPersianDigits(departedContractsCount)})</option>
+                      <option value="active_only">فقط پرسنل شاغل (بدون ترک کار) ({toPersianDigits(periodContractsAll.length - departedContractsCount)})</option>
                     </select>
                   </div>
 
@@ -20908,6 +21145,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                       >
                         <option value="startDate">تاریخ شروع</option>
                         <option value="employeeCode">کد پرسنلی</option>
+                        <option value="attendanceCode">کد تردد</option>
                         <option value="name">نام پرسنل</option>
                         <option value="baseSalary">حقوق پایه روزانه</option>
                         <option value="netPayable">خالص پرداختی</option>
@@ -20980,9 +21218,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             )}
 
             {!isContractFormOpen && showBatchContractForm && (() => {
+              const effectiveBatchStart = normalizeRateDateYMD(batchStartDate) || activePeriodStartDate;
               const departedInPeriod = activeEmployees
                 .map(p => ({ emp: p, info: resolveSuggestedContractDatesForPersonnel(p, null) }))
-                .filter(item => item.info.hasDepartureRestriction);
+                .filter(item =>
+                  item.info.hasDepartureRestriction
+                  && item.info.departureDate > effectiveBatchStart
+                  && item.info.dayBeforeDeparture >= activePeriodStartDate
+                );
               const batchRangeCheck = (batchStartDate && batchEndDate)
                 ? validateContractDateRangeForPersonnel(null, batchStartDate, batchEndDate)
                 : null;
@@ -21059,18 +21302,14 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     <div className="bg-amber-950/30 border border-amber-500/35 rounded-xl p-3.5 space-y-1.5 text-[11px] text-amber-100 text-right">
                       <div className="flex items-center gap-1.5 font-extrabold text-amber-300">
                         <AlertTriangle className="h-4 w-4 shrink-0" />
-                        <span>توجه: {toPersianDigits(departedInPeriod.length)} پرسنل دارای تاریخ ترک کار در این دوره هستند (سقف قرارداد تا یک روز قبل از ترک کار):</span>
+                        <span>توجه: {toPersianDigits(departedInPeriod.length)} پرسنل دارای تاریخ ترک کار پس از شروع قرارداد هستند (سقف قرارداد تا یک روز قبل از ترک کار):</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         {departedInPeriod.map(({ emp, info }) => (
                           <span key={emp.employeeCode} className="inline-flex items-center gap-1 bg-amber-950/60 border border-amber-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold">
                             <span className="text-white">{emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`}</span>
                             <span className="text-amber-300 font-mono">ترک کار: {toPersianDigits(info.departureDate)}</span>
-                            {info.dayBeforeDeparture >= activePeriodStartDate ? (
-                              <span className="text-emerald-300 font-mono">(حداکثر: {toPersianDigits(info.dayBeforeDeparture)})</span>
-                            ) : (
-                              <span className="text-rose-300">(غیرقابل صدور)</span>
-                            )}
+                            <span className="text-emerald-300 font-mono">(حداکثر: {toPersianDigits(info.dayBeforeDeparture)})</span>
                           </span>
                         ))}
                       </div>
@@ -21084,6 +21323,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     const missingEntryEmps = (previewPlan && previewPlan.ok)
                       ? previewPlan.skippedMissingEntryDate
                       : activeEmployees
+                          .filter(p => {
+                            const depYMD = normalizeRateDateYMD(p.departureDate || '');
+                            return !(depYMD && (depYMD <= effectiveBatchStart || depYMD <= activePeriodStartDate));
+                          })
                           .map(p => ({
                             emp: p,
                             empName: p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode,
@@ -21217,6 +21460,22 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <p className="text-cyan-100/85 leading-relaxed">
                               {previewPlan.adjustedToEntryDateDetails.join(' | ')}
                             </p>
+                          </div>
+                        )}
+
+                        {previewPlan && previewPlan.ok && previewPlan.skippedOverlapping.length > 0 && (
+                          <div className="bg-rose-950/35 border border-rose-500/40 rounded-xl p-3 space-y-1 text-[10.5px] text-rose-100 text-right">
+                            <div className="flex items-center gap-1.5 font-extrabold text-rose-300">
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                              <span>
+                                مسدود به دلیل دوره مشترک با قرارداد قبلی ({toPersianDigits(previewPlan.skippedOverlapping.length)} نفر):
+                              </span>
+                            </div>
+                            <ul className="list-disc pr-5 text-rose-100/90 space-y-0.5 leading-relaxed">
+                              {previewPlan.skippedOverlapping.map((item, idx) => (
+                                <li key={idx}>{item}</li>
+                              ))}
+                            </ul>
                           </div>
                         )}
 
@@ -21496,49 +21755,37 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                   <div className="space-y-1.5">
                     <label className="text-[10.5px] font-bold text-slate-300 block">انتخاب پرسنل (ذی‌نفع قرارداد):</label>
-                    <select
-                      value={selContractEmpCode}
-                      onChange={(e) => {
-                        const code = e.target.value;
-                        setContractFormValidationError('');
-                        setIsEditingSingleEntryDate(false);
-                        setSingleEntryDateSuccessMsg('');
-                        setSelContractEmpCode(code);
-                        setConEmployeeCode(code);
-                        setOriginalEmpCode(code);
-                        const matchedEmp = activeEmployees.find(p => p.employeeCode === code);
-                        if (matchedEmp) {
-                          setConRole(matchedEmp.role || '');
-                          const suggestion = resolveSuggestedContractDatesForPersonnel(matchedEmp, editContractId);
-                          const conStart = suggestion.suggestedStartDate;
-                          const conEnd = suggestion.suggestedEndDate;
-                          const contractRates = getSalaryBaseRateForContract({ contractStartDate: conStart }, matchedEmp, db, activePeriodId);
-                          const dailyVal = contractRates ? contractRates.dailyBaseSalary : (matchedEmp.contractDailySalary || (matchedEmp.baseSalary ? Math.round(matchedEmp.baseSalary / 30) : 4333333));
-                          setConDailySalary(formatWithCommas(dailyVal));
-                          setConBaseSalary(formatWithCommas(dailyVal * 30));
-                          if (contractRates) {
-                            setConSalaryBaseRateId(contractRates.id);
-                            setConDailyInsuranceSalary(formatWithCommas(contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary));
-                            setConMonthlyInsuranceSalary(formatWithCommas((contractRates.dailyInsuranceSalary || contractRates.dailyBaseSalary) * 30));
-                          }
-                          setConStartDate(conStart ? toPersianDigits(conStart) : '');
-                          setConEndDate(conEnd ? toPersianDigits(conEnd) : '');
-                          const autoDur = (conStart && conEnd && conStart <= conEnd) ? calculateJalaliContractMonths(conStart, conEnd) : 0;
-                          setConDurationMonths(autoDur > 0 ? String(autoDur) : '');
-                          const autoSen = computeAutoSeniorityForContract(matchedEmp, conStart);
-                          setConSeniorityBase(formatWithCommas(autoSen.monthly30));
-                          setConSeniorityManuallyEdited(false);
-                        }
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors"
-                    >
-                      <option value="">-- انتخاب پرسنل صادر شده در پرونده --</option>
-                      {activeEmployees.map((emp) => (
-                        <option key={emp.employeeCode} value={emp.employeeCode}>
-                          {emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`} ({emp.employeeCode}) - {emp.role || 'سمت نامشخص'}
-                        </option>
-                      ))}
-                    </select>
+                    {(() => {
+                      const effectiveSingleStart = normalizeRateDateYMD(conStartDate) || activePeriodStartDate;
+                      const eligibleContractEmployees = activeEmployees.filter(emp => {
+                        if (editContractId && emp.employeeCode === selContractEmpCode) return true;
+                        const depYMD = normalizeRateDateYMD(emp.departureDate || '');
+                        if (depYMD && depYMD <= effectiveSingleStart) return false;
+                        return true;
+                      });
+                      const employeeOptions = eligibleContractEmployees.map(emp => {
+                        const empFullName = emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || emp.employeeCode;
+                        const attPart = emp.attendanceCode ? ` | کد تردد: ${toPersianDigits(emp.attendanceCode)}` : '';
+                        const rolePart = emp.role || 'سمت نامشخص';
+                        return {
+                          value: emp.employeeCode,
+                          label: `${empFullName} (${toPersianDigits(emp.employeeCode)})${attPart} - ${rolePart}`,
+                          searchText: `${empFullName} ${emp.employeeCode} ${toPersianDigits(emp.employeeCode)} ${emp.attendanceCode || ''} ${toPersianDigits(emp.attendanceCode || '')} ${rolePart}`
+                        };
+                      });
+
+                      return (
+                        <SearchableSelect
+                          variant="dark"
+                          value={selContractEmpCode}
+                          onChange={(code) => applySelectedEmployeeToContractForm(code, editContractId)}
+                          options={employeeOptions}
+                          placeholder="-- جستجو و انتخاب پرسنل (نام، کد پرسنلی یا کد تردد) --"
+                          searchPlaceholder="جستجو نام پرسنل، کد پرسنلی، کد تردد یا سمت..."
+                          emptyText="پرسنل واجد شرایطی با این مشخصات یافت نشد."
+                        />
+                      );
+                    })()}
                   </div>
 
                   {/* Editable Personnel Code Field (Primary Key) */}
@@ -21631,7 +21878,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                 {(() => {
                   const dateSuggestion = resolveSuggestedContractDatesForPersonnel(selectedEmployee, editContractId);
                   const liveDateValidation = (selectedEmployee && conStartDate && conEndDate)
-                    ? validateContractDateRangeForPersonnel(selectedEmployee, conStartDate, conEndDate)
+                    ? validateContractDateRangeForPersonnel(selectedEmployee, conStartDate, conEndDate, editContractId)
                     : null;
                   const conStartNormCheck = normalizeRateDateYMD(conStartDate);
                   const isStartBeforeEntryDate = Boolean(
@@ -23148,7 +23395,12 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 </td>
                                 <td className="py-3">
                                 <span className="font-bold text-white block">{empName}</span>
-                                <span className="text-[9px] text-slate-400 block mt-0.5 font-mono">کد پرسنلی: {toPersianDigits(c.employeeCode)}</span>
+                                <span className="text-[9px] text-slate-400 block mt-0.5 font-mono">
+                                  کد پرسنلی: {toPersianDigits(c.employeeCode)}
+                                  {emp?.attendanceCode && (
+                                    <span className="text-amber-400 mr-2">· کد تردد: {toPersianDigits(emp.attendanceCode)}</span>
+                                  )}
+                                </span>
                               </td>
                               <td className="py-3 font-semibold text-slate-300">
                                 {c.role}
@@ -23261,6 +23513,364 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               )}
 
             </div>
+
+            {/* Modal: Personnel Without Contracts in Active Period (Portal to document.body) */}
+            {showUncontractedModal && typeof document !== 'undefined' && createPortal(
+              (() => {
+                const effectiveModalStart = normalizeRateDateYMD(uncontractedBatchStart) || activePeriodStartDate;
+                const modalRangeCheck = (uncontractedBatchStart && uncontractedBatchEnd)
+                  ? validateContractDateRangeForPersonnel(null, uncontractedBatchStart, uncontractedBatchEnd)
+                  : null;
+
+                const modalBaseUncontracted = activeEmployees.filter(p => {
+                  const codeTrim = String(p.employeeCode || '').trim();
+                  if (contractedEmpCodeSetInPeriod.has(codeTrim)) return false;
+                  const depYMD = normalizeRateDateYMD(p.departureDate || '');
+                  if (depYMD && (depYMD <= effectiveModalStart || depYMD <= activePeriodStartDate)) return false;
+                  return true;
+                });
+
+                const filteredModalUncontracted = modalBaseUncontracted.filter(p => {
+                  if (!uncontractedSearch.trim()) return true;
+                  const fullName = p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim();
+                  return matchPersianString(fullName, uncontractedSearch)
+                    || matchPersianString(p.employeeCode, uncontractedSearch)
+                    || matchPersianString(p.attendanceCode || '', uncontractedSearch)
+                    || matchPersianString(p.role || '', uncontractedSearch);
+                }).sort((a, b) => {
+                  const codeA = toEnglishDigits(String(a.employeeCode || '')).trim();
+                  const codeB = toEnglishDigits(String(b.employeeCode || '')).trim();
+                  return codeA.localeCompare(codeB, 'en', { numeric: true });
+                });
+
+                const visibleCodes = filteredModalUncontracted.map(p => p.employeeCode);
+                const selectedSet = new Set(selectedUncontractedCodes);
+                const selectedVisibleCount = visibleCodes.filter(c => selectedSet.has(c)).length;
+                const allVisibleSelected = visibleCodes.length > 0 && selectedVisibleCount === visibleCodes.length;
+                const activeSelectedForBatch = modalBaseUncontracted
+                  .map(p => p.employeeCode.trim())
+                  .filter(c => selectedSet.has(c));
+
+                return (
+                  <div
+                    className="fixed inset-0 z-[9998] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 font-sans"
+                    dir="rtl"
+                    onClick={() => setShowUncontractedModal(false)}
+                  >
+                    <div
+                      className="bg-slate-900 border border-slate-700/80 rounded-2xl sm:rounded-3xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {/* Header */}
+                      <div className="px-4 sm:px-6 py-4 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="p-2 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 shrink-0">
+                            <Users className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-sm sm:text-base font-black text-white truncate">
+                              پرسنل بدون قرارداد در دوره «{activePeriodLabel}» ({toPersianDigits(modalBaseUncontracted.length)} نفر)
+                            </h3>
+                            <p className="text-[10.5px] text-slate-400 mt-0.5">
+                              پرسنلی که تاریخ ترک کار آن‌ها پیش از تاریخ شروع قرارداد است به صورت خودکار از این لیست حذف شده‌اند.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowUncontractedModal(false)}
+                          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+                          title="بستن"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      {/* Controls & Batch Date Bar */}
+                      <div className="px-4 sm:px-6 py-3.5 bg-slate-900/95 border-b border-slate-800 space-y-3 shrink-0">
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                          <div className="md:col-span-5">
+                            <label className="text-[10.5px] font-bold text-slate-400 block mb-1">جستجو در لیست پرسنل بدون قرارداد:</label>
+                            <div className="relative">
+                              <Search className="h-3.5 w-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                value={uncontractedSearch}
+                                onChange={(e) => setUncontractedSearch(e.target.value)}
+                                placeholder="نام، کد پرسنلی، کد تردد یا سمت..."
+                                className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-xl pr-9 pl-3 py-2 text-xs text-white focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                          <div className="md:col-span-3">
+                            <label className="text-[10.5px] font-bold text-slate-400 block mb-1">تاریخ شروع ثبت دسته‌جمعی:</label>
+                            <input
+                              type="text"
+                              value={uncontractedBatchStart}
+                              onChange={(e) => {
+                                setUncontractedNotice(null);
+                                setUncontractedBatchStart(toPersianDigits(e.target.value));
+                              }}
+                              placeholder={toPersianDigits(activePeriodStartDate)}
+                              className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white font-mono text-center font-bold focus:outline-none"
+                            />
+                          </div>
+                          <div className="md:col-span-3">
+                            <label className="text-[10.5px] font-bold text-slate-400 block mb-1">تاریخ پایان ثبت دسته‌جمعی:</label>
+                            <input
+                              type="text"
+                              value={uncontractedBatchEnd}
+                              onChange={(e) => {
+                                setUncontractedNotice(null);
+                                setUncontractedBatchEnd(toPersianDigits(e.target.value));
+                              }}
+                              placeholder={toPersianDigits(activePeriodEndDate)}
+                              className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white font-mono text-center font-bold focus:outline-none"
+                            />
+                          </div>
+                          <div className="md:col-span-1 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (allVisibleSelected) {
+                                  const visSet = new Set(visibleCodes);
+                                  setSelectedUncontractedCodes(prev => prev.filter(c => !visSet.has(c)));
+                                } else {
+                                  setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleCodes])));
+                                }
+                              }}
+                              className="w-full px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-[10.5px] font-bold cursor-pointer whitespace-nowrap"
+                              title={allVisibleSelected ? 'لغو انتخاب همه' : 'انتخاب همه'}
+                            >
+                              {allVisibleSelected ? 'لغو همه' : 'همه'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {modalRangeCheck && !modalRangeCheck.ok && (
+                          <div className="bg-rose-950/40 border border-rose-500/40 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-rose-200 font-bold">
+                            <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                            <span>{modalRangeCheck.message}</span>
+                          </div>
+                        )}
+
+                        {uncontractedNotice && (
+                          <div className={`rounded-xl p-3 border space-y-1.5 ${
+                            uncontractedNotice.type === 'error'
+                              ? 'bg-rose-950/40 border-rose-500/40 text-rose-100'
+                              : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-100'
+                          }`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-1.5 text-xs font-black">
+                                {uncontractedNotice.type === 'error' ? (
+                                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                                ) : (
+                                  <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                                )}
+                                <span>{uncontractedNotice.title}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setUncontractedNotice(null)}
+                                className="text-slate-400 hover:text-white cursor-pointer"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            {uncontractedNotice.details.length > 0 && (
+                              <ul className="list-disc pr-5 text-[10.5px] text-slate-200 space-y-0.5 leading-relaxed">
+                                {uncontractedNotice.details.map((line, idx) => (
+                                  <li key={idx}>{line}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Body List */}
+                      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+                        {filteredModalUncontracted.length === 0 ? (
+                          <div className="text-center py-12 space-y-2">
+                            <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto opacity-80" />
+                            <p className="text-sm font-black text-slate-200">
+                              {modalBaseUncontracted.length === 0
+                                ? 'همه پرسنل واجد شرایط این دوره دارای قرارداد ثبت‌شده هستند.'
+                                : 'هیچ پرسنلی مطابق با جستجوی شما یافت نشد.'}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/70">
+                            <table className="w-full text-right text-xs">
+                              <thead className="bg-slate-900/95 text-[10.5px] text-slate-400 border-b border-slate-800 sticky top-0 z-10">
+                                <tr>
+                                  <th className="py-2.5 px-3 text-center w-10">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (allVisibleSelected) {
+                                          const visSet = new Set(visibleCodes);
+                                          setSelectedUncontractedCodes(prev => prev.filter(c => !visSet.has(c)));
+                                        } else {
+                                          setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleCodes])));
+                                        }
+                                      }}
+                                      className="text-slate-300 hover:text-white cursor-pointer"
+                                    >
+                                      {allVisibleSelected ? (
+                                        <CheckSquare className="h-4 w-4 text-cyan-400" />
+                                      ) : (
+                                        <Square className="h-4 w-4 text-slate-500" />
+                                      )}
+                                    </button>
+                                  </th>
+                                  <th className="py-2.5 px-3 font-extrabold">نام و مشخصات پرسنل</th>
+                                  <th className="py-2.5 px-2.5 font-extrabold text-center">کد پرسنلی / تردد</th>
+                                  <th className="py-2.5 px-2.5 font-extrabold text-center">تاریخ ورود به کار</th>
+                                  <th className="py-2.5 px-2.5 font-extrabold text-center">وضعیت ترک کار</th>
+                                  <th className="py-2.5 px-3 font-extrabold text-center">ثبت قرارداد</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/70">
+                                {filteredModalUncontracted.map(emp => {
+                                  const code = emp.employeeCode;
+                                  const fullName = emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || code;
+                                  const isChecked = selectedSet.has(code);
+                                  const info = resolveSuggestedContractDatesForPersonnel(emp, null);
+                                  const draftVal = Object.prototype.hasOwnProperty.call(quickEntryDateDrafts, code)
+                                    ? quickEntryDateDrafts[code]
+                                    : (info.firstAttendanceDateOverall ? toPersianDigits(info.firstAttendanceDateOverall) : '');
+                                  const rowErr = quickEntryDateErrorByEmp[code] || '';
+
+                                  return (
+                                    <tr key={code} className={`hover:bg-slate-900/60 transition-colors ${isChecked ? 'bg-cyan-950/15' : ''}`}>
+                                      <td className="py-2.5 px-3 text-center">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setSelectedUncontractedCodes(prev =>
+                                              prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+                                            );
+                                          }}
+                                          className="cursor-pointer"
+                                        >
+                                          {isChecked ? (
+                                            <CheckSquare className="h-4 w-4 text-cyan-400" />
+                                          ) : (
+                                            <Square className="h-4 w-4 text-slate-500" />
+                                          )}
+                                        </button>
+                                      </td>
+                                      <td className="py-2.5 px-3">
+                                        <div className="font-black text-slate-100">{fullName}</div>
+                                        <div className="text-[10px] text-slate-400">{emp.role || 'سمت نامشخص'}</div>
+                                      </td>
+                                      <td className="py-2.5 px-2.5 text-center whitespace-nowrap">
+                                        <div className="font-mono font-bold text-slate-200">{toPersianDigits(code)}</div>
+                                        {emp.attendanceCode && (
+                                          <div className="text-[10px] font-mono text-cyan-300">تردد: {toPersianDigits(emp.attendanceCode)}</div>
+                                        )}
+                                      </td>
+                                      <td className="py-2.5 px-2.5 text-center">
+                                        {info.entryDate ? (
+                                          <span className="font-mono font-bold text-emerald-300 text-[11px]">
+                                            {toPersianDigits(info.entryDate)}
+                                          </span>
+                                        ) : (
+                                          <div className="flex flex-col items-center gap-1">
+                                            <span className="text-[9.5px] font-bold text-rose-300">ثبت نشده</span>
+                                            <div className="flex items-center gap-1">
+                                              <input
+                                                type="text"
+                                                placeholder="۱۴۰۵/۰۱/۰۱"
+                                                value={draftVal}
+                                                onChange={(e) => {
+                                                  setQuickEntryDateDrafts(prev => ({ ...prev, [code]: toPersianDigits(e.target.value) }));
+                                                  if (rowErr) {
+                                                    setQuickEntryDateErrorByEmp(prev => { const n = { ...prev }; delete n[code]; return n; });
+                                                  }
+                                                }}
+                                                className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-0.5 text-[10.5px] font-mono text-center text-white focus:outline-none focus:border-emerald-500"
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() => handleQuickSavePersonnelEntryDate(code, draftVal)}
+                                                className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                                              >
+                                                ثبت
+                                              </button>
+                                            </div>
+                                            {rowErr && <span className="text-[9px] text-rose-300">{rowErr}</span>}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td className="py-2.5 px-2.5 text-center whitespace-nowrap">
+                                        {info.hasDepartureRestriction ? (
+                                          <span className="inline-flex flex-col items-center bg-amber-500/15 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded-lg text-[10px] font-bold">
+                                            <span>ترک کار: {toPersianDigits(info.departureDate)}</span>
+                                            <span className="text-[9px] text-emerald-300">سقف تا: {toPersianDigits(info.dayBeforeDeparture)}</span>
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10.5px] font-bold text-emerald-400">شاغل</span>
+                                        )}
+                                      </td>
+                                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleNewContractForEmployee(code)}
+                                          className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 rounded-xl text-[10.5px] font-black transition-all cursor-pointer inline-flex items-center gap-1"
+                                        >
+                                          <Plus className="h-3.5 w-3.5" />
+                                          <span>ثبت تکی</span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Footer Actions */}
+                      <div className="px-4 sm:px-6 py-3.5 bg-slate-950/90 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                        <div className="text-[11px] text-slate-400 font-bold">
+                          انتخاب‌شده برای ثبت دسته‌جمعی:{' '}
+                          <span className="text-cyan-300 font-black">{toPersianDigits(activeSelectedForBatch.length)} نفر</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowUncontractedModal(false)}
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold cursor-pointer"
+                          >
+                            بستن
+                          </button>
+                          <button
+                            type="button"
+                            disabled={activeSelectedForBatch.length === 0}
+                            onClick={() =>
+                              executeBatchContractCreation(
+                                uncontractedBatchStart,
+                                uncontractedBatchEnd,
+                                new Set(activeSelectedForBatch),
+                                'uncontracted'
+                              )
+                            }
+                            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-xs font-black transition-all shadow-lg shadow-emerald-600/20 cursor-pointer inline-flex items-center gap-1.5"
+                          >
+                            <Layers className="h-4 w-4" />
+                            <span>ثبت دسته‌جمعی قرارداد ({toPersianDigits(activeSelectedForBatch.length)} نفر)</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })(),
+              document.body
+            )}
           </div>
         );
       })()}

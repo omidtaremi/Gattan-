@@ -1540,6 +1540,16 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [logoPosition, setLogoPosition] = useState<'top-right' | 'top-center' | 'top-left'>(() => {
     try { return (localStorage.getItem('gatan_tag_logo_pos') as any) || 'top-right'; } catch { return 'top-right'; }
   });
+  const [tagPriceCurrency, setTagPriceCurrency] = useState<'rial' | 'toman'>(() => {
+    try { return localStorage.getItem('gatan_tag_price_currency') === 'toman' ? 'toman' : 'rial'; } catch { return 'rial'; }
+  });
+
+  const formatShelfTagPrice = (salePriceRial?: number | null) => {
+    const raw = Number(salePriceRial) || 0;
+    const displayVal = tagPriceCurrency === 'toman' ? Math.round(raw / 10) : raw;
+    return formatWithCommas(displayVal);
+  };
+  const shelfTagCurrencyLabel = tagPriceCurrency === 'toman' ? 'تومان' : 'ریال';
 
   useEffect(() => {
     try {
@@ -1564,6 +1574,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       localStorage.setItem('gatan_tag_logo_w', String(logoWidth));
       localStorage.setItem('gatan_tag_logo_h', String(logoHeight));
       localStorage.setItem('gatan_tag_logo_pos', logoPosition);
+      localStorage.setItem('gatan_tag_price_currency', tagPriceCurrency);
     } catch (e) {
       console.error('Error saving shelf tag settings', e);
     }
@@ -1571,7 +1582,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     tagCols, tagRows, tagWidthCm, tagHeightCm, tagOrientation, paperOrientation,
     fontSizeTitle, fontSizePrice, fontSizeMeta, pageMarginMm, contentAlignment,
     showShopTitle, showCode, showBarcode, showDepartment, shopBrandName,
-    tagFontFamily, logoUrl, logoWidth, logoHeight, logoPosition
+    tagFontFamily, logoUrl, logoWidth, logoHeight, logoPosition, tagPriceCurrency
   ]);
 
   const shelfTagFilteredProducts = useMemo(() => {
@@ -1671,7 +1682,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       const catObj = categories.find(c => c.id === p.categoryId);
       const deptId = resolveProductDepartmentId(p.categoryId);
       const deptObj = departments.find(d => d.id === deptId);
-      const priceFormatted = formatWithCommas(p.salePrice || 0);
+      const priceFormatted = formatShelfTagPrice(p.salePrice);
 
       const logoHtml = logoUrl
         ? `<img src="${logoUrl}" style="width: ${logoWidth}px; height: ${logoHeight}px; object-fit: contain; flex-shrink: 0;" />`
@@ -1724,7 +1735,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
               ${showCode && p.code ? `<div style="font-size: ${fontSizeMeta}px; font-family: monospace; color: #334155; font-weight: 700;">کد: ${p.code}</div>` : ''}
             </div>
             <div style="text-align: left;">
-              <div style="font-size: ${fontSizePrice}px; font-weight: 900; font-family: '${tagFontFamily}', monospace; color: #000000;">${toPersianDigits(priceFormatted)} <span style="font-size: ${fontSizeMeta}px; font-weight: 700; color: #1e293b;">ریال</span></div>
+              <div style="font-size: ${fontSizePrice}px; font-weight: 900; font-family: '${tagFontFamily}', monospace; color: #000000;">${toPersianDigits(priceFormatted)} <span style="font-size: ${fontSizeMeta}px; font-weight: 700; color: #1e293b;">${shelfTagCurrencyLabel}</span></div>
             </div>
           </div>
         </div>
@@ -5224,6 +5235,34 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 />
                 <span>چاپ دپارتمان</span>
               </label>
+
+              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
+                <span className="text-[11px] text-slate-400 font-bold whitespace-nowrap">واحد قیمت چاپ:</span>
+                <div className="inline-flex rounded-lg bg-slate-950 p-0.5 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setTagPriceCurrency('rial')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-black transition-all cursor-pointer ${
+                      tagPriceCurrency === 'rial'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    ریال
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTagPriceCurrency('toman')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-black transition-all cursor-pointer ${
+                      tagPriceCurrency === 'toman'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    تومان
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -5492,7 +5531,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                     <th className="p-3.5">نام محصول</th>
                     <th className="p-3.5">دسته‌بندی و دپارتمان</th>
                     <th className="p-3.5 text-center">واحد فروش</th>
-                    <th className="p-3.5 text-left">قیمت مصوب (ریال)</th>
+                    <th className="p-3.5 text-left">قیمت مصوب ({shelfTagCurrencyLabel})</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850 text-slate-200">
@@ -5537,7 +5576,10 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                             </div>
                           </td>
                           <td className="p-3.5 text-center font-medium text-slate-300">{p.unit}</td>
-                          <td className="p-3.5 text-left font-mono font-black text-emerald-400">{formatWithCommas(p.salePrice || 0)}</td>
+                          <td className="p-3.5 text-left font-mono font-black text-emerald-400">
+                            {toPersianDigits(formatShelfTagPrice(p.salePrice))}
+                            <span className="text-[10px] font-bold text-slate-400 mr-1">{shelfTagCurrencyLabel}</span>
+                          </td>
                         </tr>
                       );
                     })
