@@ -523,7 +523,7 @@ export interface PayrollMonthSnapshot {
   usedLeaveDays: number;
   usedLeaveHours: number;
   usedLeaveMinutes: number;
-  finalLeaveMinutes: number;
+  finalLeaveMinutes?: number;
   dailyBaseSalary: number;
   baseSalary: number;
   foodAllowance: number;
@@ -1992,9 +1992,12 @@ export function computeMonthlyPayrollSnapshotForEmployee(
           Number(pp.month) === Number(targetMonth)
       )
     : undefined;
+  const empAttNorm = normEmpCode(emp.attendanceCode);
   const lockedSnapRow = lockedPeriod?.attendancePerformanceSnapshot?.find(
     (s: any) =>
-      s?.employee?.id === emp.id || (empCodeNorm && normEmpCode(s?.employee?.employeeCode) === empCodeNorm)
+      s?.employee?.id === emp.id ||
+      (empCodeNorm && normEmpCode(s?.employee?.employeeCode) === empCodeNorm) ||
+      (empAttNorm && normEmpCode(s?.employee?.attendanceCode) === empAttNorm)
   );
 
   if (lockedItem) {
@@ -2059,14 +2062,54 @@ export function computeMonthlyPayrollSnapshotForEmployee(
     const perfFallback = !lockedSnapRow
       ? computeAttendancePerfForMonth(db, activePeriodId, emp, targetYear, targetMonth, treatAsDepartingMonth, 0, new Map(), unlockedMonthsMap)
       : null;
+    const parseSnapHMToMinutes = (val: any): number | undefined => {
+      if (val === undefined || val === null || val === '') return undefined;
+      const str = toEnglishDigits(String(val)).trim();
+      if (!str) return undefined;
+      if (str.includes(':')) {
+        const [hPart, mPart] = str.split(':');
+        const h = Number(hPart);
+        const m = Number(mPart || 0);
+        if (Number.isFinite(h) && Number.isFinite(m)) {
+          return Math.max(0, Math.round(h * 60 + m));
+        }
+        return undefined;
+      }
+      const num = Number(str.replace(/,/g, ''));
+      return Number.isFinite(num) ? Math.max(0, Math.round(num * 60)) : undefined;
+    };
+
+    const resolveLockedFinalLeaveMinutes = (snapRow: any): number | undefined => {
+      if (!snapRow) return undefined;
+      if (snapRow.finalLeaveMinutes !== undefined && snapRow.finalLeaveMinutes !== null && snapRow.finalLeaveMinutes !== '') {
+        const n = Number(snapRow.finalLeaveMinutes);
+        if (Number.isFinite(n)) return Math.max(0, Math.round(n));
+      }
+      if (snapRow.unusedLeaveMinutes !== undefined && snapRow.unusedLeaveMinutes !== null && snapRow.unusedLeaveMinutes !== '') {
+        const n = Number(snapRow.unusedLeaveMinutes);
+        if (Number.isFinite(n)) return Math.max(0, Math.round(n));
+      }
+      const fromHM = parseSnapHMToMinutes(snapRow.finalLeaveHM ?? snapRow.unusedLeaveHM);
+      if (fromHM !== undefined) return fromHM;
+      if (snapRow.finalLeaveHours !== undefined && snapRow.finalLeaveHours !== null && snapRow.finalLeaveHours !== '') {
+        const h = Number(snapRow.finalLeaveHours);
+        if (Number.isFinite(h)) return Math.max(0, Math.round(h * 60));
+      }
+      return undefined;
+    };
+
+    const lockedFinalLeaveMinutes = resolveLockedFinalLeaveMinutes(lockedSnapRow);
     const usedLeaveMinutes = lockedSnapRow
-      ? Math.max(0, Number(lockedSnapRow.totalLeaveMinutes || 0) - Number(lockedSnapRow.finalLeaveMinutes || 0))
+      ? Math.max(0, Number(lockedSnapRow.totalLeaveMinutes || 0) - Number(lockedFinalLeaveMinutes ?? 0))
       : Math.max(0, Math.round(perfFallback?.usedLeaveMinutes || 0));
     const usedLeaveHours = Math.round((usedLeaveMinutes / 60) * 100) / 100;
     const usedLeaveDays = Math.round((usedLeaveMinutes / 60 / 8) * 100) / 100;
-    const finalLeaveMinutes = lockedSnapRow
-      ? Number(lockedSnapRow.finalLeaveMinutes || 0)
-      : (perfFallback?.finalLeaveMinutes || 0);
+    const finalLeaveMinutes =
+      lockedFinalLeaveMinutes !== undefined
+        ? lockedFinalLeaveMinutes
+        : perfFallback && (perfFallback.hasRecords || perfFallback.finalLeaveMinutes > 0)
+        ? Math.max(0, Math.round(perfFallback.finalLeaveMinutes))
+        : undefined;
 
     return {
       year: targetYear,

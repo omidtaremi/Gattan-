@@ -178,7 +178,7 @@ function computeOrderStatus(items: ProcurementOrderItem[]): string {
 let procLineSeq = 0;
 function generateLineId(): string {
   procLineSeq += 1;
-  return `line-${procLineSeq}`;
+  return `line-${Date.now()}-${procLineSeq}`;
 }
 
 function calcEstimatedRowWeightKg(
@@ -266,6 +266,7 @@ export default function ProcurementManagement({
   const desktopQtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const mobileQtyInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const catalogSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const catalogSectionRef = useRef<HTMLDivElement | null>(null);
   const [pendingFocusLineId, setPendingFocusLineId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -275,9 +276,13 @@ export default function ProcurementManagement({
       const mobileEl = mobileQtyInputRefs.current[pendingFocusLineId];
       const target = desktopEl && desktopEl.offsetParent !== null ? desktopEl : mobileEl || desktopEl;
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        target.focus();
-        target.select();
+        try {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.focus();
+          target.select();
+        } catch {
+          // Ignore focus/select restrictions on mobile browsers
+        }
       }
       setPendingFocusLineId(null);
     }, 45);
@@ -312,7 +317,7 @@ export default function ProcurementManagement({
 
   // ==================== MASTER DATA & LOOKUPS ====================
   const activeSuppliers = useMemo(() => {
-    return (db.suppliers || []).filter(s => s.periodId === activePeriodId && s.isActive);
+    return (db.suppliers || []).filter(s => s.periodId === activePeriodId && s.isActive !== false);
   }, [db.suppliers, activePeriodId]);
 
   const rawItems = useMemo(() => {
@@ -377,7 +382,7 @@ export default function ProcurementManagement({
       p =>
         p.periodId === activePeriodId &&
         (categoryIds.includes(p.categoryId) ||
-          p.code.toLowerCase().includes('purch') ||
+          String(p.code || '').toLowerCase().includes('purch') ||
           p.categoryId === 'purchased')
     );
     if (filtered.length === 0) {
@@ -468,7 +473,8 @@ export default function ProcurementManagement({
 
       const matchedIds = new Set<string>();
       activeSuppliers.forEach(s => {
-        if ((s.suppliedItemIds || []).some(sid => keys.has(String(sid).trim().toLowerCase()))) {
+        const suppliedIds = Array.isArray(s.suppliedItemIds) ? s.suppliedItemIds : [];
+        if (suppliedIds.some(sid => keys.has(String(sid).trim().toLowerCase()))) {
           matchedIds.add(s.id);
         }
       });
@@ -568,7 +574,7 @@ export default function ProcurementManagement({
   const suppliedItemsChecklist = useMemo(() => {
     return rawItems.filter(
       i =>
-        i.isActive &&
+        i.isActive !== false &&
         (checklistSearch
           ? matchPersianString(i.name, checklistSearch) ||
             matchPersianString(i.code, checklistSearch) ||
@@ -628,10 +634,17 @@ export default function ProcurementManagement({
 
   const addItemToBasket = useCallback(
     (itemId: string, isProduct: boolean) => {
-      // If item is already in the order, focus directly on its quantity input so user enters the exact amount
-      const existingLine = basketItems.find(x => (isProduct ? x.productId === itemId : x.rawMaterialId === itemId));
+      if (!itemId) return;
+
+      const refObj = isProduct ? productMap[itemId] : rawItemMap[itemId];
+      const itemLabel = refObj?.name || 'کالا';
+
+      const existingLine = basketItems.find(x =>
+        isProduct ? Boolean(x.productId) && x.productId === itemId : Boolean(x.rawMaterialId) && x.rawMaterialId === itemId
+      );
       if (existingLine) {
         setPendingFocusLineId(existingLine.lineId || itemId);
+        showToast('info', `«${itemLabel}» از قبل در ردیف‌های سفارش وجود دارد — مقدار آن را در جدول پایین ویرایش کنید.`);
         return;
       }
 
@@ -663,11 +676,49 @@ export default function ProcurementManagement({
         isReceived: false
       };
 
-      setBasketItems(prev => [...prev, newRow]);
+      setBasketItems(prev => {
+        const already = prev.find(x =>
+          isProduct ? Boolean(x.productId) && x.productId === itemId : Boolean(x.rawMaterialId) && x.rawMaterialId === itemId
+        );
+        if (already) return prev;
+        return [...prev, newRow];
+      });
       setPendingFocusLineId(newLineId);
+      showToast('success', `«${itemLabel}» به جدول ردیف‌های سفارش اضافه شد.`);
     },
-    [basketItems, getSuggestedSuppliersForItem, getLastPurchaseInfo]
+    [basketItems, getSuggestedSuppliersForItem, getLastPurchaseInfo, productMap, rawItemMap, showToast]
   );
+
+  const handleHeaderAddClick = useCallback(() => {
+    if (activeTab !== 'create') {
+      setActiveTab('create');
+      window.setTimeout(() => {
+        catalogSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        catalogSearchInputRef.current?.focus();
+      }, 60);
+      return;
+    }
+
+    if (editingOrderId) {
+      resetOrderForm();
+      showToast('info', 'فرم برای ثبت درخواست هفتگی جدید آماده شد.');
+      window.setTimeout(() => {
+        catalogSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        catalogSearchInputRef.current?.focus();
+      }, 60);
+      return;
+    }
+
+    if (checklistSearch.trim() && displayedCatalogItems.length === 1) {
+      const onlyMatch = displayedCatalogItems[0];
+      addItemToBasket(onlyMatch.id, onlyMatch.isProduct);
+      return;
+    }
+
+    catalogSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    catalogSearchInputRef.current?.focus();
+    showToast('info', 'نام کالا را در کادر جستجوی کاتالوگ انتخاب کرده و روی دکمه «افزودن» کنار هر کالا کلیک کنید.');
+  }, [activeTab, editingOrderId, resetOrderForm, showToast, checklistSearch, displayedCatalogItems, addItemToBasket]);
 
   const removeBasketRow = (lineId: string) => {
     setBasketItems(prev => prev.filter(x => x.lineId !== lineId));
@@ -1719,9 +1770,9 @@ export default function ProcurementManagement({
                 variant="primary"
                 size="sm"
                 icon={<Plus className="h-4 w-4" />}
-                onClick={() => setActiveTab('create')}
+                onClick={handleHeaderAddClick}
               >
-                {ERP_BUTTON_LABELS.add}
+                {activeTab === 'create' && editingOrderId ? 'درخواست جدید' : ERP_BUTTON_LABELS.add}
               </ErpButton>
             </div>
           }
@@ -1878,7 +1929,7 @@ export default function ProcurementManagement({
           </div>
 
           {/* STEP 2: CATALOG QUICK-ADD BAR */}
-          <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
+          <div ref={catalogSectionRef} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <Layers className="h-4 w-4 text-rose-600 dark:text-rose-400" />
@@ -1935,6 +1986,14 @@ export default function ProcurementManagement({
                 className="w-full pl-3 pr-10 py-2.5 border border-slate-300 dark:border-slate-700 rounded-xl text-xs bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500 font-bold"
                 value={checklistSearch}
                 onChange={e => setChecklistSearch(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (displayedCatalogItems.length > 0) {
+                      addItemToBasket(displayedCatalogItems[0].id, displayedCatalogItems[0].isProduct);
+                    }
+                  }
+                }}
               />
             </div>
 
@@ -1947,22 +2006,22 @@ export default function ProcurementManagement({
               ) : (
                 displayedCatalogItems.map(catItem => {
                   const existingLine = basketItems.find(x =>
-                    catItem.isProduct ? x.productId === catItem.id : x.rawMaterialId === catItem.id
+                    Boolean(catItem.id) && (catItem.isProduct ? x.productId === catItem.id : x.rawMaterialId === catItem.id)
                   );
                   const sups = getSuggestedSuppliersForItem(catItem.id, catItem.isProduct);
                   const lastPrice = getLastPurchaseInfo(catItem.id, catItem.isProduct);
                   return (
                     <div
                       key={`${catItem.isProduct ? 'prod' : 'item'}-${catItem.id}`}
-                      className={`flex items-center justify-between gap-2 p-2.5 rounded-xl border transition-colors ${
+                      className={`flex items-start justify-between gap-2.5 p-2.5 rounded-xl border transition-colors ${
                         existingLine
                           ? 'bg-emerald-50/70 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-500/30'
                           : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-black text-slate-900 dark:text-white truncate flex items-center gap-1.5">
-                          <span className="truncate">{catItem.name}</span>
+                        <div className="text-xs font-black text-slate-900 dark:text-white leading-snug whitespace-normal break-words flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                          <span className="whitespace-normal break-words">{catItem.name}</span>
                           {creationSelectTab === 'all' && (
                             <span className="text-[9.5px] font-bold text-slate-500 dark:text-slate-400 shrink-0">
                               ({catItem.isProduct ? 'محصول' : 'ماده اولیه'})

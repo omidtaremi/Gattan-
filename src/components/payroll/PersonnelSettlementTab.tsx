@@ -31,6 +31,7 @@ import {
   UNIFIED_FILTER_LABEL_CLASS,
   ErpButton
 } from '../ui/UnifiedErpUi';
+import SearchableSelect from '../SearchableSelect';
 import {
   downloadTemplateExcel,
   readSpreadsheetRows,
@@ -1374,28 +1375,21 @@ export default function PersonnelSettlementTab({
 
     if (selectedPersonnel) {
       const isCY = formContractId === CURRENT_YEAR_CONTRACT_ID;
-      let startToUse = formStartDate;
-      let endToUse = formEndDate;
-      if (nextType === 'without_departure' && !isCY && selectedContract?.contractEndDate) {
-        endToUse = selectedContract.contractEndDate;
-        setFormEndDate(endToUse);
-      } else if (nextType === 'with_departure') {
-        const resolved = resolveDepartureDefaults(
-          selectedPersonnel,
-          isCY ? undefined : selectedContract,
-          formReason,
-          initialContext?.year || currentYear,
-          initialContext?.month,
-          isCY,
-          'with_departure',
-          editingId
-        );
-        startToUse = isCY ? resolved.startDate : formStartDate;
-        endToUse = resolved.endDate;
-        setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
-        if (isCY) setFormStartDate(startToUse);
-        setFormEndDate(endToUse);
-      }
+      const resolved = resolveDepartureDefaults(
+        selectedPersonnel,
+        isCY ? undefined : selectedContract,
+        nextType === 'without_departure' ? 'contract_end' : formReason,
+        initialContext?.year || currentYear,
+        initialContext?.month,
+        isCY,
+        nextType,
+        editingId
+      );
+      const startToUse = isCY ? resolved.startDate : (formStartDate || resolved.startDate);
+      const endToUse = resolved.endDate;
+      setLastDetectedAttendanceDate(resolved.detectedLastAttendance);
+      if (isCY || !formStartDate) setFormStartDate(startToUse);
+      setFormEndDate(endToUse);
       if (startToUse && endToUse) {
         const generated = generateMonthsList(
           startToUse,
@@ -1763,20 +1757,36 @@ export default function PersonnelSettlementTab({
       jobAllowance: 'فوق‌العاده شغلی (حق مسئولیت)'
     };
 
+    const toSafeNum = (val: unknown): number => {
+      if (val === undefined || val === null || val === '') return 0;
+      if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+      const parsed = parseNumber(String(val));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const normalizeBuyoutKey = (rawKey: string): string => {
+      const k = String(rawKey || '').trim();
+      if (k === 'baseSalary' || k === 'monthlyBaseSalary') return 'dailyBaseSalary';
+      if (k === 'seniorityBase' || k === 'yearsBase') return 'baseYearsRate';
+      return k;
+    };
+
     const resolvedBuyoutEntries: { key: string; label: string }[] = [];
     const seenBuyoutKeys = new Set<string>();
     if (isLeaveBuyoutCustomConfigured && configuredBuyoutItems.length > 0) {
       configuredBuyoutItems.forEach((it: any) => {
-        const k = String(it.itemKey || '').trim();
-        if (!k || seenBuyoutKeys.has(k)) return;
+        const k = normalizeBuyoutKey(String(it.itemKey || ''));
+        if (!k || seenBuyoutKeys.has(k) || !LEAVE_BUYOUT_ITEM_LABELS[k]) return;
         seenBuyoutKeys.add(k);
         resolvedBuyoutEntries.push({
           key: k,
           label: it.itemName || LEAVE_BUYOUT_ITEM_LABELS[k] || k
         });
       });
-    } else {
+    }
+    if (resolvedBuyoutEntries.length === 0) {
       DEFAULT_LEAVE_BUYOUT_ITEM_KEYS.forEach((k) => {
+        if (seenBuyoutKeys.has(k)) return;
         seenBuyoutKeys.add(k);
         resolvedBuyoutEntries.push({
           key: k,
@@ -1790,46 +1800,45 @@ export default function PersonnelSettlementTab({
       const con: any = latestEmployeeContract;
       switch (key) {
         case 'dailyBaseSalary': {
-          if (formDailySalaryOverride !== '') return lastDailySalary * 30;
-          if (con?.contractBaseSalary && con.contractBaseSalary > 0) return Number(con.contractBaseSalary);
-          if (con?.contractDailySalary && con.contractDailySalary > 0) return Math.round(Number(con.contractDailySalary) * 30);
-          return lastMonthlyBaseSalary;
+          if (formDailySalaryOverride !== '') return Math.round(toSafeNum(lastDailySalary) * 30);
+          const conBase = toSafeNum(con?.contractBaseSalary);
+          if (conBase > 0) return conBase;
+          const conDaily = toSafeNum(con?.contractDailySalary);
+          if (conDaily > 0) return Math.round(conDaily * 30);
+          return toSafeNum(lastMonthlyBaseSalary);
         }
         case 'dailyInsuranceSalary': {
-          if (con?.contractBaseInsuranceSalary && con.contractBaseInsuranceSalary > 0) {
-            return Number(con.contractBaseInsuranceSalary);
+          const conInsBase = toSafeNum(con?.contractBaseInsuranceSalary);
+          if (conInsBase > 0) return conInsBase;
+          const conInsDaily = toSafeNum(con?.contractDailyInsuranceSalary);
+          if (conInsDaily > 0) return Math.round(conInsDaily * 30);
+          const empInsBase = toSafeNum(emp?.baseSalaryInsurance);
+          if (empInsBase > 0) {
+            return empInsBase > 10000000 ? empInsBase : Math.round(empInsBase * 30);
           }
-          if (con?.contractDailyInsuranceSalary && con.contractDailyInsuranceSalary > 0) {
-            return Math.round(Number(con.contractDailyInsuranceSalary) * 30);
-          }
-          if (emp?.baseSalaryInsurance && emp.baseSalaryInsurance > 0) {
-            return emp.baseSalaryInsurance > 10000000
-              ? Number(emp.baseSalaryInsurance)
-              : Math.round(Number(emp.baseSalaryInsurance) * 30);
-          }
-          if (emp?.dailySalaryInsurance && emp.dailySalaryInsurance > 0) {
-            return Math.round(Number(emp.dailySalaryInsurance) * 30);
-          }
-          return Math.round((buyoutContractRate?.dailyInsuranceSalary || endYearRate.dailyInsuranceSalary || lastDailySalary) * 30);
+          const empInsDaily = toSafeNum(emp?.dailySalaryInsurance);
+          if (empInsDaily > 0) return Math.round(empInsDaily * 30);
+          return Math.round(
+            (toSafeNum(buyoutContractRate?.dailyInsuranceSalary) ||
+              toSafeNum(endYearRate.dailyInsuranceSalary) ||
+              toSafeNum(lastDailySalary)) * 30
+          );
         }
         case 'baseYearsRate': {
-          if (con?.calculatedSeniorityBase && con.calculatedSeniorityBase > 0) {
-            return Number(con.calculatedSeniorityBase);
+          const calcSen = toSafeNum(con?.calculatedSeniorityBase);
+          if (calcSen > 0) return calcSen;
+          const conSen = toSafeNum(con?.contractSeniorityBase);
+          if (conSen > 0) return conSen;
+          const nestedSen = toSafeNum(con?.contract?.calculatedSeniorityBase);
+          if (nestedSen > 0) return nestedSen;
+          if (refLastMonth && toSafeNum(refLastMonth.seniorityBase) > 0 && toSafeNum(refLastMonth.workedDays) > 0) {
+            return Math.round((toSafeNum(refLastMonth.seniorityBase) / toSafeNum(refLastMonth.workedDays)) * 30);
           }
-          if (con?.contractSeniorityBase && con.contractSeniorityBase > 0) {
-            return Number(con.contractSeniorityBase);
-          }
-          if (con?.contract?.calculatedSeniorityBase && con.contract.calculatedSeniorityBase > 0) {
-            return Number(con.contract.calculatedSeniorityBase);
-          }
-          if (refLastMonth && refLastMonth.seniorityBase && refLastMonth.seniorityBase > 0 && refLastMonth.workedDays > 0) {
-            return Math.round((refLastMonth.seniorityBase / refLastMonth.workedDays) * 30);
-          }
-          if (emp?.dailyYearsDifference && emp.dailyYearsDifference > 0) {
-            return Math.round(Number(emp.dailyYearsDifference) * 30);
-          }
-          if (emp?.yearsBase && emp.yearsBase > 0) {
-            return emp.yearsBase > 500000 ? Number(emp.yearsBase) : Math.round(Number(emp.yearsBase) * 30);
+          const empDailyDiff = toSafeNum(emp?.dailyYearsDifference);
+          if (empDailyDiff > 0) return Math.round(empDailyDiff * 30);
+          const empYearsBase = toSafeNum(emp?.yearsBase);
+          if (empYearsBase > 0) {
+            return empYearsBase > 500000 ? empYearsBase : Math.round(empYearsBase * 30);
           }
           const senStart = parseJalali(emp?.seniorityBaseStartDate || '');
           const refDateParsed = parseJalali(con?.contractStartDate || buyoutLookupDate || '');
@@ -1860,68 +1869,73 @@ export default function PersonnelSettlementTab({
               }) || matchingYears.find(
                 r => toEnglishDigits(String(r.fiscalYear || '')).trim() === yrStr
               );
-              if (rule && rule.dailyRate > 0) {
-                return Math.round(rule.dailyRate * 30);
+              if (rule && toSafeNum(rule.dailyRate) > 0) {
+                return Math.round(toSafeNum(rule.dailyRate) * 30);
               }
             }
           }
           return 0;
         }
         case 'foodAllowance': {
-          if (con?.calculatedFoodAllowance && con.calculatedFoodAllowance > 0) return Number(con.calculatedFoodAllowance);
-          if (con?.contract?.calculatedFoodAllowance && con.contract.calculatedFoodAllowance > 0) {
-            return Number(con.contract.calculatedFoodAllowance);
-          }
-          return Number(buyoutContractRate?.foodAllowance || endYearRate.foodAllowance || 0);
+          const conFood = toSafeNum(con?.calculatedFoodAllowance);
+          if (conFood > 0) return conFood;
+          const nestedFood = toSafeNum(con?.contract?.calculatedFoodAllowance);
+          if (nestedFood > 0) return nestedFood;
+          return toSafeNum(buyoutContractRate?.foodAllowance) || toSafeNum(endYearRate.foodAllowance);
         }
         case 'housingAllowance': {
-          if (con?.calculatedHousingAllowance && con.calculatedHousingAllowance > 0) return Number(con.calculatedHousingAllowance);
-          if (con?.contract?.calculatedHousingAllowance && con.contract.calculatedHousingAllowance > 0) {
-            return Number(con.contract.calculatedHousingAllowance);
-          }
-          return Number(buyoutContractRate?.housingAllowance || endYearRate.housingAllowance || 0);
+          const conHousing = toSafeNum(con?.calculatedHousingAllowance);
+          if (conHousing > 0) return conHousing;
+          const nestedHousing = toSafeNum(con?.contract?.calculatedHousingAllowance);
+          if (nestedHousing > 0) return nestedHousing;
+          return toSafeNum(buyoutContractRate?.housingAllowance) || toSafeNum(endYearRate.housingAllowance);
         }
         case 'childAllowance': {
-          if (con?.calculatedChildAllowance && con.calculatedChildAllowance > 0) return Number(con.calculatedChildAllowance);
-          if (con?.contract?.calculatedChildAllowance && con.contract.calculatedChildAllowance > 0) {
-            return Number(con.contract.calculatedChildAllowance);
-          }
-          const childCount = emp?.childrenCount || (emp?.childrenList || []).length || 0;
-          const hasInsuranceDays = emp?.insuranceHistoryDays || 0;
+          const conChild = toSafeNum(con?.calculatedChildAllowance);
+          if (conChild > 0) return conChild;
+          const nestedChild = toSafeNum(con?.contract?.calculatedChildAllowance);
+          if (nestedChild > 0) return nestedChild;
+          const childCount = toSafeNum(emp?.childrenCount) || (emp?.childrenList || []).length || 0;
+          const hasInsuranceDays = toSafeNum(emp?.insuranceHistoryDays);
           const isChildEligible =
             childCount > 0 && (hasInsuranceDays >= 720 || emp?.childrenList?.some(ch => ch.subjectToAllowance));
           if (!isChildEligible) return 0;
-          const childRate = Number(buyoutContractRate?.childAllowance || endYearRate.childAllowance || 0);
+          const childRate = toSafeNum(buyoutContractRate?.childAllowance) || toSafeNum(endYearRate.childAllowance);
           return Math.round(childCount * childRate);
         }
         case 'marriageAllowance': {
           const isMarried = emp?.maritalStatus === 'متاهل' || emp?.isMarried === true;
           if (!isMarried) return 0;
-          if (con?.calculatedMarriageAllowance && con.calculatedMarriageAllowance > 0) {
-            return Number(con.calculatedMarriageAllowance);
-          }
-          if (con?.contract?.calculatedMarriageAllowance && con.contract.calculatedMarriageAllowance > 0) {
-            return Number(con.contract.calculatedMarriageAllowance);
-          }
-          return Number(buyoutContractRate?.marriageAllowance || endYearRate.marriageAllowance || 0);
+          const conMarriage = toSafeNum(con?.calculatedMarriageAllowance);
+          if (conMarriage > 0) return conMarriage;
+          const nestedMarriage = toSafeNum(con?.contract?.calculatedMarriageAllowance);
+          if (nestedMarriage > 0) return nestedMarriage;
+          return toSafeNum(buyoutContractRate?.marriageAllowance) || toSafeNum(endYearRate.marriageAllowance);
         }
         case 'jobAllowance': {
-          if (con?.jobAllowance && con.jobAllowance > 0) return Number(con.jobAllowance);
-          if (con?.contract?.jobAllowance && con.contract.jobAllowance > 0) return Number(con.contract.jobAllowance);
-          return Number(emp?.jobAllowance || 0);
+          const conJob = toSafeNum(con?.jobAllowance);
+          if (conJob > 0) return conJob;
+          const nestedJob = toSafeNum(con?.contract?.jobAllowance);
+          if (nestedJob > 0) return nestedJob;
+          return toSafeNum(emp?.jobAllowance);
         }
         default:
           return 0;
       }
     };
 
-    const leaveBuyoutBreakdown = resolvedBuyoutEntries.map(entry => ({
-      key: entry.key,
-      label: entry.label,
-      amount: Math.max(0, Math.round(resolveMonthlyBuyoutItemAmount(entry.key)))
-    }));
-    const leaveBuyoutBaseMonthlySum = leaveBuyoutBreakdown.reduce((sum, item) => sum + item.amount, 0);
-    const leaveHourlyRate = leaveBuyoutBaseMonthlySum / 220;
+    const leaveBuyoutBreakdown = resolvedBuyoutEntries.map(entry => {
+      const rawAmt = resolveMonthlyBuyoutItemAmount(entry.key);
+      return {
+        key: entry.key,
+        label: entry.label,
+        amount: Number.isFinite(rawAmt) ? Math.max(0, Math.round(rawAmt)) : 0
+      };
+    });
+    const rawBuyoutMonthlySum = leaveBuyoutBreakdown.reduce((sum, item) => sum + item.amount, 0);
+    const leaveBuyoutBaseMonthlySum =
+      rawBuyoutMonthlySum > 0 ? rawBuyoutMonthlySum : Math.max(0, Math.round(toSafeNum(lastMonthlyBaseSalary)));
+    const leaveHourlyRate = Number.isFinite(leaveBuyoutBaseMonthlySum) ? leaveBuyoutBaseMonthlySum / 220 : 0;
 
     let payrollRemainingLeaveMinutes: number | undefined = undefined;
     if (
@@ -1983,7 +1997,9 @@ export default function PersonnelSettlementTab({
         : defaultUnusedLeaveMinutes;
     const unusedLeaveHours = Math.round((unusedLeaveMinutes / 60) * 10000) / 10000;
     const unusedLeaveDays = Math.round((unusedLeaveHours / 8) * 100) / 100;
-    const defaultUnusedLeaveAmount = Math.round((unusedLeaveMinutes / 60) * leaveHourlyRate);
+    const defaultUnusedLeaveAmount = Number.isFinite(leaveHourlyRate)
+      ? Math.max(0, Math.round((unusedLeaveMinutes / 60) * leaveHourlyRate))
+      : 0;
     const unusedLeaveAmount = formUnusedLeaveAmount !== '' ? parseNumber(formUnusedLeaveAmount) : defaultUnusedLeaveAmount;
 
     // 4. طلب حساب از قبل (مانده بستانکاری پرسنل از سال یا دوره قبل)
@@ -2252,10 +2268,16 @@ export default function PersonnelSettlementTab({
         : settlement.unusedLeaveDays !== undefined
         ? Math.round(settlement.unusedLeaveDays * 8 * 10000) / 10000
         : undefined;
+    const savedUnusedAmount = Number(settlement.unusedLeaveAmount || 0);
+    const shouldAutoCalcLeaveAmount =
+      settlement.unusedLeaveAmount === undefined ||
+      (savedUnusedAmount === 0 && ((resolvedUnusedHours || 0) > 0 || !locked));
     setFormUnusedLeaveHours(
-      resolvedUnusedHours !== undefined ? formatMinutesToEnglishHM(Math.round(resolvedUnusedHours * 60)) : ''
+      resolvedUnusedHours !== undefined && resolvedUnusedHours > 0
+        ? formatMinutesToEnglishHM(Math.round(resolvedUnusedHours * 60))
+        : ''
     );
-    setFormUnusedLeaveAmount(settlement.unusedLeaveAmount !== undefined ? formatWithCommas(settlement.unusedLeaveAmount) : '');
+    setFormUnusedLeaveAmount(shouldAutoCalcLeaveAmount ? '' : formatWithCommas(savedUnusedAmount));
     setFormStatus(settlement.status);
     setFormNotes(settlement.notes || '');
 
@@ -3389,19 +3411,34 @@ export default function PersonnelSettlementTab({
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-slate-300 font-bold mb-1.5">انتخاب پرسنل *</label>
-                    <select
+                    <SearchableSelect
+                      variant="dark"
                       value={formEmployeeCode}
                       disabled={isModalReadOnly}
-                      onChange={e => handleEmployeeSelect(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-hidden focus:border-rose-500 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      <option value="">-- انتخاب پرسنل --</option>
-                      {personnelList.map(p => (
-                        <option key={p.employeeCode} value={p.employeeCode}>
-                          {p.fullName || `${p.firstName || ''} ${p.lastName || ''}`} (کد: {toPersianDigits(p.employeeCode)})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={val => handleEmployeeSelect(val)}
+                      placeholder="-- انتخاب یا جستجوی پرسنل --"
+                      searchPlaceholder="جستجو نام پرسنل، کد پرسنلی، کد تردد یا سمت..."
+                      emptyText="پرسنلی با این مشخصات یافت نشد."
+                      options={personnelList.map(p => {
+                        const displayName = (p.fullName || `${p.firstName || ''} ${p.lastName || ''}`).trim() || p.employeeCode;
+                        const attPart = p.attendanceCode ? ` | کد تردد: ${toPersianDigits(p.attendanceCode)}` : '';
+                        return {
+                          value: p.employeeCode,
+                          label: `${displayName} (کد: ${toPersianDigits(p.employeeCode)}${attPart})`,
+                          searchText: [
+                            displayName,
+                            p.firstName || '',
+                            p.lastName || '',
+                            p.employeeCode || '',
+                            toPersianDigits(p.employeeCode || ''),
+                            p.attendanceCode || '',
+                            toPersianDigits(p.attendanceCode || ''),
+                            p.nationalId || '',
+                            p.role || ''
+                          ].filter(Boolean).join(' ')
+                        };
+                      })}
+                    />
                   </div>
 
                   <div>
@@ -3417,7 +3454,7 @@ export default function PersonnelSettlementTab({
                       </option>
                       {employeeContracts.map(c => (
                         <option key={c.id} value={c.id}>
-                          {c.role || 'قرارداد کاری'} ({toPersianDigits(c.contractStartDate)} الی {toPersianDigits(c.contractEndDate)})
+                          {selectedPersonnel?.role || c.role || 'قرارداد کاری'} ({toPersianDigits(c.contractStartDate)} الی {toPersianDigits(c.contractEndDate)})
                         </option>
                       ))}
                       <option value="">-- قرارداد پیش‌فرض پرونده پرسنلی --</option>
@@ -4057,7 +4094,12 @@ export default function PersonnelSettlementTab({
                       dir="ltr"
                       disabled={isModalReadOnly}
                       value={toPersianDigits(formDailySalaryOverride !== '' ? formDailySalaryOverride : formatWithCommas(settlementSummary.defaultLastDailySalary))}
-                      onChange={e => setFormDailySalaryOverride(formatWithCommas(parseNumber(e.target.value)))}
+                      onChange={e => {
+                        setFormDailySalaryOverride(formatWithCommas(parseNumber(e.target.value)));
+                        if (formUnusedLeaveAmount !== '' && parseNumber(formUnusedLeaveAmount) === 0) {
+                          setFormUnusedLeaveAmount('');
+                        }
+                      }}
                       className="w-28 bg-transparent text-xs text-white font-mono font-bold text-left focus:outline-hidden disabled:opacity-70"
                       title="مزد روزانه مبنا برای سنوات، عیدی و بازخرید مرخصی"
                     />
@@ -4234,10 +4276,7 @@ export default function PersonnelSettlementTab({
                                 ? rawEng
                                 : rawEng.slice(0, firstColon + 1) + rawEng.slice(firstColon + 1).replace(/:/g, '').slice(0, 2);
                             setFormUnusedLeaveHours(cleaned);
-                            const parsedMins = parseLeaveHMToMinutes(cleaned) ?? 0;
-                            setFormUnusedLeaveAmount(
-                              formatWithCommas(Math.round((parsedMins / 60) * settlementSummary.leaveHourlyRate))
-                            );
+                            setFormUnusedLeaveAmount('');
                           }}
                           onBlur={() => {
                             if (formUnusedLeaveHours !== '') {
