@@ -1361,9 +1361,12 @@ export function findFirstAttendanceDateForCode(
 
   const matching = attendanceRecords.filter(rec => {
     if (!rec || !Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) return false;
+    const hasRealPunch = rec.times.some(t => /\d/.test(toEnglishDigits(String(t ?? '')).trim()));
+    if (!hasRealPunch) return false;
     const recCode = cleanCodeNoZeros(rec.attendanceCode);
+    if (recCode) return recCode === targetNorm;
     const recEmpId = cleanCodeNoZeros(rec.employeeId);
-    return (Boolean(recCode) && recCode === targetNorm) || (Boolean(recEmpId) && recEmpId === targetNorm);
+    return Boolean(recEmpId) && recEmpId === targetNorm;
   });
   if (matching.length === 0) return '';
 

@@ -8729,7 +8729,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         insuranceBranch: 'شعبه ۱ تامین اجتماعی',
 
         employee: emp,
-        jobTitle: contract?.role || contract?.jobTitle || (emp as any).jobTitle || emp.role || 'کارگر کارگاه',
+        jobTitle: emp.role || (emp as any).jobTitle || contract?.role || contract?.jobTitle || 'کارگر کارگاه',
         department: dept,
         contractType: (contract as any)?.contractType === 'permanent' ? 'دائم' : 'مدت موقت قانون کار',
         hireDate: contract?.contractStartDate || emp.entryDate || '-',
@@ -9019,7 +9019,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         insuranceBranch: 'شعبه ۱ تامین اجتماعی',
 
         employee: emp,
-        jobTitle: contract?.role || contract?.jobTitle || (contract as any)?.jobTitle || (emp as any).jobTitle || emp.role || 'کارگر کارگاه',
+        jobTitle: emp.role || (emp as any).jobTitle || contract?.role || contract?.jobTitle || (contract as any)?.jobTitle || 'کارگر کارگاه',
         department: dept,
         contractType: (contract as any)?.contractType === 'permanent' ? 'دائم' : 'مدت موقت قانون کار',
         hireDate: contract?.contractStartDate || emp.entryDate || '-',
@@ -9272,34 +9272,51 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     activeContractSummaryByEmpCode
   ]);
 
-  const firstAttendanceDateByTokenMap = useMemo(() => {
-    const map: Record<string, string> = {};
+  const firstAttendanceDateIndex = useMemo(() => {
+    const byAttCode: Record<string, string> = {};
+    const byEmpIdFallback: Record<string, string> = {};
     const records = db.attendanceRecords || [];
+    const validPeriodIds = new Set((db.periods || []).map(p => p.id).filter(Boolean));
+    const hasPeriodsList = validPeriodIds.size > 0;
     const cleanTok = (v: unknown) => toEnglishDigits(String(v || '')).trim().toLowerCase();
     const stripZeros = (v: string) => {
       const s = v.replace(/^0+/, '');
       return s === '' && v !== '' ? '0' : s;
     };
-    const recordTokenDate = (raw: unknown, normDate: string) => {
+    const hasValidPunchTime = (times: unknown): boolean => {
+      if (!Array.isArray(times) || times.length === 0) return false;
+      return times.some(t => {
+        const s = toEnglishDigits(String(t ?? '')).trim();
+        return s.length > 0 && /\d/.test(s);
+      });
+    };
+    const recordDateInMap = (targetMap: Record<string, string>, raw: unknown, normDate: string, includeStrippedZeros: boolean) => {
       const c = cleanTok(raw);
       if (!c) return;
-      const variants = [c, stripZeros(c)];
+      const variants = includeStrippedZeros ? [c, stripZeros(c)] : [c];
       variants.forEach(tok => {
-        if (!map[tok] || normDate < map[tok]) {
-          map[tok] = normDate;
+        if (!targetMap[tok] || normDate < targetMap[tok]) {
+          targetMap[tok] = normDate;
         }
       });
     };
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
-      if (!rec || !Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+      if (!rec || !rec.date || !hasValidPunchTime(rec.times)) continue;
+      if (hasPeriodsList && rec.periodId && !validPeriodIds.has(rec.periodId)) continue;
       const normDate = normalizeRateDateYMD(rec.date);
       if (!normDate) continue;
-      recordTokenDate(rec.attendanceCode, normDate);
-      recordTokenDate(rec.employeeId, normDate);
+      const recAtt = cleanTok(rec.attendanceCode);
+      // Strictly match punch code ONLY against attendanceCode (never mix with employeeCode or stale employeeId)
+      if (recAtt) {
+        recordDateInMap(byAttCode, recAtt, normDate, true);
+      } else if (rec.employeeId) {
+        // Fallback to employeeId ONLY when the attendance record has no attendanceCode
+        recordDateInMap(byEmpIdFallback, rec.employeeId, normDate, false);
+      }
     }
-    return map;
-  }, [db.attendanceRecords]);
+    return { byAttCode, byEmpIdFallback };
+  }, [db.attendanceRecords, db.periods]);
 
   const getFastFirstAttendanceDateForEmp = (emp: Personnel): string => {
     const cleanTok = (v: unknown) => toEnglishDigits(String(v || '')).trim().toLowerCase();
@@ -9307,23 +9324,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const s = v.replace(/^0+/, '');
       return s === '' && v !== '' ? '0' : s;
     };
-    const tokens: string[] = [];
+    let earliest = '';
     const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
     if (rawAtt) {
-      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(t => {
-        const c = cleanTok(t);
-        if (c) tokens.push(c, stripZeros(c));
-      });
+      const attTokens = rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean);
+      for (let i = 0; i < attTokens.length; i++) {
+        const c = cleanTok(attTokens[i]);
+        if (!c) continue;
+        const d1 = firstAttendanceDateIndex.byAttCode[c];
+        if (d1 && (!earliest || d1 < earliest)) earliest = d1;
+        const stripped = stripZeros(c);
+        const d2 = firstAttendanceDateIndex.byAttCode[stripped];
+        if (d2 && (!earliest || d2 < earliest)) earliest = d2;
+      }
     }
-    [emp.employeeCode, emp.id].forEach(val => {
-      const c = cleanTok(val);
-      if (c) tokens.push(c, stripZeros(c));
-    });
-    let earliest = '';
-    for (let i = 0; i < tokens.length; i++) {
-      const d = firstAttendanceDateByTokenMap[tokens[i]];
-      if (d && (!earliest || d < earliest)) {
-        earliest = d;
+    const empIdKey = cleanTok(emp.id);
+    if (empIdKey) {
+      const dFallback = firstAttendanceDateIndex.byEmpIdFallback[empIdKey];
+      if (dFallback && (!earliest || dFallback < earliest)) {
+        earliest = dFallback;
       }
     }
     return earliest;
@@ -10463,35 +10482,40 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       const s = v.replace(/^0+/, '');
       return s === '' && v !== '' ? '0' : s;
     };
-
-    const empTokenSet = new Set<string>();
-    const addToken = (raw: any) => {
-      const c = cleanTok(raw);
-      if (!c) return;
-      empTokenSet.add(c);
-      empTokenSet.add(stripZeros(c));
+    const hasValidPunchTime = (times: unknown): boolean => {
+      if (!Array.isArray(times) || times.length === 0) return false;
+      return times.some(t => {
+        const s = toEnglishDigits(String(t ?? '')).trim();
+        return s.length > 0 && /\d/.test(s);
+      });
     };
 
+    const empAttTokenSet = new Set<string>();
     const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
     if (rawAtt) {
-      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(addToken);
+      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(tok => {
+        const c = cleanTok(tok);
+        if (!c) return;
+        empAttTokenSet.add(c);
+        empAttTokenSet.add(stripZeros(c));
+      });
     }
-    addToken(emp.employeeCode);
-    addToken(emp.id);
+    const empIdNorm = cleanTok(emp.id);
 
-    if (empTokenSet.size === 0) return '';
+    if (empAttTokenSet.size === 0 && !empIdNorm) return '';
 
     const dates: string[] = [];
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
       if (!rec || rec.periodId !== activePeriodId) continue;
-      if (!Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+      if (!rec.date || !hasValidPunchTime(rec.times)) continue;
 
       const recAtt = cleanTok(rec.attendanceCode);
       const recEmpId = cleanTok(rec.employeeId);
-      const matches =
-        (recAtt && (empTokenSet.has(recAtt) || empTokenSet.has(stripZeros(recAtt)))) ||
-        (recEmpId && (empTokenSet.has(recEmpId) || empTokenSet.has(stripZeros(recEmpId))));
+      // Strictly match punch code ONLY against personnel.attendanceCode (never employeeCode or stale employeeId)
+      const matches = recAtt
+        ? (empAttTokenSet.has(recAtt) || empAttTokenSet.has(stripZeros(recAtt)))
+        : (Boolean(empIdNorm) && Boolean(recEmpId) && recEmpId === empIdNorm);
 
       if (!matches) continue;
       const normDate = normalizeRateDateYMD(rec.date);
@@ -10510,39 +10534,47 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     const records = db.attendanceRecords || [];
     if (records.length === 0) return '';
 
+    const validPeriodIds = new Set((db.periods || []).map(p => p.id).filter(Boolean));
+    const hasPeriodsList = validPeriodIds.size > 0;
     const cleanTok = (v: any) => toEnglishDigits(String(v || '')).trim().toLowerCase();
     const stripZeros = (v: string) => {
       const s = v.replace(/^0+/, '');
       return s === '' && v !== '' ? '0' : s;
     };
-
-    const empTokenSet = new Set<string>();
-    const addToken = (raw: any) => {
-      const c = cleanTok(raw);
-      if (!c) return;
-      empTokenSet.add(c);
-      empTokenSet.add(stripZeros(c));
+    const hasValidPunchTime = (times: unknown): boolean => {
+      if (!Array.isArray(times) || times.length === 0) return false;
+      return times.some(t => {
+        const s = toEnglishDigits(String(t ?? '')).trim();
+        return s.length > 0 && /\d/.test(s);
+      });
     };
 
+    const empAttTokenSet = new Set<string>();
     const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
     if (rawAtt) {
-      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(addToken);
+      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(tok => {
+        const c = cleanTok(tok);
+        if (!c) return;
+        empAttTokenSet.add(c);
+        empAttTokenSet.add(stripZeros(c));
+      });
     }
-    addToken(emp.employeeCode);
-    addToken(emp.id);
+    const empIdNorm = cleanTok(emp.id);
 
-    if (empTokenSet.size === 0) return '';
+    if (empAttTokenSet.size === 0 && !empIdNorm) return '';
 
     const dates: string[] = [];
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
-      if (!rec || !Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+      if (!rec || !rec.date || !hasValidPunchTime(rec.times)) continue;
+      if (hasPeriodsList && rec.periodId && !validPeriodIds.has(rec.periodId)) continue;
 
       const recAtt = cleanTok(rec.attendanceCode);
       const recEmpId = cleanTok(rec.employeeId);
-      const matches =
-        (recAtt && (empTokenSet.has(recAtt) || empTokenSet.has(stripZeros(recAtt)))) ||
-        (recEmpId && (empTokenSet.has(recEmpId) || empTokenSet.has(stripZeros(recEmpId))));
+      // Strictly match punch code ONLY against personnel.attendanceCode (never employeeCode or stale employeeId)
+      const matches = recAtt
+        ? (empAttTokenSet.has(recAtt) || empAttTokenSet.has(stripZeros(recAtt)))
+        : (Boolean(empIdNorm) && Boolean(recEmpId) && recEmpId === empIdNorm);
 
       if (!matches) continue;
       const normDate = normalizeRateDateYMD(rec.date);
@@ -10886,12 +10918,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       }
     }
 
-    // Strict overlap check (prevent overlapping / shared contract periods for the same employee)
+    // Strict overlap check (prevent overlapping / shared contract periods for the same employee in active fiscal period)
     if (emp) {
-      const empCodeTrim = String(emp.employeeCode || '').trim();
+      const empCodeTrim = toEnglishDigits(String(emp.employeeCode || '')).trim();
       const existingEmpContracts = (db.personnelContracts || []).filter(c => {
+        if (c.periodId !== activePeriodId) return false;
         if (excludeContractId && c.id === excludeContractId) return false;
-        return String(c.employeeCode || '').trim() === empCodeTrim;
+        return toEnglishDigits(String(c.employeeCode || '')).trim() === empCodeTrim;
       });
       for (const existing of existingEmpContracts) {
         const exStart = normalizeRateDateYMD(existing.contractStartDate || '');
@@ -11026,7 +11059,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       hasAgreedMonthlyNet: conHasAgreedMonthlyNet || undefined,
       agreedMonthlyNetAmount: agreedMonthlyNetNum,
       agreedBasisDays: agreedBasisDaysVal,
-      role: conRole || emp.role || 'کارگر خط تولید',
+      role: emp.role || conRole || 'کارگر خط تولید',
       notes: conNotes,
       createdAt: new Date().toISOString(),
       contract: contractObject,
@@ -11068,7 +11101,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           baseSalary: baseSalaryNum,
           baseSalaryInsurance: parsedMonthlyIns > 0 ? parsedMonthlyIns : ((p.hasInsurance !== false) ? baseSalaryNum : 0),
           dailySalaryInsurance: parsedDailyIns > 0 ? parsedDailyIns : undefined,
-          role: conRole || p.role || 'کارگر خط تولید',
+          role: p.role || 'کارگر خط تولید',
           contractStartDate: conStartDate,
           contractEndDate: conEndDate,
           contractDurationMonths: durationNum,
@@ -11254,7 +11287,9 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       setViewBasisDays(savedAgreedBasis === 31 ? 31 : 30);
     }
     setConDailyWageAmount(c.contractDailyWageAmount ? formatWithCommas(c.contractDailyWageAmount) : '');
-    setConRole(c.role || '');
+    const matchedEmpForEdit = (db.personnel || []).find(p => p.periodId === activePeriodId && p.employeeCode === c.employeeCode)
+      || (db.personnel || []).find(p => p.employeeCode === c.employeeCode);
+    setConRole(matchedEmpForEdit?.role || c.role || '');
     setConNotes(c.notes || '');
     setConIsActive(c.isActive !== undefined ? Boolean(c.isActive) : isContractActive(c, db.personnelContracts || []));
     setIsContractFormOpen(true);
@@ -12288,7 +12323,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
         const updatedContracts = (db.personnelContracts || []).map(c => {
           if (c.periodId === activePeriodId && c.employeeCode.trim() === oldEmpCode) {
-            return { ...c, employeeCode: targetEmpCode };
+            return { ...c, employeeCode: targetEmpCode, role: personnelRow.role };
           }
           return c;
         });
@@ -12375,10 +12410,18 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           departmentCategoryId: newDeptId || 'cat-4'
         });
 
+        const updatedContracts = (db.personnelContracts || []).map(c => {
+          if (c.periodId === activePeriodId && normEmpCodeStr(c.employeeCode) === normEmpCodeStr(targetEmpCode)) {
+            return { ...c, role: personnelRow.role };
+          }
+          return c;
+        });
+
         onUpdateDb({
           ...db,
           personnel: updatedPersonnel,
-          personnelAllocations: updatedAllocations
+          personnelAllocations: updatedAllocations,
+          personnelContracts: updatedContracts
         });
 
         setEditingEmp(null);
@@ -13034,7 +13077,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         const dailySalary = parseNumber(pickRowField(row, ['حقوق پایه روزانه (ریال)', 'حقوق پایه روزانه', 'contractDailySalary'])) || 0;
         const seniorityBase = parseNumber(pickRowField(row, ['پایه سنوات ماهانه (ریال)', 'پایه سنوات', 'contractSeniorityBase'])) || 0;
         const jobAllowance = parseNumber(pickRowField(row, ['فوق‌العاده شغلی (ریال)', 'فوق العاده شغلی', 'jobAllowance'])) || 0;
-        const role = pickRowField(row, ['سمت شغلی', 'سمت', 'role']) || emp?.role || 'پرسنل کارگاه';
+        const role = emp?.role || pickRowField(row, ['سمت شغلی', 'سمت', 'role']) || 'پرسنل کارگاه';
         const notes = pickRowField(row, ['توضیحات', 'notes']);
 
         existing.forEach(c => {
@@ -21092,7 +21135,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           if (contractAgreementFilter === 'standard' && c.hasAgreedMonthlyNet) return false;
           const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : '';
           const matchSearch = matchPersianString(empName, searchContractQuery) || 
-                              matchPersianString(c.role, searchContractQuery) || 
+                              matchPersianString(emp?.role || c.role, searchContractQuery) || 
                               matchPersianString(c.employeeCode, searchContractQuery) ||
                               matchPersianString(emp?.attendanceCode || '', searchContractQuery);
           return matchSearch;
@@ -21222,7 +21265,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         ? '_شاغل'
                         : '';
                     const filterTitle = `${onlyActiveContractsFilter ? 'قراردادهای_فعال' : 'کلیه_قراردادها'}${depTag}`;
-                    exportPersonnelContractsToExcel(filteredContracts, filterTitle);
+                    const contractsWithProfileRole = filteredContracts.map(c => {
+                      const emp = getContractEmployee(c);
+                      return { ...c, role: emp?.role || c.role || '' };
+                    });
+                    exportPersonnelContractsToExcel(contractsWithProfileRole, filterTitle);
                   }}
                   onPrint={() => printElement('contracts-printable-section', 'فهرست قراردادهای پرسنلی')}
                   extraSecondaryActions={
@@ -21642,25 +21689,25 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                         )}
 
                         {previewPlan && previewPlan.ok && previewPlan.adjustedToEntryDateDetails.length > 0 && (
-                          <div className="bg-cyan-950/30 border border-cyan-500/35 rounded-xl p-3 space-y-1 text-[10.5px] text-cyan-100 text-right">
-                            <div className="font-extrabold text-cyan-300">
+                          <div className="bg-cyan-50 border border-cyan-300 rounded-xl p-3 space-y-1 text-[10.5px] text-black text-right">
+                            <div className="font-extrabold text-black">
                               تنظیم خودکار شروع قرارداد از تاریخ ورود به کار ({toPersianDigits(previewPlan.adjustedToEntryDateDetails.length)} نفر):
                             </div>
-                            <p className="text-cyan-100/85 leading-relaxed">
+                            <p className="text-black leading-relaxed">
                               {previewPlan.adjustedToEntryDateDetails.join(' | ')}
                             </p>
                           </div>
                         )}
 
                         {previewPlan && previewPlan.ok && previewPlan.skippedOverlapping.length > 0 && (
-                          <div className="bg-rose-950/35 border border-rose-500/40 rounded-xl p-3 space-y-1 text-[10.5px] text-rose-100 text-right">
-                            <div className="flex items-center gap-1.5 font-extrabold text-rose-300">
-                              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          <div className="bg-rose-50 border border-rose-300 rounded-xl p-3 space-y-1 text-[10.5px] text-red-600 text-right">
+                            <div className="flex items-center gap-1.5 font-extrabold text-red-700">
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-600" />
                               <span>
                                 مسدود به دلیل دوره مشترک با قرارداد قبلی ({toPersianDigits(previewPlan.skippedOverlapping.length)} نفر):
                               </span>
                             </div>
-                            <ul className="list-disc pr-5 text-rose-100/90 space-y-0.5 leading-relaxed">
+                            <ul className="list-disc pr-5 text-red-600 space-y-0.5 leading-relaxed">
                               {previewPlan.skippedOverlapping.map((item, idx) => (
                                 <li key={idx}>{item}</li>
                               ))}
@@ -21926,6 +21973,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                   {selContractEmpCode && (() => {
                     const priorContracts = (db.personnelContracts || []).filter(c => 
+                      c.periodId === activePeriodId &&
                       c.employeeCode.trim() === selContractEmpCode.trim() && (!editContractId || c.id !== editContractId)
                     );
                     if (priorContracts.length === 0) return null;
@@ -22510,13 +22558,13 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-[10.5px] font-bold text-slate-300 block">سمت شغلی در قرارداد:</label>
+                    <label className="text-[10.5px] font-bold text-slate-300 block">سمت شغلی در قرارداد (برگرفته از پرونده پرسنل):</label>
                     <input
                       type="text"
-                      placeholder="کارگر خط تولید"
-                      value={conRole}
-                      onChange={(e) => setConRole(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-600 transition-colors"
+                      placeholder="ثبت نشده در پرونده"
+                      value={selectedEmployee?.role || conRole || ''}
+                      readOnly
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-bold focus:outline-none cursor-not-allowed"
                     />
                   </div>
                 </div>
@@ -23544,7 +23592,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           const emp = activeEmployees.find(e => e.employeeCode === c.employeeCode) || db.personnel.find(e => e.employeeCode === c.employeeCode);
                           const empName = emp ? (emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`) : 'پرسنل حذف شده';
                           const empEntryYMD = normalizeRateDateYMD(emp?.entryDate || '');
-                          const isCurrentlyActive = isContractActive(c, db.personnelContracts || []);
+                          const isCurrentlyActive = isContractActive(c, periodContractsAll);
                           const isSelectedRow = selectedSet.has(c.id);
 
                           const prevC = idx > 0 ? filteredContracts[idx - 1] : null;
@@ -23592,7 +23640,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 </span>
                               </td>
                               <td className="py-3 font-semibold text-slate-300">
-                                {c.role}
+                                {emp?.role || c.role || '—'}
                               </td>
                               <td className="py-3 text-center whitespace-nowrap">
                                 {empEntryYMD ? (
@@ -24317,7 +24365,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
       )}
 
       {contractModalEmployee && (() => {
-        const displayRole = contractModalContractData?.role || contractModalEmployee.role || 'کارگر خط تولید';
+        const displayRole = contractModalEmployee.role || contractModalContractData?.role || 'کارگر خط تولید';
         const displayStartDate = contractModalContractData?.contractStartDate || contractModalEmployee.contractStartDate || contractModalEmployee.entryDate || '....................';
         const displayEndDate = contractModalContractData?.contractEndDate || contractModalEmployee.contractEndDate || '....................';
         const displayDuration = contractModalContractData?.contractDurationMonths !== undefined ? contractModalContractData.contractDurationMonths : (contractModalEmployee.contractDurationMonths || '................');
