@@ -20876,6 +20876,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
           if (contractedEmpCodeSetInPeriod.has(codeTrim)) return false;
           const depYMD = normalizeRateDateYMD(p.departureDate || '');
           if (depYMD && depYMD <= activePeriodStartDate) return false;
+          const entryYMD = normalizeRateDateYMD(p.entryDate || '');
+          if (entryYMD && entryYMD > activePeriodEndDate) return false;
           return true;
         });
 
@@ -21050,7 +21052,11 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           setUncontractedNotice(null);
                           if (!uncontractedBatchStart) setUncontractedBatchStart(toPersianDigits(activePeriodStartDate));
                           if (!uncontractedBatchEnd) setUncontractedBatchEnd(toPersianDigits(activePeriodEndDate));
-                          setSelectedUncontractedCodes(uncontractedEligibleEmployees.map(e => e.employeeCode));
+                          setSelectedUncontractedCodes(
+                            uncontractedEligibleEmployees
+                              .filter(e => Boolean(normalizeRateDateYMD(e.entryDate || '')))
+                              .map(e => e.employeeCode)
+                          );
                           setShowUncontractedModal(true);
                         }}
                         icon={<Users className="h-3.5 w-3.5 text-cyan-400" />}
@@ -23518,6 +23524,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
             {showUncontractedModal && typeof document !== 'undefined' && createPortal(
               (() => {
                 const effectiveModalStart = normalizeRateDateYMD(uncontractedBatchStart) || activePeriodStartDate;
+                const effectiveModalEnd = normalizeRateDateYMD(uncontractedBatchEnd) || activePeriodEndDate;
                 const modalRangeCheck = (uncontractedBatchStart && uncontractedBatchEnd)
                   ? validateContractDateRangeForPersonnel(null, uncontractedBatchStart, uncontractedBatchEnd)
                   : null;
@@ -23527,6 +23534,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   if (contractedEmpCodeSetInPeriod.has(codeTrim)) return false;
                   const depYMD = normalizeRateDateYMD(p.departureDate || '');
                   if (depYMD && (depYMD <= effectiveModalStart || depYMD <= activePeriodStartDate)) return false;
+                  const entryYMD = normalizeRateDateYMD(p.entryDate || '');
+                  if (entryYMD && entryYMD > effectiveModalEnd) return false;
                   return true;
                 });
 
@@ -23543,11 +23552,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   return codeA.localeCompare(codeB, 'en', { numeric: true });
                 });
 
-                const visibleCodes = filteredModalUncontracted.map(p => p.employeeCode);
+                const missingEntryModalItems = modalBaseUncontracted
+                  .filter(p => !normalizeRateDateYMD(p.entryDate || ''))
+                  .map(p => {
+                    const info = resolveSuggestedContractDatesForPersonnel(p, null);
+                    return {
+                      emp: p,
+                      empName: p.fullName || `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.employeeCode,
+                      firstAttendanceDate: info.firstAttendanceDateOverall || info.firstAttendanceDate || ''
+                    };
+                  });
+                const missingEntryWithAttendance = missingEntryModalItems.filter(item => Boolean(item.firstAttendanceDate));
+
+                const visibleSelectableCodes = filteredModalUncontracted
+                  .filter(p => Boolean(normalizeRateDateYMD(p.entryDate || '')))
+                  .map(p => p.employeeCode);
                 const selectedSet = new Set(selectedUncontractedCodes);
-                const selectedVisibleCount = visibleCodes.filter(c => selectedSet.has(c)).length;
-                const allVisibleSelected = visibleCodes.length > 0 && selectedVisibleCount === visibleCodes.length;
+                const selectedVisibleCount = visibleSelectableCodes.filter(c => selectedSet.has(c)).length;
+                const allVisibleSelected = visibleSelectableCodes.length > 0 && selectedVisibleCount === visibleSelectableCodes.length;
                 const activeSelectedForBatch = modalBaseUncontracted
+                  .filter(p => Boolean(normalizeRateDateYMD(p.entryDate || '')))
                   .map(p => p.employeeCode.trim())
                   .filter(c => selectedSet.has(c));
 
@@ -23571,8 +23595,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <h3 className="text-sm sm:text-base font-black text-white truncate">
                               پرسنل بدون قرارداد در دوره «{activePeriodLabel}» ({toPersianDigits(modalBaseUncontracted.length)} نفر)
                             </h3>
-                            <p className="text-[10.5px] text-slate-400 mt-0.5">
-                              پرسنلی که تاریخ ترک کار آن‌ها پیش از تاریخ شروع قرارداد است به صورت خودکار از این لیست حذف شده‌اند.
+                            <p className="text-[10.5px] text-slate-400 mt-0.5 leading-relaxed">
+                              پرسنل قدیمی ترک‌کارکرده پیش از شروع دوره/قرارداد و پرسنلی که تاریخ ورود به کار آن‌ها پس از تاریخ پایان بازه ({toPersianDigits(effectiveModalEnd)}) است، از این لیست حذف و غیرقابل ثبت شده‌اند.
                             </p>
                           </div>
                         </div>
@@ -23631,16 +23655,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <div className="md:col-span-1 flex justify-end">
                             <button
                               type="button"
+                              disabled={visibleSelectableCodes.length === 0}
                               onClick={() => {
                                 if (allVisibleSelected) {
-                                  const visSet = new Set(visibleCodes);
+                                  const visSet = new Set(visibleSelectableCodes);
                                   setSelectedUncontractedCodes(prev => prev.filter(c => !visSet.has(c)));
                                 } else {
-                                  setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleCodes])));
+                                  setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleSelectableCodes])));
                                 }
                               }}
-                              className="w-full px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-[10.5px] font-bold cursor-pointer whitespace-nowrap"
-                              title={allVisibleSelected ? 'لغو انتخاب همه' : 'انتخاب همه'}
+                              className="w-full px-2.5 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700 rounded-xl text-[10.5px] font-bold cursor-pointer whitespace-nowrap"
+                              title={allVisibleSelected ? 'لغو انتخاب همه' : 'انتخاب همه واجدین شرایط'}
                             >
                               {allVisibleSelected ? 'لغو همه' : 'همه'}
                             </button>
@@ -23651,6 +23676,26 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <div className="bg-rose-950/40 border border-rose-500/40 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-rose-200 font-bold">
                             <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
                             <span>{modalRangeCheck.message}</span>
+                          </div>
+                        )}
+
+                        {missingEntryModalItems.length > 0 && (
+                          <div className="bg-amber-950/35 border border-amber-500/40 rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-100">
+                            <div className="flex items-center gap-2 font-bold">
+                              <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                              <span>
+                                {toPersianDigits(missingEntryModalItems.length)} پرسنل در این لیست فاقد «تاریخ ورود به کار» هستند؛ تا پیش از ثبت تاریخ ورود به کار در ردیف مربوطه، امکان صدور قرارداد برای آن‌ها وجود ندارد.
+                              </span>
+                            </div>
+                            {missingEntryWithAttendance.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleBatchApplyFirstAttendanceEntryDates(missingEntryWithAttendance)}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold cursor-pointer shrink-0"
+                              >
+                                ثبت ورود از اولین تردد ({toPersianDigits(missingEntryWithAttendance.length)} نفر)
+                              </button>
+                            )}
                           </div>
                         )}
 
@@ -23695,7 +23740,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto opacity-80" />
                             <p className="text-sm font-black text-slate-200">
                               {modalBaseUncontracted.length === 0
-                                ? 'همه پرسنل واجد شرایط این دوره دارای قرارداد ثبت‌شده هستند.'
+                                ? 'هیچ پرسنل بدون قرارداد واجد شرایطی در این بازه زمانی وجود ندارد.'
                                 : 'هیچ پرسنلی مطابق با جستجوی شما یافت نشد.'}
                             </p>
                           </div>
@@ -23707,15 +23752,16 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   <th className="py-2.5 px-3 text-center w-10">
                                     <button
                                       type="button"
+                                      disabled={visibleSelectableCodes.length === 0}
                                       onClick={() => {
                                         if (allVisibleSelected) {
-                                          const visSet = new Set(visibleCodes);
+                                          const visSet = new Set(visibleSelectableCodes);
                                           setSelectedUncontractedCodes(prev => prev.filter(c => !visSet.has(c)));
                                         } else {
-                                          setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleCodes])));
+                                          setSelectedUncontractedCodes(prev => Array.from(new Set([...prev, ...visibleSelectableCodes])));
                                         }
                                       }}
-                                      className="text-slate-300 hover:text-white cursor-pointer"
+                                      className="text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
                                     >
                                       {allVisibleSelected ? (
                                         <CheckSquare className="h-4 w-4 text-cyan-400" />
@@ -23735,31 +23781,38 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                 {filteredModalUncontracted.map(emp => {
                                   const code = emp.employeeCode;
                                   const fullName = emp.fullName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || code;
-                                  const isChecked = selectedSet.has(code);
                                   const info = resolveSuggestedContractDatesForPersonnel(emp, null);
+                                  const hasEntryDate = Boolean(info.entryDate);
+                                  const isChecked = hasEntryDate && selectedSet.has(code);
                                   const draftVal = Object.prototype.hasOwnProperty.call(quickEntryDateDrafts, code)
                                     ? quickEntryDateDrafts[code]
                                     : (info.firstAttendanceDateOverall ? toPersianDigits(info.firstAttendanceDateOverall) : '');
                                   const rowErr = quickEntryDateErrorByEmp[code] || '';
 
                                   return (
-                                    <tr key={code} className={`hover:bg-slate-900/60 transition-colors ${isChecked ? 'bg-cyan-950/15' : ''}`}>
+                                    <tr key={code} className={`hover:bg-slate-900/60 transition-colors ${!hasEntryDate ? 'bg-amber-950/15' : isChecked ? 'bg-cyan-950/15' : ''}`}>
                                       <td className="py-2.5 px-3 text-center">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setSelectedUncontractedCodes(prev =>
-                                              prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
-                                            );
-                                          }}
-                                          className="cursor-pointer"
-                                        >
-                                          {isChecked ? (
-                                            <CheckSquare className="h-4 w-4 text-cyan-400" />
-                                          ) : (
-                                            <Square className="h-4 w-4 text-slate-500" />
-                                          )}
-                                        </button>
+                                        {hasEntryDate ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedUncontractedCodes(prev =>
+                                                prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+                                              );
+                                            }}
+                                            className="cursor-pointer"
+                                          >
+                                            {isChecked ? (
+                                              <CheckSquare className="h-4 w-4 text-cyan-400" />
+                                            ) : (
+                                              <Square className="h-4 w-4 text-slate-500" />
+                                            )}
+                                          </button>
+                                        ) : (
+                                          <span title="تا پیش از ثبت تاریخ ورود به کار امکان انتخاب برای صدور دسته‌جمعی وجود ندارد">
+                                            <AlertTriangle className="h-4 w-4 text-amber-400 mx-auto" />
+                                          </span>
+                                        )}
                                       </td>
                                       <td className="py-2.5 px-3">
                                         <div className="font-black text-slate-100">{fullName}</div>
@@ -23772,13 +23825,20 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                         )}
                                       </td>
                                       <td className="py-2.5 px-2.5 text-center">
-                                        {info.entryDate ? (
+                                        {hasEntryDate ? (
                                           <span className="font-mono font-bold text-emerald-300 text-[11px]">
                                             {toPersianDigits(info.entryDate)}
                                           </span>
                                         ) : (
                                           <div className="flex flex-col items-center gap-1">
-                                            <span className="text-[9.5px] font-bold text-rose-300">ثبت نشده</span>
+                                            <span className="px-2 py-0.5 rounded-md bg-rose-500/15 border border-rose-500/30 text-[9.5px] font-bold text-rose-300">
+                                              تاریخ ورود ثبت نشده (ابتدا ثبت کنید)
+                                            </span>
+                                            {info.firstAttendanceDateOverall && (
+                                              <span className="text-[9.5px] text-cyan-300 font-mono">
+                                                اولین تردد: {toPersianDigits(info.firstAttendanceDateOverall)}
+                                              </span>
+                                            )}
                                             <div className="flex items-center gap-1">
                                               <input
                                                 type="text"

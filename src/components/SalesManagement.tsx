@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   AppDatabase, Product, ProductCategory, Department, SalesPeriod, ProductSale, SalesTransaction, PackagingType
 } from '../types';
@@ -1513,6 +1513,9 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [fontSizeTitle, setFontSizeTitle] = useState<number>(() => {
     try { const s = localStorage.getItem('gatan_tag_font_title'); return s ? parseInt(s, 10) : 13; } catch { return 13; }
   });
+  const [fontSizeShopTitle, setFontSizeShopTitle] = useState<number>(() => {
+    try { const s = localStorage.getItem('gatan_tag_font_shop'); return s ? parseFloat(s) : 9.5; } catch { return 9.5; }
+  });
   const [fontSizePrice, setFontSizePrice] = useState<number>(() => {
     try { const s = localStorage.getItem('gatan_tag_font_price'); return s ? parseInt(s, 10) : 14; } catch { return 14; }
   });
@@ -1560,6 +1563,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
       localStorage.setItem('gatan_tag_orientation', tagOrientation);
       localStorage.setItem('gatan_paper_orientation', paperOrientation);
       localStorage.setItem('gatan_tag_font_title', String(fontSizeTitle));
+      localStorage.setItem('gatan_tag_font_shop', String(fontSizeShopTitle));
       localStorage.setItem('gatan_tag_font_price', String(fontSizePrice));
       localStorage.setItem('gatan_tag_font_meta', String(fontSizeMeta));
       localStorage.setItem('gatan_tag_page_margin', String(pageMarginMm));
@@ -1580,7 +1584,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     }
   }, [
     tagCols, tagRows, tagWidthCm, tagHeightCm, tagOrientation, paperOrientation,
-    fontSizeTitle, fontSizePrice, fontSizeMeta, pageMarginMm, contentAlignment,
+    fontSizeTitle, fontSizeShopTitle, fontSizePrice, fontSizeMeta, pageMarginMm, contentAlignment,
     showShopTitle, showCode, showBarcode, showDepartment, shopBrandName,
     tagFontFamily, logoUrl, logoWidth, logoHeight, logoPosition, tagPriceCurrency
   ]);
@@ -1690,7 +1694,7 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
 
       const cleanShopTitle = (shopBrandName || '').trim();
       const shopTitleHtml = showShopTitle && cleanShopTitle
-        ? `<span style="font-size: ${fontSizeMeta}px; font-weight: 800; color: #0f172a; white-space: nowrap;">${cleanShopTitle}</span>`
+        ? `<span style="font-size: ${fontSizeShopTitle}px; font-weight: 800; color: #0f172a; white-space: nowrap;">${cleanShopTitle}</span>`
         : '';
 
       const deptBadgeHtml = showDepartment && deptObj
@@ -1802,6 +1806,12 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
   const [selectedCatFilter, setSelectedCatFilter] = useState('ALL');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
+  const barcodeExcelInputRef = useRef<HTMLInputElement | null>(null);
+  const [barcodeExcelNotice, setBarcodeExcelNotice] = useState<{
+    type: 'success' | 'warning' | 'error';
+    title: string;
+    details: string[];
+  } | null>(null);
 
   const handleApplyBulkEditProducts = () => {
     if (selectedProductIds.length === 0) return;
@@ -2337,6 +2347,206 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
     };
     reader.readAsArrayBuffer(file);
     e.target.value = '';
+  };
+
+  const handleDownloadBarcodeUpdateTemplate = () => {
+    const sampleRows = products.length > 0
+      ? products.slice(0, 5).map(p => ({
+          'کد حسابداری': p.accountId || p.code || '',
+          'نام محصول': p.name || '',
+          'بارکد محصول': p.barcode || ''
+        }))
+      : [
+          { 'کد حسابداری': '901010', 'نام محصول': 'کلوچه کنجدی مینی', 'بارکد محصول': '6260123456789' },
+          { 'کد حسابداری': '901011', 'نام محصول': 'بیسکوئیت رژیمی جو', 'بارکد محصول': '6260123456796' }
+        ];
+    downloadTemplateExcel(
+      ['کد حسابداری', 'نام محصول', 'بارکد محصول'],
+      sampleRows,
+      'بروزرسانی_بارکد_محصولات',
+      'Template_Product_Barcodes'
+    );
+  };
+
+  const handleImportProductBarcodesExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBarcodeExcelNotice(null);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const lower = file.name.toLowerCase();
+      let parsedRows: Array<{ accountCode: string; name: string; barcode: string; rowNum: number }> = [];
+
+      const cleanBarcodeCell = (raw: unknown): string => {
+        const str = toEnglishDigits(String(raw ?? '')).trim();
+        if (!str) return '';
+        return str.replace(/\.0+$/, '').trim();
+      };
+
+      if (lower.endsWith('.csv') || lower.endsWith('.txt')) {
+        const text = decodeFileBuffer(buffer);
+        const matrix = parseCSVText(text);
+        if (matrix.length < 2) {
+          setBarcodeExcelNotice({
+            type: 'error',
+            title: 'فایل انتخاب‌شده فاقد ردیف اطلاعاتی است',
+            details: ['لطفاً فایل اکسل یا CSV شامل ستون‌های «کد حسابداری»، «نام محصول» و «بارکد محصول» را انتخاب کنید.']
+          });
+          return;
+        }
+        const headers = matrix[0].map(h => h.trim());
+        parsedRows = matrix.slice(1).map((cols, idx) => {
+          const rec: Record<string, string> = {};
+          headers.forEach((h, cIdx) => {
+            if (h) rec[h] = String(cols[cIdx] ?? '').trim();
+          });
+          const accountCode = pickRowField(rec, ['کد حسابداری', 'کد حسابداری معین', 'کدحسابداری', 'کد معین', 'کد کالا', 'کد محصول', 'accountId', 'code']) || String(cols[0] ?? '').trim();
+          const name = pickRowField(rec, ['نام محصول', 'نام محصول نهایی', 'نام کالا', 'شرح کالا', 'عنوان محصول', 'نام', 'name']) || String(cols[1] ?? '').trim();
+          const barcode = cleanBarcodeCell(
+            pickRowField(rec, ['بارکد محصول', 'بارکد', 'کد بارکد', 'بارکد کالا', 'barcode']) || String(cols[2] ?? '').trim()
+          );
+          return { accountCode, name, barcode, rowNum: idx + 2 };
+        });
+      } else {
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) {
+          setBarcodeExcelNotice({
+            type: 'error',
+            title: 'شیت معتبری در فایل اکسل یافت نشد',
+            details: ['لطفاً فایل اکسل معتبر (.xlsx یا .xls) انتخاب نمایید.']
+          });
+          return;
+        }
+        const sheet = workbook.Sheets[firstSheetName];
+        const rawObjects = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '', raw: false });
+        const rawMatrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false });
+
+        parsedRows = rawObjects.map((rawObj, idx) => {
+          const rec: Record<string, string> = {};
+          Object.entries(rawObj).forEach(([k, v]) => {
+            const cleanK = String(k).trim();
+            if (cleanK) rec[cleanK] = String(v ?? '').trim();
+          });
+          const fallbackCols = rawMatrix[idx + 1] || [];
+          const accountCode =
+            pickRowField(rec, ['کد حسابداری', 'کد حسابداری معین', 'کدحسابداری', 'کد معین', 'کد کالا', 'کد محصول', 'accountId', 'code'])
+            || String(fallbackCols[0] ?? '').trim();
+          const name =
+            pickRowField(rec, ['نام محصول', 'نام محصول نهایی', 'نام کالا', 'شرح کالا', 'عنوان محصول', 'نام', 'name'])
+            || String(fallbackCols[1] ?? '').trim();
+          const barcode = cleanBarcodeCell(
+            pickRowField(rec, ['بارکد محصول', 'بارکد', 'کد بارکد', 'بارکد کالا', 'barcode'])
+            || String(fallbackCols[2] ?? '').trim()
+          );
+          return { accountCode, name, barcode, rowNum: idx + 2 };
+        });
+      }
+
+      const validRows = parsedRows.filter(r => r.accountCode || r.name || r.barcode);
+      if (validRows.length === 0) {
+        setBarcodeExcelNotice({
+          type: 'error',
+          title: 'هیچ ردیف قابل پردازشی در فایل یافت نشد',
+          details: ['ستون‌های مورد انتظار: «کد حسابداری»، «نام محصول» و «بارکد محصول».']
+        });
+        return;
+      }
+
+      const updatedProducts = [...db.products];
+      let updatedCount = 0;
+      let unchangedCount = 0;
+      let emptyBarcodeCount = 0;
+      const notFoundLabels: string[] = [];
+
+      validRows.forEach(row => {
+        if (!row.barcode) {
+          emptyBarcodeCount += 1;
+          return;
+        }
+
+        const normAcc = normalizeAccountingCode(row.accountCode);
+        const normName = normalizePersianString(row.name);
+
+        let matchIdx = -1;
+        if (normAcc) {
+          matchIdx = updatedProducts.findIndex(
+            p => p.periodId === activePeriodId && normalizeAccountingCode(p.accountId) === normAcc
+          );
+          if (matchIdx < 0) {
+            matchIdx = updatedProducts.findIndex(
+              p => p.periodId === activePeriodId && normalizeAccountingCode(p.code) === normAcc
+            );
+          }
+        }
+        if (matchIdx < 0 && normName) {
+          matchIdx = updatedProducts.findIndex(
+            p => p.periodId === activePeriodId && normalizePersianString(p.name) === normName
+          );
+        }
+
+        if (matchIdx < 0) {
+          const label = [row.accountCode ? `کد ${row.accountCode}` : '', row.name].filter(Boolean).join(' - ') || `ردیف ${row.rowNum}`;
+          notFoundLabels.push(label);
+          return;
+        }
+
+        const currentBarcode = cleanBarcodeCell(updatedProducts[matchIdx].barcode);
+        if (currentBarcode === row.barcode) {
+          unchangedCount += 1;
+        } else {
+          updatedProducts[matchIdx] = {
+            ...updatedProducts[matchIdx],
+            barcode: row.barcode
+          };
+          updatedCount += 1;
+        }
+      });
+
+      if (updatedCount > 0) {
+        onUpdateDb({ ...db, products: updatedProducts });
+        if (editingProduct) {
+          const refreshed = updatedProducts.find(p => p.id === editingProduct.id) || null;
+          setEditingProduct(refreshed);
+        }
+      }
+
+      const details: string[] = [];
+      if (unchangedCount > 0) {
+        details.push(`${toPersianDigits(unchangedCount)} محصول قبلاً همین بارکد را داشتند (بدون تغییر).`);
+      }
+      if (emptyBarcodeCount > 0) {
+        details.push(`${toPersianDigits(emptyBarcodeCount)} ردیف فاقد مقدار بارکد بود و نادیده گرفته شد.`);
+      }
+      if (notFoundLabels.length > 0) {
+        const preview = notFoundLabels.slice(0, 8).join('، ');
+        const more = notFoundLabels.length > 8 ? ` و ${toPersianDigits(notFoundLabels.length - 8)} مورد دیگر` : '';
+        details.push(`${toPersianDigits(notFoundLabels.length)} ردیف در کاتالوگ محصولات دوره یافت نشد: ${preview}${more}`);
+      }
+
+      if (updatedCount === 0 && unchangedCount === 0) {
+        setBarcodeExcelNotice({
+          type: 'warning',
+          title: 'هیچ محصولی برای بروزرسانی بارکد تطبیق داده نشد',
+          details: details.length > 0 ? details : ['لطفاً تطابق «کد حسابداری» یا «نام محصول» فایل اکسل با کاتالوگ دوره را بررسی کنید.']
+        });
+      } else {
+        setBarcodeExcelNotice({
+          type: notFoundLabels.length > 0 ? 'warning' : 'success',
+          title: `بروزرسانی بارکد محصولات نهایی انجام شد: ${toPersianDigits(updatedCount)} محصول بروزرسانی گردید.`,
+          details
+        });
+      }
+    } catch (err) {
+      console.error('Error importing product barcodes excel:', err);
+      setBarcodeExcelNotice({
+        type: 'error',
+        title: 'خطا در خواندن فایل اکسل بارکد محصولات',
+        details: ['لطفاً از سالم بودن فایل (.xlsx / .xls / .csv) اطمینان حاصل کنید و مجدداً تلاش نمایید.']
+      });
+    }
   };
 
 
@@ -3288,6 +3498,31 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
               onPrint={() => printElement('sales-products-printable', 'کاتالوگ محصولات نهایی')}
               extraSecondaryActions={
                 <>
+                  <input
+                    ref={barcodeExcelInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={handleImportProductBarcodesExcel}
+                    className="hidden"
+                  />
+                  <ErpButton
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => barcodeExcelInputRef.current?.click()}
+                    icon={<BarcodeIcon className="h-3.5 w-3.5 text-cyan-400" />}
+                    title="بارگذاری فایل اکسل شامل کد حسابداری، نام محصول و بارکد جهت بروزرسانی بارکد محصولات نهایی"
+                  >
+                    بروزرسانی بارکد (اکسل)
+                  </ErpButton>
+                  <ErpButton
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleDownloadBarcodeUpdateTemplate}
+                    icon={<Download className="h-3.5 w-3.5 text-slate-400" />}
+                    title="دانلود فایل نمونه اکسل بروزرسانی بارکد محصولات"
+                  >
+                    نمونه بارکد
+                  </ErpButton>
                   {selectedProductIds.length > 0 && (
                     <ErpButton
                       variant="primary"
@@ -3310,6 +3545,43 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 </>
               }
             />
+
+            {barcodeExcelNotice && (
+              <div
+                className={`rounded-2xl p-3.5 border text-right space-y-1.5 ${
+                  barcodeExcelNotice.type === 'error'
+                    ? 'bg-rose-950/40 border-rose-500/40 text-rose-100'
+                    : barcodeExcelNotice.type === 'warning'
+                      ? 'bg-amber-950/35 border-amber-500/40 text-amber-100'
+                      : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-100'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-black">
+                    {barcodeExcelNotice.type === 'success' ? (
+                      <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className={`h-4 w-4 shrink-0 ${barcodeExcelNotice.type === 'error' ? 'text-rose-400' : 'text-amber-400'}`} />
+                    )}
+                    <span>{barcodeExcelNotice.title}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBarcodeExcelNotice(null)}
+                    className="text-slate-400 hover:text-white p-0.5 rounded-lg cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {barcodeExcelNotice.details.length > 0 && (
+                  <ul className="list-disc pr-5 text-[11px] text-slate-200 space-y-0.5 leading-relaxed">
+                    {barcodeExcelNotice.details.map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             <UnifiedFilterBar columnsClass="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
               <div>
@@ -5456,7 +5728,19 @@ export default function SalesManagement({ db, onUpdateDb, activePeriodId }: Sale
                 </>
               )}
               <div>
-                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت نام (px)</label>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت نام فروشگاه (px)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={6}
+                  max={24}
+                  value={fontSizeShopTitle}
+                  onChange={(e) => setFontSizeShopTitle(parseFloat(e.target.value) || 9.5)}
+                  className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-[10.5px] font-bold text-slate-300 mb-1">فونت نام کالا (px)</label>
                 <input
                   type="number"
                   min={8}
