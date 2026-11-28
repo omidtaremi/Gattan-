@@ -3333,16 +3333,15 @@ export default function ProcurementManagement({
                           <Printer className="h-3.5 w-3.5" />
                           <span>چاپ حواله</span>
                         </button>
-                        {activeState.isActive && (
-                          <button
-                            type="button"
-                            onClick={() => setDeleteTargetOrder(order)}
-                            className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-500/30 text-rose-700 dark:text-rose-400 hover:bg-rose-600 hover:text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            <span>حذف</span>
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTargetOrder(order)}
+                          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-500/30 text-rose-700 dark:text-rose-400 hover:bg-rose-600 hover:text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                          title="حذف کامل این سفارش از آرشیو"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>حذف</span>
+                        </button>
                       </div>
                     </div>
 
@@ -3597,8 +3596,13 @@ export default function ProcurementManagement({
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
               آیا از حذف کامل سفارش <strong>«{deleteTargetOrder.title || deleteTargetOrder.id}»</strong> شامل{' '}
-              <strong>{toPersianDigits((deleteTargetOrder.items || []).length)} ردیف کالا</strong> اطمینان دارید؟ این عملیات قابل بازگشت نیست.
+              <strong>{toPersianDigits((deleteTargetOrder.items || []).length)} ردیف کالا</strong> از آرشیو اطمینان دارید؟ این عملیات قابل بازگشت نیست.
             </p>
+            {(deleteTargetOrder.items || []).some(i => resolveLineStatus(i) === 'received') && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-3 py-2 leading-relaxed">
+                توجه: این سفارش دارای اقلام تحویل‌شده است؛ حذف سفارش صرفاً رکورد آن را از آرشیو سفارش‌ها پاک می‌کند و فاکتورهای خرید ثبت‌شده تغییر نمی‌کنند.
+              </p>
+            )}
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"

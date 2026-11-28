@@ -5428,11 +5428,42 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     return attendancePayrollCalculations.rows;
   }, [isMonthLocked, activeRegisteredPayrollPeriod, attendancePayrollCalculations.rows]);
 
+  // Check whether an employee has a contract whose date range overlaps the selected payroll month (calcYear/calcMonth)
+  const calcMonthMatchedContractEmpCodes = useMemo(() => {
+    const matched = new Set<string>();
+    const yNum = Number(calcYear) || 1403;
+    const mNum = Number(calcMonth) || 1;
+    const daysInTargetMonth = getShamsiMonthDaysHelper(yNum, mNum);
+    const monthStartYMD = `${yNum}/${String(mNum).padStart(2, '0')}/01`;
+    const monthEndYMD = `${yNum}/${String(mNum).padStart(2, '0')}/${String(daysInTargetMonth).padStart(2, '0')}`;
+
+    (db.personnelContracts || []).forEach(c => {
+      if (activePeriodId && c.periodId && c.periodId !== activePeriodId) return;
+      const empCode = toEnglishDigits(String(c.employeeCode || '')).trim();
+      if (!empCode) return;
+      const startYMD = normalizeRateDateYMD(c.contractStartDate || '');
+      if (!startYMD) return;
+      const endYMD = c.contractEndDate ? normalizeRateDateYMD(c.contractEndDate) : '9999/99/99';
+      if (!endYMD) return;
+      if (startYMD <= monthEndYMD && endYMD >= monthStartYMD) {
+        matched.add(empCode);
+      }
+    });
+
+    return matched;
+  }, [db.personnelContracts, activePeriodId, calcYear, calcMonth]);
+
+  const isEmployeeWithoutContractInCalcMonth = (empCode?: string): boolean => {
+    const clean = toEnglishDigits(String(empCode || '')).trim();
+    if (!clean) return true;
+    return !calcMonthMatchedContractEmpCodes.has(clean);
+  };
+
   const exportAttendancePerformanceCSV = () => {
     const headers = [
       'نام و نام خانوادگی',
       'کد ملی',
-      'کد حسابداری',
+      'کد پرسنل',
       'مدت عادی',
       'کسر مدیریتی ساعت عادی',
       'جریمه تاخیر ورود روز عادی',
@@ -5711,7 +5742,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               <tr style="border-bottom: 1.2px solid #000;">
                 <th rowspan="2" class="text-center">ردیف</th>
                 <th rowspan="2" class="text-right">نام و فامیل پرسنل</th>
-                <th rowspan="2" class="text-center">کد حسابداری</th>
+                <th rowspan="2" class="text-center">کد پرسنل</th>
                 <th rowspan="2" class="text-center">مدت عادی</th>
                 <th rowspan="2" class="text-center">کسر مدیریتی ساعت عادی</th>
                 <th colspan="3" class="text-center" style="border-bottom: 0.8px solid #000;">جریمه تاخیر ورود</th>
@@ -5754,7 +5785,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                   <tr class="font-mono text-center">
                     <td>${toPersianDigits(idx + 1)}</td>
                     <td class="name-cell" style="font-family: 'Vazirmatn', sans-serif;">${pName}</td>
-                    <td>${toPersianDigits(r.employee.employeeCode || '-')}</td>
+                    <td>
+                      <div>${toPersianDigits(r.employee.employeeCode || '-')}</div>
+                      ${isEmployeeWithoutContractInCalcMonth(r.employee.employeeCode) ? `<div style="font-family: 'Vazirmatn', sans-serif; font-size: 0.78em; font-weight: 800; color: #b91c1c; margin-top: 1px;">بدون قرارداد</div>` : ''}
+                    </td>
                     <td style="font-weight: 900;">${toPersianDigits(r.normalPlusExtraHM)}</td>
                     <td>${toPersianDigits(r.normalMgmtDeductionHM || '۰:۰۰')}</td>
                     <td>${toPersianDigits(r.totalDelayFineHM)}</td>
@@ -5939,6 +5973,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     let rowsToPrint: Array<{
       index: number;
       employeeCode: string;
+      withoutContract: boolean;
       fullName: string;
       isDeparted: boolean;
       departureDate: string;
@@ -5994,6 +6029,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         return {
           index: idx + 1,
           employeeCode: r.employee?.employeeCode || '',
+          withoutContract: isEmployeeWithoutContractInCalcMonth(r.employee?.employeeCode),
           fullName: `${r.employee?.firstName || ''} ${r.employee?.lastName || ''}`.trim() || r.employee?.employeeCode,
           isDeparted: depInfo.isDeparted,
           departureDate: depInfo.departureDate,
@@ -6048,6 +6084,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
         return {
           index: idx + 1,
           employeeCode: item.employeeCode,
+          withoutContract: isEmployeeWithoutContractInCalcMonth(item.employeeCode),
           fullName: emp ? `${emp.firstName || ''} ${emp.lastName || ''}`.trim() : item.employeeCode,
           isDeparted: depInfo.isDeparted,
           departureDate: depInfo.departureDate,
@@ -6419,7 +6456,10 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
               ${rowsToPrint.map(r => `
                 <tr>
                   <td class="font-mono text-center">${toPersianDigits(r.index)}</td>
-                  <td class="font-mono text-center">${toPersianDigits(r.employeeCode)}</td>
+                  <td class="font-mono text-center">
+                    <div>${toPersianDigits(r.employeeCode)}</div>
+                    ${r.withoutContract ? `<div style="font-family: 'Vazirmatn', sans-serif; font-size: 0.78em; font-weight: 800; color: #b91c1c; margin-top: 1px;">بدون قرارداد</div>` : ''}
+                  </td>
                   <td class="name-cell">
                     <div>${r.fullName}</div>
                     ${r.isDeparted ? `<div class="dep-badge">ترک کار${r.departureDate ? `: ${toPersianDigits(r.departureDate)}` : ''}</div>` : ''}
@@ -9231,6 +9271,63 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
     allocMap,
     activeContractSummaryByEmpCode
   ]);
+
+  const firstAttendanceDateByTokenMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    const records = db.attendanceRecords || [];
+    const cleanTok = (v: unknown) => toEnglishDigits(String(v || '')).trim().toLowerCase();
+    const stripZeros = (v: string) => {
+      const s = v.replace(/^0+/, '');
+      return s === '' && v !== '' ? '0' : s;
+    };
+    const recordTokenDate = (raw: unknown, normDate: string) => {
+      const c = cleanTok(raw);
+      if (!c) return;
+      const variants = [c, stripZeros(c)];
+      variants.forEach(tok => {
+        if (!map[tok] || normDate < map[tok]) {
+          map[tok] = normDate;
+        }
+      });
+    };
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      if (!rec || !Array.isArray(rec.times) || rec.times.length === 0 || !rec.date) continue;
+      const normDate = normalizeRateDateYMD(rec.date);
+      if (!normDate) continue;
+      recordTokenDate(rec.attendanceCode, normDate);
+      recordTokenDate(rec.employeeId, normDate);
+    }
+    return map;
+  }, [db.attendanceRecords]);
+
+  const getFastFirstAttendanceDateForEmp = (emp: Personnel): string => {
+    const cleanTok = (v: unknown) => toEnglishDigits(String(v || '')).trim().toLowerCase();
+    const stripZeros = (v: string) => {
+      const s = v.replace(/^0+/, '');
+      return s === '' && v !== '' ? '0' : s;
+    };
+    const tokens: string[] = [];
+    const rawAtt = toEnglishDigits(String(emp.attendanceCode || '')).trim();
+    if (rawAtt) {
+      rawAtt.split(/[\s,،;|/\\]+/).filter(Boolean).forEach(t => {
+        const c = cleanTok(t);
+        if (c) tokens.push(c, stripZeros(c));
+      });
+    }
+    [emp.employeeCode, emp.id].forEach(val => {
+      const c = cleanTok(val);
+      if (c) tokens.push(c, stripZeros(c));
+    });
+    let earliest = '';
+    for (let i = 0; i < tokens.length; i++) {
+      const d = firstAttendanceDateByTokenMap[tokens[i]];
+      if (d && (!earliest || d < earliest)) {
+        earliest = d;
+      }
+    }
+    return earliest;
+  };
 
   // New Employee Form Build States
   const [newCode, setNewCode] = useState('');
@@ -14955,7 +15052,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               className={`inline-flex items-center gap-1 cursor-pointer hover:text-amber-300 transition-colors ${empSortBy === 'attendanceCode' ? 'text-amber-400' : ''}`}
                               title="مرتب‌سازی بر اساس کد تردد"
                             >
-                              <span>کد تردد</span>
+                              <span>کد تردد / ورود و اولین تردد</span>
                               <ArrowUpDown className="h-3 w-3 opacity-80" />
                             </button>
                           </th>
@@ -14981,6 +15078,8 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                             const isSelected = selectedEmpCodes.includes(emp.employeeCode);
                             const isSharedDept = !alloc || alloc.departmentCategoryId === 'cat-4' || alloc.departmentCategoryId.includes('cat-4');
                             const contractInfo = activeContractSummaryByEmpCode[emp.employeeCode];
+                            const entryYMD = normalizeRateDateYMD(emp.entryDate || '');
+                            const firstAttDate = getFastFirstAttendanceDateForEmp(emp);
                             return (
                               <tr
                                 key={emp.id}
@@ -15005,7 +15104,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                     حسابداری: {emp.accountCode || 'نامشخص'}
                                   </span>
                                 </td>
-                                <td className="px-4 py-3.5 text-center">
+                                <td className="px-4 py-3.5 text-center whitespace-nowrap">
                                   {emp.attendanceCode ? (
                                     <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-mono font-bold text-[11px] bg-amber-950/40 text-amber-400 border border-amber-900/50">
                                       {emp.attendanceCode}
@@ -15013,6 +15112,24 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   ) : (
                                     <span className="text-slate-600 font-mono text-[11px]">-</span>
                                   )}
+                                  <div className="mt-1.5 space-y-0.5 text-[10px] font-mono">
+                                    <div className="text-slate-400">
+                                      ورود:{' '}
+                                      {entryYMD ? (
+                                        <span className="text-emerald-400 font-bold">{toPersianDigits(entryYMD)}</span>
+                                      ) : (
+                                        <span className="text-rose-400 font-sans font-bold">ثبت نشده</span>
+                                      )}
+                                    </div>
+                                    <div className="text-slate-400">
+                                      اولین تردد:{' '}
+                                      {firstAttDate ? (
+                                        <span className="text-cyan-300 font-bold">{toPersianDigits(firstAttDate)}</span>
+                                      ) : (
+                                        <span className="text-slate-500 font-sans">ندارد</span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </td>
                                 <td className="px-4 py-3.5">
                                   <div className="font-bold text-slate-100">
@@ -15669,9 +15786,45 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
 
                           {/* تاریخ ورود به کار و تاریخ شروع پایه سنوات */}
                           <div className="space-y-3 pt-2 border-t border-slate-800/80">
-                            <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl">
-                              {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (شمسی)', entryDate, handleEntryDateChange)}
-                            </div>
+                            {(() => {
+                              const effectiveLookupEmp: Personnel | null = (editingEmp || attendanceCode.trim() || newCode.trim())
+                                ? ({
+                                    ...(editingEmp || {}),
+                                    id: editingEmp?.id || '',
+                                    employeeCode: newCode.trim() || editingEmp?.employeeCode || '',
+                                    attendanceCode: attendanceCode.trim() || editingEmp?.attendanceCode || ''
+                                  } as Personnel)
+                                : null;
+                              const firstAttDate = findFirstAttendanceDateForPersonnelOverall(effectiveLookupEmp);
+                              const entryNorm = normalizeRateDateYMD(entryDate);
+                              return (
+                                <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl space-y-2.5">
+                                  {renderShamsiDatePicker('entry-date', 'تاریخ ورود به کار پرسنل (شمسی)', entryDate, handleEntryDateChange)}
+                                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-[10.5px]">
+                                    <div className="flex items-center gap-1.5 text-slate-400 font-bold">
+                                      <Clock className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                                      <span>تاریخ اولین تردد ثبت‌شده:</span>
+                                      {firstAttDate ? (
+                                        <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-mono font-black">
+                                          {toPersianDigits(firstAttDate)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-500 font-medium">ترددی ثبت نشده است</span>
+                                      )}
+                                    </div>
+                                    {firstAttDate && entryNorm !== firstAttDate && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleEntryDateChange(toPersianDigits(firstAttDate))}
+                                        className="text-[9.5px] font-bold text-cyan-300 hover:text-white bg-cyan-500/15 hover:bg-cyan-500/30 border border-cyan-500/30 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
+                                      >
+                                        جایگذاری در تاریخ ورود
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             <div className="bg-cyan-950/20 border border-cyan-500/30 p-3.5 rounded-xl space-y-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -17890,7 +18043,7 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                           <tr className="divide-x divide-slate-200">
                             <th rowSpan={2} className="px-2 py-3 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">ردیف</th>
                             <th rowSpan={2} className="px-2 py-3 font-extrabold text-right border-l border-b border-slate-200 bg-slate-100 text-slate-800 min-w-[120px]">نام و فامیل پرسنل</th>
-                            <th rowSpan={2} className="px-2 py-3 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">کد حسابداری</th>
+                            <th rowSpan={2} className="px-2 py-3 font-extrabold text-center border-l border-b border-slate-200 bg-slate-100 text-slate-800">کد پرسنل</th>
                             <th rowSpan={2} className="px-2 py-3 font-extrabold text-center border-l border-b border-slate-200 bg-emerald-50 text-emerald-900">مدت عادی</th>
                             <th rowSpan={2} className="px-2 py-3 font-extrabold text-center border-l border-b border-slate-200 bg-rose-100 text-rose-900">کسر مدیریتی ساعت عادی</th>
                             
@@ -17973,7 +18126,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   <td className="px-2 py-3 font-bold text-slate-900 text-right font-sans border-l">
                                     {row.employee.firstName} {row.employee.lastName}
                                   </td>
-                                  <td className="px-2 py-3 text-center text-slate-500 font-mono border-l">{toPersianDigits(row.employee.employeeCode || '')}</td>
+                                  <td className="px-2 py-2.5 text-center text-slate-500 font-mono border-l">
+                                    <div>{toPersianDigits(row.employee.employeeCode || '')}</div>
+                                    {isEmployeeWithoutContractInCalcMonth(row.employee.employeeCode) && (
+                                      <div
+                                        className="mt-0.5 text-[9.5px] font-sans font-extrabold text-rose-700 bg-rose-50 border border-rose-200 rounded px-1 py-0.5 leading-tight inline-block"
+                                        title={`این پرسنل در ماه ${curMonthName} ${toPersianDigits(calcYear)} قرارداد منطبق ندارد`}
+                                      >
+                                        بدون قرارداد
+                                      </div>
+                                    )}
+                                  </td>
                                   <td className="px-2 py-3 text-center font-black bg-emerald-50/20 text-emerald-950 font-mono border-l">{toPersianDigits(row.normalPlusExtraHM)}</td>
                                   <td className="px-1.5 py-1 text-center bg-rose-50/30 border-l" onClick={(e) => e.stopPropagation()}>
                                     <BufferedInput
@@ -18377,7 +18540,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                                   }`}
                                 >
                                   <td className="px-2 py-3 text-center text-slate-400 font-mono font-bold border-l">{toPersianDigits(idx + 1)}</td>
-                                  <td className="px-2 py-3 text-center text-slate-700 font-mono border-l font-bold">{toPersianDigits(item.employeeCode)}</td>
+                                  <td className="px-2 py-2.5 text-center text-slate-700 font-mono border-l font-bold">
+                                    <div>{toPersianDigits(item.employeeCode)}</div>
+                                    {isEmployeeWithoutContractInCalcMonth(item.employeeCode) && (
+                                      <div
+                                        className="mt-0.5 text-[9.5px] font-sans font-extrabold text-rose-700 bg-rose-50 border border-rose-200 rounded px-1 py-0.5 leading-tight inline-block"
+                                        title={`این پرسنل در ماه ${curMonthName} ${toPersianDigits(calcYear)} قرارداد منطبق ندارد`}
+                                      >
+                                        بدون قرارداد
+                                      </div>
+                                    )}
+                                  </td>
                                   <td className="px-2 py-3 text-center text-slate-600 font-mono border-l">{toPersianDigits(emp.insuranceCode || '-')}</td>
                                   <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{emp.firstName}</td>
                                   <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">
@@ -18549,7 +18722,17 @@ export default function PayrollManagement({ db, onUpdateDb: onUpdateDbOriginal, 
                               }`}
                             >
                               <td className="px-2 py-3 text-center text-slate-400 font-mono font-bold border-l">{toPersianDigits(idx + 1)}</td>
-                              <td className="px-2 py-3 text-center text-slate-700 font-mono border-l">{toPersianDigits(row.employee.employeeCode || '')}</td>
+                              <td className="px-2 py-2.5 text-center text-slate-700 font-mono border-l">
+                                <div>{toPersianDigits(row.employee.employeeCode || '')}</div>
+                                {isEmployeeWithoutContractInCalcMonth(row.employee.employeeCode) && (
+                                  <div
+                                    className="mt-0.5 text-[9.5px] font-sans font-extrabold text-rose-700 bg-rose-50 border border-rose-200 rounded px-1 py-0.5 leading-tight inline-block"
+                                    title={`این پرسنل در ماه ${curMonthName} ${toPersianDigits(calcYear)} قرارداد منطبق ندارد`}
+                                  >
+                                    بدون قرارداد
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-2 py-3 text-center text-slate-600 font-mono border-l">{toPersianDigits(row.employee.insuranceCode || '')}</td>
                               <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">{row.employee.firstName}</td>
                               <td className="px-2 py-3 font-bold text-slate-900 text-right border-l">

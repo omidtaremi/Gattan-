@@ -3571,7 +3571,7 @@ export function exportAttendanceWorksheetToExcel(
     'ردیف': idx + 1,
     'نام و نام خانوادگی': `${r.employee?.firstName || ''} ${r.employee?.lastName || ''}`.trim(),
     'کد ملی': r.employee?.nationalId || '',
-    'کد حسابداری / پرسنلی': r.employee?.employeeCode || '',
+    'کد پرسنل': r.employee?.employeeCode || '',
     'مدت عادی': r.normalPlusExtraHM || '۰:۰۰',
     'کسر مدیریتی ساعت عادی': r.normalMgmtDeductionHM || '۰:۰۰',
     'وضعیت تردد': r.hasIncorrectAttendance ? 'خطادار / نامشخص' : 'صحیح',
